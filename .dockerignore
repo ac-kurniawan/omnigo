@@ -1,0 +1,13 @@
+.git
+.github
+.air.toml
+tmp/
+*.log
+auth.yaml
+.secret.key
+config.yaml
+aigo
+omnigo
+OmniRoute/
+graft/
+docs/

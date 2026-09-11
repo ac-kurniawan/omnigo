@@ -1,0 +1,115 @@
+package dashboard
+
+import (
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+
+	"github.com/ac-kurniawan/omnigo/internal/config"
+	"github.com/ac-kurniawan/omnigo/internal/vault"
+)
+
+func TestAddProvider(t *testing.T) {
+	cfg := &config.Config{}
+	store := vault.NewMemoryStore(&vault.Vault{ProviderSecrets: map[string]vault.ProviderSecret{}})
+	mutate := func(fn func(*config.Config) error) error {
+		return fn(cfg)
+	}
+	s := newServer(func() *config.Config { return cfg }, store, mutate)
+
+	req := httptest.NewRequest("POST", "/providers", strings.NewReader("name=groq&type=openai&base_url=https://api.groq.com/openai/v1&api_key=gsk_123"))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("HX-Request", "true")
+	rr := httptest.NewRecorder()
+	s.routes().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rr.Code, rr.Body.String())
+	}
+	if len(cfg.Providers) != 1 || cfg.Providers[0].Name != "groq" {
+		t.Fatalf("providers = %+v", cfg.Providers)
+	}
+	if store.Get().ProviderSecrets["groq"].APIKey != "gsk_123" {
+		t.Fatalf("secret = %+v", store.Get().ProviderSecrets["groq"])
+	}
+	if !strings.Contains(rr.Body.String(), "groq") {
+		t.Fatalf("body missing groq: %s", rr.Body.String())
+	}
+}
+
+func TestAddProviderNonHtmxRedirects(t *testing.T) {
+	cfg := &config.Config{}
+	store := vault.NewMemoryStore(&vault.Vault{ProviderSecrets: map[string]vault.ProviderSecret{}})
+	mutate := func(fn func(*config.Config) error) error {
+		return fn(cfg)
+	}
+	s := newServer(func() *config.Config { return cfg }, store, mutate)
+
+	req := httptest.NewRequest("POST", "/providers", strings.NewReader("name=groq&type=openai&base_url=https://api.groq.com/openai/v1"))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rr := httptest.NewRecorder()
+	s.routes().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusSeeOther {
+		t.Fatalf("status = %d, want 303", rr.Code)
+	}
+	if loc := rr.Header().Get("Location"); loc != "/" {
+		t.Fatalf("location = %q, want /", loc)
+	}
+}
+
+func TestDeleteProvider(t *testing.T) {
+	cfg := &config.Config{
+		Providers: []config.Provider{{Name: "groq", Type: "openai", BaseURL: "https://api.groq.com"}},
+	}
+	store := vault.NewMemoryStore(&vault.Vault{
+		ProviderSecrets: map[string]vault.ProviderSecret{"groq": {APIKey: "gsk_123"}},
+	})
+	mutate := func(fn func(*config.Config) error) error {
+		return fn(cfg)
+	}
+	s := newServer(func() *config.Config { return cfg }, store, mutate)
+
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest("POST", "/providers/groq/delete", nil)
+	req.Header.Set("HX-Request", "true")
+	s.routes().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rr.Code, rr.Body.String())
+	}
+	if len(cfg.Providers) != 0 {
+		t.Fatalf("expected empty providers, got %+v", cfg.Providers)
+	}
+	if _, ok := store.Get().ProviderSecrets["groq"]; ok {
+		t.Fatalf("expected secret deleted from vault")
+	}
+}
+
+func TestSetProviderKey(t *testing.T) {
+	cfg := &config.Config{
+		Providers: []config.Provider{{Name: "groq", Type: "openai", BaseURL: "https://api.groq.com"}},
+	}
+	store := vault.NewMemoryStore(&vault.Vault{})
+	mutate := func(fn func(*config.Config) error) error {
+		return fn(cfg)
+	}
+	s := newServer(func() *config.Config { return cfg }, store, mutate)
+
+	req := httptest.NewRequest("POST", "/providers/groq/key", strings.NewReader("api_key=new_secret_key"))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("HX-Request", "true")
+	rr := httptest.NewRecorder()
+	s.routes().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rr.Code, rr.Body.String())
+	}
+	if store.Get().ProviderSecrets["groq"].APIKey != "new_secret_key" {
+		t.Fatalf("vault key = %q, want new_secret_key", store.Get().ProviderSecrets["groq"].APIKey)
+	}
+	if cfg.Providers[0].APIKey != "new_secret_key" {
+		t.Fatalf("config key = %q, want new_secret_key", cfg.Providers[0].APIKey)
+	}
+}

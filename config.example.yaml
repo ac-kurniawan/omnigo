@@ -1,0 +1,36 @@
+server:
+  host: 0.0.0.0
+  port: 8080
+
+providers:
+  # Antigravity provider (Google Gemini Code Assist)
+  - name: agy
+    type: antigravity
+    base_url: https://cloudcode-pa.googleapis.com
+    models:
+      - gemini-3.7-flash-medium
+      - gemini-3.7-flash-high
+      - gemini-3.7-flash-low
+      - gemini-3.1-pro-low
+      - gemini-3.1-flash-lite
+      - claude-sonnet-4-6
+      - claude-opus-4-6-thinking
+      - gpt-oss-120b-medium
+
+  # Standard OpenAI-compatible provider
+  # - name: openai-main
+  #   type: openai
+  #   base_url: https://api.openai.com/v1
+  #   api_key: sk-...
+  #   models:
+  #     - gpt-4o
+  #     - gpt-4o-mini
+
+combos:
+  - name: auto
+    strategy: priority # priority | fill-first
+    targets:
+      - provider: agy
+        model: gemini-3.7-flash-medium
+      # - provider: openai-main
+      #   model: gpt-4o

@@ -1,0 +1,10 @@
+/auth.yaml
+/.secret.key
+/omnigo
+/aigo
+/OmniRoute/
+/graft/
+/tmp/
+/build-errors.log
+docs/
+config.yaml

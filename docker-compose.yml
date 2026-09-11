@@ -1,0 +1,14 @@
+services:
+  omnigo:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: ghcr.io/ac-kurniawan/omnigo:latest
+    container_name: omnigo
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    volumes:
+      - ~/.config/omnigo:/home/omnigo/.config/omnigo
+    environment:
+      - OMNIGO_SECRET_KEY=${OMNIGO_SECRET_KEY:-}

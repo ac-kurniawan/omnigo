@@ -1,0 +1,792 @@
+<!doctype html>
+<html lang="en" data-theme="night">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>OmniGo — AI Gateway</title>
+  <link href="https://cdn.jsdelivr.net/npm/daisyui@4/dist/full.min.css" rel="stylesheet" type="text/css" />
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="/static/htmx.min.js"></script>
+  <script>
+    const savedTheme = localStorage.getItem('omnigo-theme') || 'night';
+    document.documentElement.setAttribute('data-theme', savedTheme);
+    function changeTheme(theme) {
+      document.documentElement.setAttribute('data-theme', theme);
+      localStorage.setItem('omnigo-theme', theme);
+    }
+    function showTab(id, btn) {
+      document.querySelectorAll('.tab-panel').forEach(p => p.classList.add('hidden'));
+      const target = document.getElementById('panel-' + id);
+      if (target) target.classList.remove('hidden');
+      document.querySelectorAll('.tab-nav-btn').forEach(b => {
+        b.classList.remove('tab-active', 'bg-base-100', 'shadow-sm', 'text-primary');
+      });
+      btn.classList.add('tab-active', 'bg-base-100', 'shadow-sm', 'text-primary');
+    }
+  </script>
+  <style>
+    .select-all { user-select: all; }
+  </style>
+</head>
+<body class="bg-base-200/50 min-h-screen text-base-content antialiased flex flex-col justify-between">
+  <div>
+    <!-- Top Frosted Navbar -->
+    <header class="navbar bg-base-100/90 backdrop-blur border-b border-base-content/10 sticky top-0 z-40 px-4 lg:px-8">
+      <div class="flex-1 items-center gap-3">
+        <div class="size-10 bg-gradient-to-tr from-primary via-indigo-500 to-accent rounded-2xl text-primary-content shadow-md flex items-center justify-center font-black tracking-wider text-lg">
+          AI
+        </div>
+        <div>
+          <div class="flex items-center gap-2">
+            <span class="text-xl font-black tracking-tight bg-gradient-to-r from-primary via-accent to-secondary bg-clip-text text-transparent">OmniGo</span>
+            <span class="badge badge-primary badge-outline badge-xs font-mono font-semibold px-2 py-0.5">v0.1 MVP</span>
+          </div>
+          <div class="text-[10px] text-base-content/60 font-semibold tracking-wider uppercase">Lightweight AI Gateway in Go</div>
+        </div>
+      </div>
+      <div class="flex-none gap-3">
+        <div class="hidden sm:flex items-center gap-2 text-xs font-mono bg-base-200/80 px-3 py-1.5 rounded-lg border border-base-content/10">
+          <span class="size-2 rounded-full bg-success animate-pulse"></span>
+          <span class="text-base-content/70">Gateway Active :8080</span>
+        </div>
+
+        <!-- Theme Selector Dropdown -->
+        <div class="dropdown dropdown-end">
+          <div tabindex="0" role="button" class="btn btn-ghost btn-sm gap-1.5 font-normal border border-base-content/10 rounded-lg px-3">
+            <svg xmlns="http://www.w3.org/2000/svg" class="size-4 text-base-content/70" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 21a4 4 0 01-4-4V5a2 2 0 012-2h4a2 2 0 012 2v12a4 4 0 01-4 4zm0 0h12a2 2 0 002-2v-4a2 2 0 00-2-2h-2.343M11 7.343l1.657-1.657a2 2 0 012.828 0l2.829 2.829a2 2 0 010 2.828l-8.486 8.485M7 17h.01" /></svg>
+            <span class="text-xs">Theme</span>
+          </div>
+          <ul tabindex="0" class="dropdown-content menu bg-base-100 rounded-box z-50 w-44 p-2 shadow-2xl border border-base-content/10 text-xs">
+            <li><button type="button" onclick="changeTheme('night')">🌙 Night</button></li>
+            <li><button type="button" onclick="changeTheme('dim')">🌑 Dim</button></li>
+            <li><button type="button" onclick="changeTheme('dark')">🖤 Dark</button></li>
+            <li><button type="button" onclick="changeTheme('synthwave')">🌆 Synthwave</button></li>
+            <li><button type="button" onclick="changeTheme('dracula')">🧛 Dracula</button></li>
+            <li><button type="button" onclick="changeTheme('nord')">❄️ Nord</button></li>
+            <li><button type="button" onclick="changeTheme('corporate')">🏢 Corporate</button></li>
+            <li><button type="button" onclick="changeTheme('emerald')">🌲 Emerald</button></li>
+            <li><button type="button" onclick="changeTheme('cupcake')">🧁 Cupcake</button></li>
+          </ul>
+        </div>
+      </div>
+    </header>
+
+    <main class="max-w-6xl mx-auto px-4 py-8 space-y-8">
+      <!-- Live Toast / Notification Container -->
+      <div id="result" class="transition-all duration-300"></div>
+
+      <!-- Quick Metrics Bar -->
+      <div class="grid grid-cols-2 lg:grid-cols-4 gap-4">
+        <div class="card bg-base-100 border border-base-content/10 shadow-sm p-5 hover:border-primary/40 transition-colors">
+          <div class="text-xs font-semibold text-base-content/60 uppercase tracking-wider">Providers</div>
+          <div class="text-3xl font-extrabold mt-1 text-primary">{{len .Providers}}</div>
+          <div class="text-[11px] text-base-content/50 mt-1">OpenAI &amp; Antigravity</div>
+        </div>
+        <div class="card bg-base-100 border border-base-content/10 shadow-sm p-5 hover:border-accent/40 transition-colors">
+          <div class="text-xs font-semibold text-base-content/60 uppercase tracking-wider">Combos</div>
+          <div class="text-3xl font-extrabold mt-1 text-accent">{{len .Combos}}</div>
+          <div class="text-[11px] text-base-content/50 mt-1">Fallback routing chains</div>
+        </div>
+        <div class="card bg-base-100 border border-base-content/10 shadow-sm p-5 hover:border-secondary/40 transition-colors">
+          <div class="text-xs font-semibold text-base-content/60 uppercase tracking-wider">Client Keys</div>
+          <div class="text-3xl font-extrabold mt-1 text-secondary">{{len .Keys}}</div>
+          <div class="text-[11px] text-base-content/50 mt-1">Active gateway credentials</div>
+        </div>
+        <div class="card bg-base-100 border border-base-content/10 shadow-sm p-5 hover:border-info/40 transition-colors">
+          <div class="text-xs font-semibold text-base-content/60 uppercase tracking-wider">Gateway Endpoint</div>
+          <div class="text-xs font-mono font-bold mt-2 truncate text-base-content bg-base-200/80 p-2.5 rounded-xl flex items-center justify-between gap-2 border border-base-content/10">
+            <span class="truncate">http://localhost:8080/v1</span>
+            <button type="button" class="btn btn-ghost btn-xs shrink-0 px-2 text-[10px]" onclick="navigator.clipboard.writeText('http://localhost:8080/v1'); this.innerText='✓'">Copy</button>
+          </div>
+          <div class="text-[11px] text-base-content/50 mt-1">OpenAI-compatible wire format</div>
+        </div>
+      </div>
+
+      <!-- Main Navigation Tabs -->
+      <div class="tabs tabs-boxed bg-base-300/40 p-1.5 rounded-2xl w-fit flex-wrap gap-1 border border-base-content/5">
+        <button type="button" class="tab tab-nav-btn tab-active bg-base-100 shadow-sm text-primary font-bold text-sm px-6 py-2.5 h-auto rounded-xl transition-all gap-2" onclick="showTab('providers', this)">
+          <svg xmlns="http://www.w3.org/2000/svg" class="size-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z" /></svg>
+          Providers
+        </button>
+        <button type="button" class="tab tab-nav-btn font-semibold text-sm px-6 py-2.5 h-auto rounded-xl transition-all gap-2 text-base-content/70 hover:text-base-content" onclick="showTab('combos', this)">
+          <svg xmlns="http://www.w3.org/2000/svg" class="size-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4" /></svg>
+          Combos
+        </button>
+        <button type="button" class="tab tab-nav-btn font-semibold text-sm px-6 py-2.5 h-auto rounded-xl transition-all gap-2 text-base-content/70 hover:text-base-content" onclick="showTab('keys', this)">
+          <svg xmlns="http://www.w3.org/2000/svg" class="size-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 7a2 2 0 012 2m4 0a6 6 0 01-7.743 5.743L11 17H9v2H7v2H4a1 1 0 01-1-1v-2.586a1 1 0 01.293-.707l5.964-5.964A6 6 0 1121 9z" /></svg>
+          Client Keys
+        </button>
+        <button type="button" class="tab tab-nav-btn font-semibold text-sm px-6 py-2.5 h-auto rounded-xl transition-all gap-2 text-base-content/70 hover:text-base-content" onclick="showTab('quickstart', this)">
+          <svg xmlns="http://www.w3.org/2000/svg" class="size-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4" /></svg>
+          Playground &amp; Docs
+        </button>
+      </div>
+
+      <!-- Tab Panels -->
+
+      <!-- Panel 1: Providers -->
+      <div id="panel-providers" class="tab-panel space-y-6">
+        <div class="card bg-base-100 border border-base-content/10 rounded-2xl shadow-sm p-6 space-y-6">
+          <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-base-content/10 pb-4">
+            <div>
+              <h2 class="text-xl font-bold">Upstream AI Providers</h2>
+              <p class="text-xs text-base-content/60 mt-1">Manage direct AI provider adapters, credentials, and live model synchronizations.</p>
+            </div>
+          </div>
+
+          <!-- Add Provider Collapsible Card -->
+          <div class="collapse collapse-arrow bg-base-200/60 border border-base-content/10 rounded-xl">
+            <input type="checkbox" />
+            <div class="collapse-title font-semibold text-sm flex items-center gap-2 text-primary">
+              <svg xmlns="http://www.w3.org/2000/svg" class="size-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/></svg>
+              Add New Upstream Provider
+            </div>
+            <div class="collapse-content pt-2">
+              <form action="/providers" method="POST" hx-post="/providers" hx-target="#providers" hx-swap="innerHTML" class="space-y-4">
+                <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+                  <div>
+                    <label class="label pb-1.5 pt-0 text-xs font-semibold text-base-content/70">Provider Identifier</label>
+                    <input type="text" name="name" placeholder="e.g. openai-main, groq, agy" class="input input-bordered input-sm w-full font-mono text-xs px-3 py-2 h-auto min-h-[2.25rem] rounded-lg" required>
+                  </div>
+                  <div>
+                    <label class="label pb-1.5 pt-0 text-xs font-semibold text-base-content/70">Adapter Type</label>
+                    <select name="type" class="select select-bordered select-sm w-full font-mono text-xs px-3 h-auto min-h-[2.25rem] rounded-lg" required>
+                      <option value="openai">openai (Bearer API Key)</option>
+                      <option value="antigravity">antigravity (Google OAuth2 SSO)</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label class="label pb-1.5 pt-0 text-xs font-semibold text-base-content/70">Base URL (optional)</label>
+                    <input type="text" name="base_url" placeholder="https://api.openai.com/v1" class="input input-bordered input-sm w-full font-mono text-xs px-3 py-2 h-auto min-h-[2.25rem] rounded-lg">
+                  </div>
+                  <div>
+                    <label class="label pb-1.5 pt-0 text-xs font-semibold text-base-content/70">API Key (optional)</label>
+                    <input type="password" name="api_key" placeholder="sk-..." class="input input-bordered input-sm w-full font-mono text-xs px-3 py-2 h-auto min-h-[2.25rem] rounded-lg">
+                  </div>
+                </div>
+                <div class="flex justify-end gap-2 pt-2">
+                  <button type="submit" class="btn btn-primary btn-sm px-5 h-auto min-h-[2.25rem] rounded-lg gap-1.5 shadow-sm font-medium">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="size-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>
+                    Save Provider
+                  </button>
+                </div>
+              </form>
+            </div>
+          </div>
+
+          <!-- Providers Table -->
+          <div id="providers">{{template "providers" .}}</div>
+        </div>
+      </div>
+
+      <!-- Panel 2: Combos -->
+      <div id="panel-combos" class="tab-panel hidden space-y-6">
+        <div class="card bg-base-100 border border-base-content/10 rounded-2xl shadow-sm p-6 space-y-6">
+          <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-base-content/10 pb-4">
+            <div>
+              <h2 class="text-xl font-bold">Model Combos &amp; Smart Routing</h2>
+              <p class="text-xs text-base-content/60 mt-1">Route single model identifiers across priority or fill-first fallback chains.</p>
+            </div>
+          </div>
+
+          <!-- Add Combo Collapsible Card -->
+          <div class="collapse collapse-arrow bg-base-200/60 border border-base-content/10 rounded-xl">
+            <input type="checkbox" />
+            <div class="collapse-title font-semibold text-sm flex items-center gap-2 text-primary">
+              <svg xmlns="http://www.w3.org/2000/svg" class="size-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/></svg>
+              Create New Routing Combo
+            </div>
+            <div class="collapse-content pt-2">
+              <form action="/combos" method="POST" hx-post="/combos" hx-target="#combos" hx-swap="innerHTML" class="space-y-4">
+                <div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                  <div>
+                    <label class="label pb-1.5 pt-0 text-xs font-semibold text-base-content/70">Combo Name</label>
+                    <input type="text" name="name" placeholder="e.g. auto, coding, cheap" class="input input-bordered input-sm w-full font-mono text-xs px-3 py-2 h-auto min-h-[2.25rem] rounded-lg" required>
+                  </div>
+                  <div>
+                    <label class="label pb-1.5 pt-0 text-xs font-semibold text-base-content/70">Routing Strategy</label>
+                    <select name="strategy" class="select select-bordered select-sm w-full font-mono text-xs px-3 h-auto min-h-[2.25rem] rounded-lg" required>
+                      <option value="priority">priority (Try targets first to last)</option>
+                      <option value="fill-first">fill-first (Exhaust primary quota first)</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label class="label pb-1.5 pt-0 text-xs font-semibold text-base-content/70">Target Chain (provider/model)</label>
+                    <input type="text" name="targets" placeholder="agy/gemini-3.7-flash, openai/gpt-4o" class="input input-bordered input-sm w-full font-mono text-xs px-3 py-2 h-auto min-h-[2.25rem] rounded-lg" required>
+                  </div>
+                </div>
+                <div class="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 pt-2">
+                  <span class="text-xs text-base-content/50">Comma-separated target list: <code>&lt;provider&gt;/&lt;model&gt;</code> in fallback order.</span>
+                  <button type="submit" class="btn btn-primary btn-sm px-5 h-auto min-h-[2.25rem] rounded-lg gap-1.5 shadow-sm font-medium">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="size-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>
+                    Create Combo
+                  </button>
+                </div>
+              </form>
+            </div>
+          </div>
+
+          <!-- Combos Table -->
+          <div id="combos">{{template "combos" .}}</div>
+        </div>
+      </div>
+
+      <!-- Panel 3: API Keys -->
+      <div id="panel-keys" class="tab-panel hidden space-y-6">
+        <div class="card bg-base-100 border border-base-content/10 rounded-2xl shadow-sm p-6 space-y-6">
+          <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-base-content/10 pb-4">
+            <div>
+              <h2 class="text-xl font-bold">Gateway Client API Keys</h2>
+              <p class="text-xs text-base-content/60 mt-1">Issue encrypted Bearer credentials to access <code>/v1/chat/completions</code> and <code>/v1/models</code>.</p>
+            </div>
+          </div>
+
+          <!-- Generate Key Form -->
+          <div class="bg-base-200/60 border border-base-content/10 p-5 rounded-2xl">
+            <form action="/keys" method="POST" hx-post="/keys" hx-target="#keys" hx-swap="innerHTML" class="flex flex-col sm:flex-row items-stretch sm:items-center gap-3">
+              <input type="text" name="name" placeholder="Key description / application name (e.g. cursor-dev, aider-cli)" class="input input-bordered input-sm flex-1 font-mono text-xs px-3.5 py-2.5 h-auto min-h-[2.5rem] rounded-xl" required>
+              <button type="submit" class="btn btn-primary btn-sm px-5 h-auto min-h-[2.5rem] rounded-xl gap-2 shadow-sm font-medium">
+                <svg xmlns="http://www.w3.org/2000/svg" class="size-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 7a2 2 0 012 2m4 0a6 6 0 01-7.743 5.743L11 17H9v2H7v2H4a1 1 0 01-1-1v-2.586a1 1 0 01.293-.707l5.964-5.964A6 6 0 1121 9z"/></svg>
+                Generate Key
+              </button>
+            </form>
+          </div>
+
+          <!-- Keys Table -->
+          <div id="keys">{{template "keys" .}}</div>
+        </div>
+      </div>
+
+      <!-- Panel 4: Quickstart & Docs -->
+      <div id="panel-quickstart" class="tab-panel hidden space-y-6">
+        <div class="card bg-base-100 border border-base-content/10 rounded-2xl shadow-sm p-6 space-y-6">
+          <div>
+            <h2 class="text-xl font-bold">API Quickstart &amp; Code Examples</h2>
+            <p class="text-xs text-base-content/60 mt-1">OmniGo exposes standard OpenAI endpoints. Point any coding tool (Claude Code, Cursor, Cline, OpenCode, Aider) directly to this gateway.</p>
+          </div>
+
+          <div class="space-y-6">
+            <div>
+              <div class="text-xs font-bold uppercase tracking-wider text-primary mb-2 flex items-center gap-2">
+                <span class="badge badge-primary badge-xs px-2 py-0.5 font-bold">1</span>
+                cURL: Chat Completions (Combo or Direct Model)
+              </div>
+              <div class="mockup-code text-xs shadow-md border border-base-content/10 p-4">
+                <pre data-prefix="$"><code>curl http://localhost:8080/v1/chat/completions \</code></pre>
+                <pre data-prefix=">"><code>  -H "Content-Type: application/json" \</code></pre>
+                <pre data-prefix=">"><code>  -H "Authorization: Bearer ak-&lt;your-key&gt;" \</code></pre>
+                <pre data-prefix=">"><code>  -d '{</code></pre>
+                <pre data-prefix=">"><code>    "model": "auto",</code></pre>
+                <pre data-prefix=">"><code>    "messages": [{"role": "user", "content": "Hello from OmniGo gateway!"}],</code></pre>
+                <pre data-prefix=">"><code>    "stream": true</code></pre>
+                <pre data-prefix=">"><code>  }'</code></pre>
+              </div>
+            </div>
+
+            <div>
+              <div class="text-xs font-bold uppercase tracking-wider text-primary mb-2 flex items-center gap-2">
+                <span class="badge badge-primary badge-xs px-2 py-0.5 font-bold">2</span>
+                cURL: List Aggregated Model Catalog
+              </div>
+              <div class="mockup-code text-xs shadow-md border border-base-content/10 p-4">
+                <pre data-prefix="$"><code>curl http://localhost:8080/v1/models \</code></pre>
+                <pre data-prefix=">"><code>  -H "Authorization: Bearer ak-&lt;your-key&gt;"</code></pre>
+              </div>
+            </div>
+
+            <div>
+              <div class="text-xs font-bold uppercase tracking-wider text-primary mb-2 flex items-center gap-2">
+                <span class="badge badge-primary badge-xs px-2 py-0.5 font-bold">3</span>
+                Python (openai SDK)
+              </div>
+              <div class="mockup-code text-xs shadow-md border border-base-content/10 p-4">
+                <pre data-prefix=">"><code>from openai import OpenAI</code></pre>
+                <pre data-prefix=">"><code>client = OpenAI(base_url="http://localhost:8080/v1", api_key="ak-...")</code></pre>
+                <pre data-prefix=">"><code>response = client.chat.completions.create(</code></pre>
+                <pre data-prefix=">"><code>    model="auto",  # or direct: "agy/gemini-3.7-flash"</code></pre>
+                <pre data-prefix=">"><code>    messages=[{"role": "user", "content": "Hello!"}],</code></pre>
+                <pre data-prefix=">"><code>)</code></pre>
+                <pre data-prefix=">"><code>print(response.choices[0].message.content)</code></pre>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </main>
+  </div>
+
+  <footer class="text-center py-6 text-xs text-base-content/40 border-t border-base-content/10 mt-12">
+    OmniGo &bull; Lightweight Modular AI Gateway in Go &bull; MIT License
+  </footer>
+
+  <script>
+    // Format JSON responses from /internal/test and /internal/refresh-models into DaisyUI alerts
+    document.body.addEventListener('htmx:afterRequest', function(evt) {
+      if (evt.detail.target && evt.detail.target.id === 'result') {
+        try {
+          const data = JSON.parse(evt.detail.xhr.responseText);
+          if (data.ok !== undefined) {
+            if (data.ok) {
+              evt.detail.target.innerHTML = `
+                <div class="alert alert-success shadow-lg flex items-center justify-between p-4 my-2 rounded-xl border border-success/30">
+                  <div class="flex items-center gap-2.5">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="size-5 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
+                    <span class="text-sm"><strong>Connection Successful!</strong> Roundtrip Latency: ${data.latency_ms}ms</span>
+                  </div>
+                  <button class="btn btn-ghost btn-xs text-base-content/70 hover:text-base-content" onclick="this.closest('.alert').remove()">✕</button>
+                </div>`;
+            } else {
+              evt.detail.target.innerHTML = `
+                <div class="alert alert-error shadow-lg flex items-center justify-between p-4 my-2 rounded-xl border border-error/30">
+                  <div class="flex items-center gap-2.5">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="size-5 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2m7-2a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
+                    <span class="text-sm"><strong>Connection Failed:</strong> ${data.error || 'Provider did not respond'} (${data.latency_ms}ms)</span>
+                  </div>
+                  <button class="btn btn-ghost btn-xs text-base-content/70 hover:text-base-content" onclick="this.closest('.alert').remove()">✕</button>
+                </div>`;
+            }
+          } else if (data.models !== undefined) {
+            const count = data.models.length;
+            evt.detail.target.innerHTML = `
+              <div class="alert alert-info shadow-lg flex items-center justify-between p-4 my-2 rounded-xl border border-info/30">
+                <div class="flex items-center gap-2.5">
+                  <svg xmlns="http://www.w3.org/2000/svg" class="size-5 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
+                  <span class="text-sm"><strong>Models Synced for ${data.provider}:</strong> Discovered and cached ${count} model${count === 1 ? '' : 's'}.</span>
+                </div>
+                <button class="btn btn-ghost btn-xs text-base-content/70 hover:text-base-content" onclick="this.closest('.alert').remove()">✕</button>
+              </div>`;
+          }
+        } catch (e) {}
+      }
+    });
+  </script>
+</body>
+</html>
+
+{{define "providers"}}
+<div class="overflow-x-auto">
+  <table class="table w-full">
+    <thead>
+      <tr class="text-base-content/70 text-xs uppercase tracking-wider border-b border-base-content/10">
+        <th class="py-3 px-4">Provider</th>
+        <th class="py-3 px-4">Adapter</th>
+        <th class="py-3 px-4">Cached Models</th>
+        <th class="py-3 px-4 text-right">Actions</th>
+      </tr>
+    </thead>
+    <tbody class="divide-y divide-base-content/5">
+      {{if not .Providers}}
+      <tr>
+        <td colspan="4" class="text-center py-12 text-base-content/40 italic">
+          No providers configured yet. Click "Add New Upstream Provider" above.
+        </td>
+      </tr>
+      {{end}}
+      {{range .Providers}}
+      {{$sec := index $.Secrets .Name}}
+      {{$hasKey := or (and $sec $sec.APIKey) .APIKey}}
+      <tr class="hover:bg-base-200/40 transition-colors">
+        <td class="font-mono text-base-content py-3.5 px-4">
+          <div class="flex items-center gap-3">
+            {{if eq .Type "antigravity"}}
+              {{if and $sec (or $sec.RefreshToken $sec.AccessToken)}}
+                <div class="tooltip tooltip-right inline-flex items-center" data-tip="Connected{{if $sec.ProjectID}} (Project: {{$sec.ProjectID}}){{end}}">
+                  <span class="size-2.5 rounded-full bg-success ring-4 ring-success/20 shrink-0"></span>
+                </div>
+              {{else}}
+                <div class="tooltip tooltip-right inline-flex items-center" data-tip="Not Connected — Click Connect Google">
+                  <span class="size-2.5 rounded-full bg-error ring-4 ring-error/20 shrink-0"></span>
+                </div>
+              {{end}}
+            {{else}}
+              {{if $hasKey}}
+                <div class="tooltip tooltip-right inline-flex items-center" data-tip="API Key Configured">
+                  <span class="size-2.5 rounded-full bg-success ring-4 ring-success/20 shrink-0"></span>
+                </div>
+              {{else}}
+                <div class="tooltip tooltip-right inline-flex items-center" data-tip="No API Key Set — Click Key to set">
+                  <span class="size-2.5 rounded-full bg-error ring-4 ring-error/20 shrink-0"></span>
+                </div>
+              {{end}}
+            {{end}}
+            <span class="font-bold text-sm tracking-tight">{{.Name}}</span>
+          </div>
+        </td>
+        <td class="py-3.5 px-4">
+          {{if eq .Type "antigravity"}}
+            <span class="px-2.5 py-1 text-xs font-mono font-medium rounded-lg bg-secondary/15 text-secondary border border-secondary/20 inline-flex items-center gap-1.5 leading-none">
+              <svg xmlns="http://www.w3.org/2000/svg" class="size-3" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/></svg>
+              antigravity
+            </span>
+          {{else}}
+            <span class="px-2.5 py-1 text-xs font-mono font-medium rounded-lg bg-info/15 text-info border border-info/20 inline-flex items-center gap-1.5 leading-none">
+              <svg xmlns="http://www.w3.org/2000/svg" class="size-3" viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="12" r="10"/></svg>
+              openai
+            </span>
+          {{end}}
+        </td>
+        <td class="py-3.5 px-4">
+          <div class="flex flex-wrap items-center gap-1.5 max-w-md">
+            {{if not .Models}}
+              <span class="text-xs text-base-content/40 italic">No models</span>
+            {{else if gt (len .Models) 3}}
+              {{range (slice .Models 0 3)}}
+                <span class="px-2.5 py-1 text-xs font-mono bg-base-200/80 text-base-content/90 rounded-md border border-base-content/10 whitespace-nowrap leading-none inline-flex items-center">{{.}}</span>
+              {{end}}
+              <button type="button" class="px-2.5 py-1 text-xs font-semibold rounded-md bg-primary/15 text-primary hover:bg-primary/25 border border-primary/25 transition-colors whitespace-nowrap leading-none cursor-pointer inline-flex items-center gap-1 shadow-2xs" onclick="document.getElementById('models-modal-{{.Name}}').showModal()" title="View all {{len .Models}} models">
+                see more ({{sub (len .Models) 3}})..
+              </button>
+            {{else}}
+              {{range .Models}}
+                <span class="px-2.5 py-1 text-xs font-mono bg-base-200/80 text-base-content/90 rounded-md border border-base-content/10 whitespace-nowrap leading-none inline-flex items-center">{{.}}</span>
+              {{end}}
+            {{end}}
+
+            {{if .DisabledModels}}
+              <span class="px-2 py-0.5 text-[11px] font-mono text-warning/80 bg-warning/10 rounded-md border border-warning/20 cursor-pointer" onclick="document.getElementById('models-modal-{{.Name}}').showModal()" title="{{len .DisabledModels}} model(s) disabled">
+                {{len .DisabledModels}} disabled
+              </span>
+            {{end}}
+
+            <button type="button" class="btn btn-ghost btn-xs text-base-content/50 hover:text-primary p-1 rounded-md" onclick="document.getElementById('models-modal-{{.Name}}').showModal()" title="Manage models (add/disable)">
+              <svg xmlns="http://www.w3.org/2000/svg" class="size-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/></svg>
+            </button>
+
+            <!-- Models Modal -->
+            <dialog id="models-modal-{{.Name}}" class="modal modal-bottom sm:modal-middle">
+              <div class="modal-box max-w-lg text-left border border-base-content/10 shadow-2xl p-6 rounded-2xl">
+                <div class="flex items-center justify-between border-b border-base-content/10 pb-3">
+                  <div>
+                    <h3 class="text-base font-bold flex items-center gap-2">
+                      <span class="font-mono text-primary">{{.Name}}</span>
+                      <span class="badge badge-ghost badge-sm px-2 py-0.5">{{len .Models}} active</span>
+                      {{if .DisabledModels}}
+                        <span class="badge badge-warning badge-outline badge-sm px-2 py-0.5">{{len .DisabledModels}} disabled</span>
+                      {{end}}
+                    </h3>
+                    <p class="text-xs text-base-content/60 mt-0.5">Manage cached models: add custom models or disable specific IDs</p>
+                  </div>
+                  <form method="dialog">
+                    <button class="btn btn-sm btn-circle btn-ghost">✕</button>
+                  </form>
+                </div>
+
+                <!-- Manual Add Model Form -->
+                <form action="/providers/{{.Name}}/models" method="POST" hx-post="/providers/{{.Name}}/models" hx-target="#providers" hx-swap="innerHTML" hx-on::after-request="document.getElementById('models-modal-{{.Name}}')?.showModal()" class="flex items-center gap-2 pt-4">
+                  <input type="text" name="model_id" placeholder="Add model ID (e.g. gpt-4.5-preview, claude-3-7-sonnet)" class="input input-bordered input-sm flex-1 font-mono text-xs px-3.5 py-2.5 h-auto min-h-[2.5rem] rounded-xl" required>
+                  <button type="submit" class="btn btn-sm btn-primary px-4 h-auto min-h-[2.5rem] rounded-xl font-medium gap-1.5 shadow-sm">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="size-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/></svg>
+                    Add Model
+                  </button>
+                </form>
+
+                <div class="py-4 max-h-80 overflow-y-auto space-y-4">
+                  <!-- Active Models -->
+                  <div>
+                    <div class="text-xs font-bold text-base-content/60 uppercase tracking-wider mb-2 flex items-center justify-between">
+                      <span>Active Models ({{len .Models}})</span>
+                    </div>
+                    {{if not .Models}}
+                      <div class="text-xs text-base-content/40 italic py-2">No active models. Add one above or click Refresh.</div>
+                    {{end}}
+                    <div class="space-y-1.5">
+                      {{$provName := .Name}}
+                      {{range .Models}}
+                      <div class="flex items-center justify-between p-2.5 rounded-xl bg-base-200/50 hover:bg-base-200/80 font-mono text-xs border border-base-content/5 transition-colors">
+                        <span class="font-semibold text-base-content">{{.}}</span>
+                        <div class="flex items-center gap-1.5">
+                          <button type="button" class="btn btn-ghost btn-xs text-base-content/60 hover:text-base-content px-2 rounded-lg" onclick="navigator.clipboard.writeText('{{.}}'); this.innerText='Copied!'">Copy ID</button>
+                          
+                          <form action="/providers/{{$provName}}/models/disable" method="POST" hx-post="/providers/{{$provName}}/models/disable" hx-target="#providers" hx-swap="innerHTML" hx-on::after-request="document.getElementById('models-modal-{{$provName}}')?.showModal()" class="inline">
+                            <input type="hidden" name="model_id" value="{{.}}">
+                            <button type="submit" class="btn btn-ghost btn-xs text-warning hover:bg-warning/15 px-2 rounded-lg" title="Disable this model (will not be routed)">Disable</button>
+                          </form>
+
+                          <form action="/providers/{{$provName}}/models/delete" method="POST" hx-post="/providers/{{$provName}}/models/delete" hx-target="#providers" hx-swap="innerHTML" hx-on::after-request="document.getElementById('models-modal-{{$provName}}')?.showModal()" class="inline">
+                            <input type="hidden" name="model_id" value="{{.}}">
+                            <button type="submit" class="btn btn-ghost btn-xs text-error hover:bg-error/15 px-2 rounded-lg" title="Delete model from list">✕</button>
+                          </form>
+                        </div>
+                      </div>
+                      {{end}}
+                    </div>
+                  </div>
+
+                  <!-- Disabled Models -->
+                  {{if .DisabledModels}}
+                  <div class="border-t border-base-content/10 pt-3">
+                    <div class="text-xs font-bold text-warning/80 uppercase tracking-wider mb-2 flex items-center justify-between">
+                      <span>Disabled Models ({{len .DisabledModels}})</span>
+                    </div>
+                    <div class="space-y-1.5">
+                      {{$provName := .Name}}
+                      {{range .DisabledModels}}
+                      <div class="flex items-center justify-between p-2.5 rounded-xl bg-base-200/20 hover:bg-base-200/40 font-mono text-xs border border-dashed border-base-content/15 transition-colors">
+                        <span class="font-medium text-base-content/50 line-through">{{.}}</span>
+                        <div class="flex items-center gap-1.5">
+                          <form action="/providers/{{$provName}}/models/enable" method="POST" hx-post="/providers/{{$provName}}/models/enable" hx-target="#providers" hx-swap="innerHTML" hx-on::after-request="document.getElementById('models-modal-{{$provName}}')?.showModal()" class="inline">
+                            <input type="hidden" name="model_id" value="{{.}}">
+                            <button type="submit" class="btn btn-ghost btn-xs text-success hover:bg-success/15 px-2.5 rounded-lg" title="Enable this model">Enable</button>
+                          </form>
+
+                          <form action="/providers/{{$provName}}/models/delete" method="POST" hx-post="/providers/{{$provName}}/models/delete" hx-target="#providers" hx-swap="innerHTML" hx-on::after-request="document.getElementById('models-modal-{{$provName}}')?.showModal()" class="inline">
+                            <input type="hidden" name="model_id" value="{{.}}">
+                            <button type="submit" class="btn btn-ghost btn-xs text-error hover:bg-error/15 px-2 rounded-lg" title="Delete model permanently">✕</button>
+                          </form>
+                        </div>
+                      </div>
+                      {{end}}
+                    </div>
+                  </div>
+                  {{end}}
+                </div>
+
+                <div class="modal-action border-t border-base-content/10 pt-3">
+                  <form method="dialog">
+                    <button class="btn btn-sm btn-ghost px-4 rounded-lg">Close</button>
+                  </form>
+                </div>
+              </div>
+              <form method="dialog" class="modal-backdrop"><button>close</button></form>
+            </dialog>
+          </div>
+        </td>
+        <td class="text-right py-3.5 px-4 whitespace-nowrap">
+          <div class="flex items-center justify-end gap-2">
+            {{if eq .Type "openai"}}
+              {{if $hasKey}}
+                <button type="button" class="btn btn-xs btn-outline btn-ghost border-base-content/20 hover:border-base-content/40 px-2.5 py-1 h-auto min-h-[1.75rem] rounded-lg gap-1 font-medium" onclick="document.getElementById('key-modal-{{.Name}}').showModal()" title="API Key Configured — Click to update">
+                  <svg xmlns="http://www.w3.org/2000/svg" class="size-3 text-success" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7" /></svg>
+                  Key
+                </button>
+              {{else}}
+                <button type="button" class="btn btn-xs btn-warning btn-outline px-2.5 py-1 h-auto min-h-[1.75rem] rounded-lg gap-1 font-medium animate-pulse hover:animate-none" onclick="document.getElementById('key-modal-{{.Name}}').showModal()" title="No API Key Configured — Click to set key">
+                  <svg xmlns="http://www.w3.org/2000/svg" class="size-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 7a2 2 0 012 2m4 0a6 6 0 01-7.743 5.743L11 17H9v2H7v2H4a1 1 0 01-1-1v-2.586a1 1 0 01.293-.707l5.964-5.964A6 6 0 1121 9z" /></svg>
+                  Set Key
+                </button>
+              {{end}}
+
+              <!-- OpenAI Key Modal -->
+              <dialog id="key-modal-{{.Name}}" class="modal modal-bottom sm:modal-middle">
+                <div class="modal-box max-w-md text-left border border-base-content/10 shadow-2xl p-6 rounded-2xl">
+                  <h3 class="text-base font-bold flex items-center gap-2 text-primary">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="size-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 7a2 2 0 012 2m4 0a6 6 0 01-7.743 5.743L11 17H9v2H7v2H4a1 1 0 01-1-1v-2.586a1 1 0 01.293-.707l5.964-5.964A6 6 0 1121 9z" /></svg>
+                    Configure API Key &bull; {{.Name}}
+                  </h3>
+                  <p class="text-xs text-base-content/60 mt-1">Set the Bearer API key for this provider. Saved encrypted in auth.yaml.</p>
+                  {{$currKey := ""}}
+                  {{if and $sec $sec.APIKey}}{{$currKey = $sec.APIKey}}{{else if .APIKey}}{{$currKey = .APIKey}}{{end}}
+                  {{if $currKey}}
+                    <div class="mt-3 p-3 rounded-xl bg-base-200/80 border border-base-content/10 text-xs">
+                      <span class="text-base-content/60">Current Status:</span>
+                      <code class="font-mono ml-1 text-success font-semibold">Configured (len: {{len $currKey}})</code>
+                    </div>
+                  {{end}}
+
+                  <form action="/providers/{{.Name}}/key" method="POST" hx-post="/providers/{{.Name}}/key" hx-target="#providers" hx-swap="innerHTML" onsubmit="document.getElementById('key-modal-{{.Name}}').close()" class="space-y-4 my-4">
+                    <div>
+                      <label class="label pb-1.5 pt-0 text-xs font-semibold text-base-content/70">Bearer API Key</label>
+                      <input type="password" name="api_key" placeholder="Enter API key (e.g. sk-...)" class="input input-bordered input-sm w-full font-mono text-xs px-3.5 py-2.5 h-auto min-h-[2.5rem] rounded-xl" required>
+                    </div>
+                    <div class="flex justify-end gap-2 pt-2">
+                      <button type="button" class="btn btn-sm btn-ghost px-4 rounded-xl" onclick="document.getElementById('key-modal-{{.Name}}').close()">Cancel</button>
+                      <button type="submit" class="btn btn-sm btn-primary px-5 rounded-xl font-medium shadow-sm">Save Key</button>
+                    </div>
+                  </form>
+                </div>
+                <form method="dialog" class="modal-backdrop"><button>close</button></form>
+              </dialog>
+            {{end}}
+
+            {{if eq .Type "antigravity"}}
+              <button type="button" class="btn btn-xs btn-success text-white px-3 py-1 h-auto min-h-[1.75rem] rounded-lg gap-1.5 shadow-sm font-medium" onclick="document.getElementById('modal-{{.Name}}').showModal()">
+                <svg xmlns="http://www.w3.org/2000/svg" class="size-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1" /></svg>
+                Connect Google
+              </button>
+
+              <!-- Antigravity OAuth Modal -->
+              <dialog id="modal-{{.Name}}" class="modal modal-bottom sm:modal-middle">
+                <div class="modal-box max-w-xl text-left border border-base-content/10 shadow-2xl p-6 rounded-2xl">
+                  <h3 class="text-lg font-bold flex items-center gap-2 text-primary">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="size-5" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/></svg>
+                    Connect Google Antigravity
+                  </h3>
+                  <p class="text-xs text-base-content/70 mt-1">Authenticate Antigravity via Google SSO using the standard desktop loopback callback flow.</p>
+
+                  <div class="space-y-4 my-5">
+                    <!-- Step 1 -->
+                    <div class="bg-base-200/70 p-4 rounded-xl border border-base-content/10">
+                      <div class="text-xs font-bold text-base-content/80 uppercase tracking-wider mb-1">Step 1: Authorize Google Account</div>
+                      <p class="text-xs text-base-content/60 mb-3">Click below to open Google SSO in a new tab. Log in and approve access.</p>
+                      <a href="/oauth/login/{{.Name}}" target="_blank" class="btn btn-sm btn-outline btn-success gap-2 w-full justify-between rounded-xl px-4 py-2 h-auto min-h-[2.25rem]">
+                        <span>1. Open Google Sign-In (New Tab)</span>
+                        <svg xmlns="http://www.w3.org/2000/svg" class="size-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" /></svg>
+                      </a>
+                    </div>
+
+                    <!-- Step 2 -->
+                    <div class="bg-base-200/70 p-4 rounded-xl border border-base-content/10">
+                      <div class="text-xs font-bold text-base-content/80 uppercase tracking-wider mb-1">Step 2: Paste Redirect Callback URL</div>
+                      <p class="text-xs text-base-content/60 mb-3">After approving, Google redirects your browser to <code class="text-primary text-xs px-1.5 py-0.5 bg-base-300/60 rounded">http://127.0.0.1:20128/callback?...</code> (even if your browser says "Unable to connect", that's normal!). Copy that full address from your browser's address bar and paste it below:</p>
+                      
+                      <form action="/oauth/{{.Name}}/paste-callback" method="POST" hx-post="/oauth/{{.Name}}/paste-callback" hx-target="#result" hx-swap="innerHTML" hx-on::after-request="document.getElementById('modal-{{.Name}}').close(); htmx.ajax('GET', '/providers', {target:'#providers', swap:'innerHTML'})" class="space-y-3">
+                        <textarea name="callback" rows="3" placeholder="http://127.0.0.1:20128/callback?state=...&code=4/0ATs..." class="textarea textarea-bordered textarea-sm w-full font-mono text-xs p-3 rounded-xl" required></textarea>
+                        <div class="flex justify-end gap-2">
+                          <button type="submit" class="btn btn-sm btn-primary px-5 h-auto min-h-[2.25rem] rounded-xl gap-1.5 shadow-sm font-medium">
+                            <svg xmlns="http://www.w3.org/2000/svg" class="size-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7" /></svg>
+                            Authenticate &amp; Link Account
+                          </button>
+                        </div>
+                      </form>
+                    </div>
+                  </div>
+
+                  <div class="modal-action border-t border-base-content/10 pt-3">
+                    <form method="dialog">
+                      <button class="btn btn-sm btn-ghost px-4 rounded-xl">Cancel</button>
+                    </form>
+                  </div>
+                </div>
+                <form method="dialog" class="modal-backdrop"><button>close</button></form>
+              </dialog>
+            {{end}}
+
+            <button hx-post="/internal/test/{{.Name}}" hx-target="#result" hx-swap="innerHTML" class="btn btn-xs btn-outline btn-info px-2.5 py-1 h-auto min-h-[1.75rem] rounded-lg gap-1 font-medium" title="Test Connection">
+              <svg xmlns="http://www.w3.org/2000/svg" class="size-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z" /></svg>
+              Test
+            </button>
+            <button hx-post="/internal/refresh-models/{{.Name}}" hx-target="#result" hx-swap="innerHTML" hx-on::after-request="htmx.ajax('GET', '/providers', {target:'#providers', swap:'innerHTML'})" class="btn btn-xs btn-outline btn-warning px-2.5 py-1 h-auto min-h-[1.75rem] rounded-lg gap-1 font-medium" title="Sync live model catalog">
+              <svg xmlns="http://www.w3.org/2000/svg" class="size-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" /></svg>
+              Refresh
+            </button>
+            <button hx-post="/providers/{{.Name}}/delete" hx-target="#providers" hx-swap="innerHTML" hx-confirm="Remove provider {{.Name}}?" class="btn btn-xs btn-outline btn-error px-2.5 py-1 h-auto min-h-[1.75rem] rounded-lg gap-1 font-medium" title="Delete Provider">
+              <svg xmlns="http://www.w3.org/2000/svg" class="size-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>
+              Delete
+            </button>
+          </div>
+        </td>
+      </tr>
+      {{end}}
+    </tbody>
+  </table>
+</div>
+{{end}}
+
+{{define "combos"}}
+<div class="overflow-x-auto">
+  <table class="table w-full">
+    <thead>
+      <tr class="text-base-content/70 text-xs uppercase tracking-wider border-b border-base-content/10">
+        <th class="py-3 px-4">Combo Name</th>
+        <th class="py-3 px-4">Routing Strategy</th>
+        <th class="py-3 px-4">Routing Target Chain</th>
+        <th class="py-3 px-4 text-right">Actions</th>
+      </tr>
+    </thead>
+    <tbody class="divide-y divide-base-content/5">
+      {{if not .Combos}}
+      <tr>
+        <td colspan="4" class="text-center py-12 text-base-content/40 italic">
+          No combos configured yet. Create one above to chain fallback models.
+        </td>
+      </tr>
+      {{end}}
+      {{range .Combos}}
+      <tr class="hover:bg-base-200/40 transition-colors">
+        <td class="font-bold font-mono text-primary py-3.5 px-4 text-sm">{{.Name}}</td>
+        <td class="py-3.5 px-4">
+          {{if eq .Strategy "priority"}}
+            <span class="px-2.5 py-1 text-xs font-mono font-semibold rounded-lg bg-primary/10 text-primary border border-primary/20 inline-flex items-center leading-none">priority</span>
+          {{else if eq .Strategy "fill-first"}}
+            <span class="px-2.5 py-1 text-xs font-mono font-semibold rounded-lg bg-secondary/10 text-secondary border border-secondary/20 inline-flex items-center leading-none">fill-first</span>
+          {{else}}
+            <span class="px-2.5 py-1 text-xs font-mono font-semibold rounded-lg bg-base-200 border border-base-content/10 inline-flex items-center leading-none">{{.Strategy}}</span>
+          {{end}}
+        </td>
+        <td class="py-3.5 px-4">
+          <div class="flex flex-wrap items-center gap-2">
+            {{range $i, $t := .Targets}}
+              {{if gt $i 0}}
+                <span class="text-base-content/40 text-xs font-bold">➔</span>
+              {{end}}
+              <span class="px-2.5 py-1 rounded-lg text-xs font-mono bg-base-200/80 border border-base-content/10 inline-flex items-center gap-1 leading-none shadow-sm">
+                <span class="text-primary font-bold">{{$t.Provider}}</span><span class="text-base-content/40">/</span><span>{{$t.Model}}</span>
+              </span>
+            {{end}}
+          </div>
+        </td>
+        <td class="text-right py-3.5 px-4 whitespace-nowrap">
+          <button hx-post="/combos/{{.Name}}/delete" hx-target="#combos" hx-swap="innerHTML" hx-confirm="Remove combo {{.Name}}?" class="btn btn-xs btn-outline btn-error px-2.5 py-1 h-auto min-h-[1.75rem] rounded-lg gap-1 font-medium">
+            <svg xmlns="http://www.w3.org/2000/svg" class="size-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>
+            Delete
+          </button>
+        </td>
+      </tr>
+      {{end}}
+    </tbody>
+  </table>
+</div>
+{{end}}
+
+{{define "keys"}}
+{{if .NewKey}}
+<div class="alert alert-success shadow-xl mb-6 flex items-center justify-between p-4 rounded-2xl border border-success/30">
+  <div class="flex items-center gap-3">
+    <svg xmlns="http://www.w3.org/2000/svg" class="size-6 shrink-0 text-success-content" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
+    <div>
+      <div class="font-bold text-success-content text-sm">Gateway API Key Generated</div>
+      <div class="text-xs text-success-content/80 mt-0.5">Copy this key now. It is encrypted in auth.yaml and cannot be recovered if lost:</div>
+      <div class="mt-2 font-mono text-xs bg-base-100/40 text-success-content px-3 py-1.5 rounded-lg border border-success-content/30 select-all inline-block">{{.NewKey}}</div>
+    </div>
+  </div>
+  <button type="button" class="btn btn-sm btn-ghost text-success-content px-3 rounded-lg" onclick="navigator.clipboard.writeText('{{.NewKey}}'); this.innerText='Copied!'">Copy</button>
+</div>
+{{end}}
+
+<div class="overflow-x-auto">
+  <table class="table w-full">
+    <thead>
+      <tr class="text-base-content/70 text-xs uppercase tracking-wider border-b border-base-content/10">
+        <th class="py-3 px-4">Key Name</th>
+        <th class="py-3 px-4">Key Prefix</th>
+        <th class="py-3 px-4">Issued</th>
+        <th class="py-3 px-4">Status</th>
+        <th class="py-3 px-4 text-right">Actions</th>
+      </tr>
+    </thead>
+    <tbody class="divide-y divide-base-content/5">
+      {{if not .Keys}}
+      <tr>
+        <td colspan="5" class="text-center py-12 text-base-content/40 italic">
+          No client keys issued yet. Generate one above to authenticate with /v1 endpoints.
+        </td>
+      </tr>
+      {{end}}
+      {{range .Keys}}
+      <tr class="hover:bg-base-200/40 transition-colors">
+        <td class="font-bold text-base-content py-3.5 px-4 text-sm">{{if .Name}}{{.Name}}{{else}}<span class="text-base-content/40 italic">unnamed</span>{{end}}</td>
+        <td class="py-3.5 px-4"><code class="text-primary font-mono text-xs bg-base-200/80 px-2.5 py-1 rounded-md border border-base-content/10">{{.Prefix}}…</code></td>
+        <td class="text-xs text-base-content/70 font-mono py-3.5 px-4">{{.CreatedAt.Format "2006-01-02 15:04"}}</td>
+        <td class="py-3.5 px-4">
+          {{if .Active}}
+            <span class="badge badge-success badge-sm font-mono px-2.5 py-1">active</span>
+          {{else}}
+            <span class="badge badge-ghost badge-sm opacity-40 font-mono px-2.5 py-1">revoked</span>
+          {{end}}
+        </td>
+        <td class="text-right py-3.5 px-4 whitespace-nowrap">
+          {{if .Active}}
+            <button hx-post="/keys/{{.ID}}/revoke" hx-target="#keys" hx-swap="innerHTML" hx-confirm="Revoke key {{.Prefix}}…?" class="btn btn-xs btn-outline btn-error px-2.5 py-1 h-auto min-h-[1.75rem] rounded-lg gap-1 font-medium">
+              <svg xmlns="http://www.w3.org/2000/svg" class="size-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M18.364 18.364A9 9 0 005.636 5.636m12.728 12.728A9 9 0 015.636 5.636m12.728 12.728L5.636 5.636" /></svg>
+              Revoke
+            </button>
+          {{else}}
+            <span class="text-xs text-base-content/40 italic">—</span>
+          {{end}}
+        </td>
+      </tr>
+      {{end}}
+    </tbody>
+  </table>
+</div>
+{{end}}

@@ -1,0 +1,115 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  packages: write
+
+jobs:
+  release-binaries:
+    name: Build & Release Binaries
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: 'go.mod'
+          cache: true
+
+      - name: Build and package binaries
+        run: |
+          VERSION="${GITHUB_REF_NAME:-v0.0.0-dev}"
+          mkdir -p dist
+
+          TARGETS=(
+            "linux/amd64/omnigo"
+            "linux/arm64/omnigo"
+            "darwin/amd64/omnigo"
+            "darwin/arm64/omnigo"
+            "windows/amd64/omnigo.exe"
+            "windows/arm64/omnigo.exe"
+          )
+
+          for TARGET in "${TARGETS[@]}"; do
+            OS=$(echo "$TARGET" | cut -d'/' -f1)
+            ARCH=$(echo "$TARGET" | cut -d'/' -f2)
+            BIN_NAME=$(echo "$TARGET" | cut -d'/' -f3)
+
+            OUTPUT_DIR="tmp_build/${OS}_${ARCH}"
+            mkdir -p "$OUTPUT_DIR"
+
+            echo "Building for ${OS}/${ARCH}..."
+            CGO_ENABLED=0 GOOS=$OS GOARCH=$ARCH go build \
+              -ldflags="-s -w -X main.version=${VERSION}" \
+              -o "${OUTPUT_DIR}/${BIN_NAME}" .
+
+            # Copy reference config and docs into archive
+            cp config.example.yaml README.md LICENSE "${OUTPUT_DIR}/" 2>/dev/null || cp config.example.yaml README.md "${OUTPUT_DIR}/"
+
+            ARCHIVE_NAME="omnigo_${VERSION}_${OS}_${ARCH}"
+            if [ "$OS" = "windows" ]; then
+              (cd "$OUTPUT_DIR" && zip -q "../../dist/${ARCHIVE_NAME}.zip" *)
+            else
+              tar -czf "dist/${ARCHIVE_NAME}.tar.gz" -C "$OUTPUT_DIR" .
+            fi
+          done
+
+          # Generate checksums
+          cd dist
+          sha256sum * > checksums.txt
+          cat checksums.txt
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true
+
+  release-docker:
+    name: Build & Push Docker Image
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract Docker metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: Build and push multi-arch Docker image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            VERSION=${{ github.ref_name }}
