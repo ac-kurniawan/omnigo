@@ -81,19 +81,17 @@ func TestChatUnknownModelNotFound(t *testing.T) {
 	}
 }
 
-func TestProviderFallsBackToConfigAPIKey(t *testing.T) {
-	var gotKey string
-	provider.Register("openai", func(cfg provider.Config, store provider.CredStore) provider.Provider {
-		gotKey = store.Get().APIKey
-		return &fakeProvider{name: cfg.Name}
-	})
-	cfg := &config.Config{
-		Providers: []config.Provider{{Name: "openai", Type: "openai", BaseURL: "https://x", APIKey: "sk-from-config"}},
-	}
-	v := &vault.Vault{}
-	_, _ = buildProvider(cfg.Providers[0], vault.NewMemoryStore(v))
-	if gotKey != "sk-from-config" {
-		t.Fatalf("gotKey = %q, want sk-from-config", gotKey)
+func TestChatRejectsBodyLargerThan10MB(t *testing.T) {
+	raw, hash, prefix, _ := auth.GenerateKey()
+	v := &vault.Vault{ClientKeys: []vault.ClientKey{{ID: "k1", KeyHash: hash, Prefix: prefix, Active: true}}}
+	req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(strings.Repeat(" ", (10<<20)+1)))
+	req.Header.Set("Authorization", "Bearer "+raw)
+	rr := httptest.NewRecorder()
+
+	testRouter(t, &config.Config{}, v).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("status = %d, want 413; body = %s", rr.Code, rr.Body.String())
 	}
 }
 

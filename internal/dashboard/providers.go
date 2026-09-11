@@ -23,7 +23,6 @@ func (s *Server) createProvider(w http.ResponseWriter, r *http.Request) {
 		Name:    name,
 		Type:    typ,
 		BaseURL: baseURL,
-		APIKey:  apiKey,
 	}
 
 	if s.mutate != nil {
@@ -43,7 +42,7 @@ func (s *Server) createProvider(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if apiKey != "" {
-		_ = s.store.Update(func(v *vault.Vault) error {
+		if err := s.store.Update(func(v *vault.Vault) error {
 			if v.ProviderSecrets == nil {
 				v.ProviderSecrets = make(map[string]vault.ProviderSecret)
 			}
@@ -51,7 +50,10 @@ func (s *Server) createProvider(w http.ResponseWriter, r *http.Request) {
 			sec.APIKey = apiKey
 			v.ProviderSecrets[name] = sec
 			return nil
-		})
+		}); err != nil {
+			http.Error(w, "failed to save provider key", http.StatusInternalServerError)
+			return
+		}
 	}
 
 	if r.Header.Get("HX-Request") != "true" {
@@ -65,7 +67,7 @@ func (s *Server) setProviderKey(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 	apiKey := r.FormValue("api_key")
 
-	_ = s.store.Update(func(v *vault.Vault) error {
+	if err := s.store.Update(func(v *vault.Vault) error {
 		if v.ProviderSecrets == nil {
 			v.ProviderSecrets = make(map[string]vault.ProviderSecret)
 		}
@@ -73,18 +75,9 @@ func (s *Server) setProviderKey(w http.ResponseWriter, r *http.Request) {
 		sec.APIKey = apiKey
 		v.ProviderSecrets[name] = sec
 		return nil
-	})
-
-	if s.mutate != nil {
-		_ = s.mutate(func(c *config.Config) error {
-			for i := range c.Providers {
-				if c.Providers[i].Name == name {
-					c.Providers[i].APIKey = apiKey
-					return nil
-				}
-			}
-			return nil
-		})
+	}); err != nil {
+		http.Error(w, "failed to save provider key", http.StatusInternalServerError)
+		return
 	}
 
 	if r.Header.Get("HX-Request") != "true" {
