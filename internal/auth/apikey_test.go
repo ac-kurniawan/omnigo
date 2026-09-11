@@ -46,6 +46,20 @@ func TestLookup(t *testing.T) {
 	}
 }
 
+func TestLookupConstantTimeComparisonRequiresFullHash(t *testing.T) {
+	raw, hash, prefix, _ := GenerateKey()
+	keys := []vault.ClientKey{
+		{ID: "short", KeyHash: hash[:len(hash)-1], Prefix: prefix, Active: true},
+		{ID: "inactive", KeyHash: hash, Prefix: prefix, Active: false},
+		{ID: "valid", KeyHash: hash, Prefix: prefix, Active: true},
+	}
+
+	got, ok := Lookup(keys, raw)
+	if !ok || got.ID != "valid" {
+		t.Fatalf("Lookup() = (%q, %v), want valid key", got.ID, ok)
+	}
+}
+
 func TestMiddlewareRejectsMissingKey(t *testing.T) {
 	h := Middleware(func() *vault.Vault { return &vault.Vault{} })(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)

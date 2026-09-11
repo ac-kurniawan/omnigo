@@ -3,8 +3,11 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
+
+	"gopkg.in/yaml.v3"
 )
 
 const validYAML = `server:
@@ -77,23 +80,14 @@ func TestValidateRejectsInvalidDrainTTL(t *testing.T) {
 	}
 }
 
-func TestLoadProviderAPIKey(t *testing.T) {
-	dir := t.TempDir()
-	p := filepath.Join(dir, "config.yaml")
-	yamlContent := `providers:
-  - name: my-openai
-    type: openai
-    api_key: sk-12345
-`
-	if err := os.WriteFile(p, []byte(yamlContent), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	cfg, err := Load(p)
+func TestProviderAPIKeyIsNotSerialized(t *testing.T) {
+	cfg := Config{Providers: []Provider{{Name: "my-openai", Type: "openai", APIKey: "sk-12345"}}}
+	b, err := yaml.Marshal(&cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(cfg.Providers) != 1 || cfg.Providers[0].APIKey != "sk-12345" {
-		t.Fatalf("APIKey = %q, want sk-12345", cfg.Providers[0].APIKey)
+	if strings.Contains(string(b), "sk-12345") || strings.Contains(string(b), "api_key") {
+		t.Fatalf("serialized config contains API key: %s", b)
 	}
 }
 
