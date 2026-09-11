@@ -3,6 +3,8 @@ package dashboard
 import (
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -88,12 +90,17 @@ func TestDeleteProvider(t *testing.T) {
 }
 
 func TestSetProviderKey(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(path, []byte("providers:\n  - name: groq\n    type: openai\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	cfg := &config.Config{
 		Providers: []config.Provider{{Name: "groq", Type: "openai", BaseURL: "https://api.groq.com"}},
 	}
 	store := vault.NewMemoryStore(&vault.Vault{})
 	mutate := func(fn func(*config.Config) error) error {
-		return fn(cfg)
+		return config.Mutate(path, fn)
 	}
 	s := newServer(func() *config.Config { return cfg }, store, mutate)
 
@@ -109,8 +116,12 @@ func TestSetProviderKey(t *testing.T) {
 	if store.Get().ProviderSecrets["groq"].APIKey != "new_secret_key" {
 		t.Fatalf("vault key = %q, want new_secret_key", store.Get().ProviderSecrets["groq"].APIKey)
 	}
-	if cfg.Providers[0].APIKey != "new_secret_key" {
-		t.Fatalf("config key = %q, want new_secret_key", cfg.Providers[0].APIKey)
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(b), "new_secret_key") || strings.Contains(string(b), "api_key") {
+		t.Fatalf("plaintext provider key written to config.yaml: %s", b)
 	}
 }
 

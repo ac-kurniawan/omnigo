@@ -165,5 +165,8 @@ func (t *Tracker) persist() {
 	if err != nil {
 		return
 	}
-	_ = os.WriteFile(t.path, b, 0644)
+	if err := os.Chmod(t.path, 0o600); err != nil && !os.IsNotExist(err) {
+		return
+	}
+	_ = os.WriteFile(t.path, b, 0o600)
 }

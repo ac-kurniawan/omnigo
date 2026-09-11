@@ -99,8 +99,12 @@ func TestTrackerPersistence(t *testing.T) {
 	tr1.MarkDrained(t2, 20*time.Second, "timeout after 30s")
 
 	// Verify file was written
-	if _, err := os.Stat(path); err != nil {
+	info, err := os.Stat(path)
+	if err != nil {
 		t.Fatalf("expected drains.json to exist: %v", err)
+	}
+	if got := info.Mode().Perm(); got != 0o600 {
+		t.Fatalf("drains.json permissions = %o, want 600", got)
 	}
 
 	// Create new tracker pointing to same file

@@ -10,20 +10,15 @@ import (
 )
 
 type credStore struct {
-	store  *vault.Store
-	name   string
-	cfgKey string
+	store *vault.Store
+	name  string
 }
 
 func (s credStore) Get() provider.Credentials {
 	v := s.store.Get()
 	sec := v.ProviderSecrets[s.name]
-	key := sec.APIKey
-	if key == "" {
-		key = s.cfgKey
-	}
 	return provider.Credentials{
-		APIKey:       key,
+		APIKey:       sec.APIKey,
 		AccessToken:  sec.AccessToken,
 		RefreshToken: sec.RefreshToken,
 		ExpiresAt:    sec.ExpiresAt,
@@ -62,5 +57,5 @@ func buildProvider(cfg config.Provider, store *vault.Store, defaultTimeout ...ti
 		BaseURL: cfg.BaseURL,
 		Models:  cfg.Models,
 		Timeout: timeout,
-	}, credStore{store: store, name: cfg.Name, cfgKey: cfg.APIKey}), nil
+	}, credStore{store: store, name: cfg.Name}), nil
 }
