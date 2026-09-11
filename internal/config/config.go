@@ -29,7 +29,7 @@ type Provider struct {
 	Name           string   `yaml:"name"`
 	Type           string   `yaml:"type"`
 	BaseURL        string   `yaml:"base_url"`
-	APIKey         string   `yaml:"api_key,omitempty"`
+	APIKey         string   `yaml:"-"`
 	Models         []string `yaml:"models"`
 	DisabledModels []string `yaml:"disabled_models,omitempty"`
 	Disabled       bool     `yaml:"disabled,omitempty"`
