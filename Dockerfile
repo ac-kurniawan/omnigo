@@ -1,5 +1,5 @@
 # Stage 1: Build static binary
-FROM golang:1.26-alpine AS builder
+FROM --platform=$BUILDPLATFORM golang:1.26-alpine AS builder
 
 WORKDIR /src
 RUN apk add --no-cache ca-certificates tzdata
