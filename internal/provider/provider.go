@@ -1,7 +1,9 @@
 package provider
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"net/http"
 	"time"
 )
@@ -16,6 +18,25 @@ type ChatRequest struct {
 	Stream   bool
 	Messages []Message
 	Raw      []byte
+}
+
+// Body returns the request JSON payload intended for upstream forwarding,
+// ensuring the "model" field reflects req.Model (the resolved bare model id).
+func (r ChatRequest) Body() ([]byte, error) {
+	if len(r.Raw) > 0 {
+		var rawMap map[string]any
+		dec := json.NewDecoder(bytes.NewReader(r.Raw))
+		dec.UseNumber()
+		if err := dec.Decode(&rawMap); err == nil {
+			rawMap["model"] = r.Model
+			return json.Marshal(rawMap)
+		}
+	}
+	return json.Marshal(map[string]any{
+		"model":    r.Model,
+		"stream":   r.Stream,
+		"messages": r.Messages,
+	})
 }
 
 type Model struct {

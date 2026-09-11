@@ -2,6 +2,7 @@ package provider
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -14,6 +15,48 @@ func newOpenAI(t *testing.T, upstream http.Handler) Provider {
 	t.Cleanup(srv.Close)
 	store := staticStore{Credentials{APIKey: "sk-test"}}
 	return NewOpenAI(Config{Name: "openai", BaseURL: srv.URL}, store)
+}
+
+func TestOpenAIChatRewritesModelInForwardedBody(t *testing.T) {
+	var gotModel string
+	p := newOpenAI(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Model string `json:"model"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("decode upstream body: %v", err)
+		}
+		gotModel = body.Model
+		w.Write([]byte(`{}`))
+	}))
+	req := ChatRequest{
+		Model: "routers9/deepseek-v4-flash-0731",
+		Raw:   []byte(`{"model":"myrouter/routers9/deepseek-v4-flash-0731","messages":[]}`),
+	}
+	if err := p.ChatCompletion(context.Background(), req, httptest.NewRecorder()); err != nil {
+		t.Fatalf("ChatCompletion: %v", err)
+	}
+	if gotModel != "routers9/deepseek-v4-flash-0731" {
+		t.Fatalf("upstream model = %q, want bare resolved id", gotModel)
+	}
+}
+
+func TestOpenAIChatUpstreamErrorReturnsError(t *testing.T) {
+	p := newOpenAI(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, `{"error":"model not found"}`, http.StatusNotFound)
+	}))
+	rec := httptest.NewRecorder()
+	req := ChatRequest{
+		Model: "nonexistent",
+		Raw:   []byte(`{"model":"nonexistent","messages":[]}`),
+	}
+	err := p.ChatCompletion(context.Background(), req, rec)
+	if err == nil {
+		t.Fatal("expected error on upstream non-200 status")
+	}
+	if rec.Body.Len() != 0 {
+		t.Fatalf("recorder body = %q, expected empty", rec.Body.String())
+	}
 }
 
 type staticStore struct{ c Credentials }

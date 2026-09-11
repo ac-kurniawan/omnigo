@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -223,5 +224,121 @@ func TestComboFallsBackWhenProviderDisabled(t *testing.T) {
 	}
 	if gotModel != "gpt-4o" {
 		t.Fatalf("model = %q, want gpt-4o (first provider was disabled)", gotModel)
+	}
+}
+
+func TestChatDirectModelWithMultipleSlashes(t *testing.T) {
+	var gotModel string
+	provider.Register("openai", func(cfg provider.Config, store provider.CredStore) provider.Provider {
+		return &fakeProvider{name: cfg.Name, chat: func(r provider.ChatRequest) error {
+			gotModel = r.Model
+			return nil
+		}}
+	})
+	cfg := &config.Config{
+		Providers: []config.Provider{
+			{Name: "myrouter", Type: "openai", BaseURL: "https://x", Models: []string{"routers9/deepseek-v4-flash-0731"}},
+		},
+	}
+	raw, hash, prefix, _ := auth.GenerateKey()
+	v := &vault.Vault{
+		ProviderSecrets: map[string]vault.ProviderSecret{"myrouter": {APIKey: "sk-x"}},
+		ClientKeys:      []vault.ClientKey{{ID: "k1", KeyHash: hash, Prefix: prefix, Active: true}},
+	}
+
+	req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(`{"model":"myrouter/routers9/deepseek-v4-flash-0731","messages":[{"role":"user","content":"hi"}]}`))
+	req.Header.Set("Authorization", "Bearer "+raw)
+	rr := httptest.NewRecorder()
+	testRouter(t, cfg, v).ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d body %s", rr.Code, rr.Body.String())
+	}
+	if gotModel != "routers9/deepseek-v4-flash-0731" {
+		t.Fatalf("model = %q, want routers9/deepseek-v4-flash-0731", gotModel)
+	}
+}
+
+func TestComboFallsBackWhenUpstreamErrors(t *testing.T) {
+	var gotModel string
+	provider.Register("openai", func(cfg provider.Config, store provider.CredStore) provider.Provider {
+		return &fakeProvider{
+			name: cfg.Name,
+			chat: func(r provider.ChatRequest) error {
+				if cfg.Name == "bad" {
+					return fmt.Errorf("upstream status 500")
+				}
+				gotModel = r.Model
+				return nil
+			},
+		}
+	})
+	cfg := &config.Config{
+		Providers: []config.Provider{
+			{Name: "bad", Type: "openai", BaseURL: "https://bad", Models: []string{"m-bad"}},
+			{Name: "good", Type: "openai", BaseURL: "https://good", Models: []string{"m-good"}},
+		},
+		Combos: []config.Combo{
+			{
+				Name:     "auto",
+				Strategy: "priority",
+				Targets: []config.ComboTarget{
+					{Provider: "bad", Model: "m-bad"},
+					{Provider: "good", Model: "m-good"},
+				},
+			},
+		},
+	}
+	raw, hash, prefix, _ := auth.GenerateKey()
+	v := &vault.Vault{ClientKeys: []vault.ClientKey{{ID: "k1", KeyHash: hash, Prefix: prefix, Active: true}}}
+
+	req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(`{"model":"auto","messages":[{"role":"user","content":"hi"}]}`))
+	req.Header.Set("Authorization", "Bearer "+raw)
+	rr := httptest.NewRecorder()
+	testRouter(t, cfg, v).ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rr.Code, rr.Body.String())
+	}
+	if gotModel != "m-good" {
+		t.Fatalf("model = %q, want m-good (first target had upstream error)", gotModel)
+	}
+}
+
+func TestChatComboWithModelWithSlash(t *testing.T) {
+	var gotModel string
+	provider.Register("openai", func(cfg provider.Config, store provider.CredStore) provider.Provider {
+		return &fakeProvider{name: cfg.Name, chat: func(r provider.ChatRequest) error {
+			gotModel = r.Model
+			return nil
+		}}
+	})
+	cfg := &config.Config{
+		Providers: []config.Provider{
+			{Name: "myrouter", Type: "openai", BaseURL: "https://x", Models: []string{"routers9/deepseek-v4-flash-0731"}},
+		},
+		Combos: []config.Combo{
+			{
+				Name:     "auto",
+				Strategy: "priority",
+				Targets: []config.ComboTarget{
+					{Provider: "myrouter", Model: "routers9/deepseek-v4-flash-0731"},
+				},
+			},
+		},
+	}
+	raw, hash, prefix, _ := auth.GenerateKey()
+	v := &vault.Vault{
+		ProviderSecrets: map[string]vault.ProviderSecret{"myrouter": {APIKey: "sk-x"}},
+		ClientKeys:      []vault.ClientKey{{ID: "k1", KeyHash: hash, Prefix: prefix, Active: true}},
+	}
+
+	req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(`{"model":"auto","messages":[{"role":"user","content":"hi"}]}`))
+	req.Header.Set("Authorization", "Bearer "+raw)
+	rr := httptest.NewRecorder()
+	testRouter(t, cfg, v).ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d body %s", rr.Code, rr.Body.String())
+	}
+	if gotModel != "routers9/deepseek-v4-flash-0731" {
+		t.Fatalf("model = %q, want routers9/deepseek-v4-flash-0731", gotModel)
 	}
 }
