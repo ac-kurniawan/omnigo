@@ -19,6 +19,7 @@ type Provider struct {
 	APIKey         string   `yaml:"api_key,omitempty"`
 	Models         []string `yaml:"models"`
 	DisabledModels []string `yaml:"disabled_models,omitempty"`
+	Disabled       bool     `yaml:"disabled,omitempty"`
 }
 
 func (p Provider) IsModelDisabled(model string) bool {

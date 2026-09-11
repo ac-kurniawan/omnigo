@@ -385,7 +385,7 @@
       {{range .Providers}}
       {{$sec := index $.Secrets .Name}}
       {{$hasKey := or (and $sec $sec.APIKey) .APIKey}}
-      <tr class="hover:bg-base-200/40 transition-colors">
+      <tr class="hover:bg-base-200/40 transition-colors{{if .Disabled}} opacity-50{{end}}">
         <td class="font-mono text-base-content py-3.5 px-4">
           <div class="flex items-center gap-3">
             {{if eq .Type "antigravity"}}
@@ -410,6 +410,9 @@
               {{end}}
             {{end}}
             <span class="font-bold text-sm tracking-tight">{{.Name}}</span>
+            {{if .Disabled}}
+              <span class="badge badge-ghost badge-xs font-sans">Disabled</span>
+            {{end}}
           </div>
         </td>
         <td class="py-3.5 px-4">
@@ -426,7 +429,7 @@
           {{end}}
         </td>
         <td class="py-3.5 px-4">
-          <div class="flex flex-wrap items-center gap-1.5 max-w-md">
+          <div id="model-chips-{{.Name}}" class="flex flex-wrap items-center gap-1.5 max-w-md">
             {{if not .Models}}
               <span class="text-xs text-base-content/40 italic">No models</span>
             {{else if gt (len .Models) 3}}
@@ -451,108 +454,17 @@
             <button type="button" class="btn btn-ghost btn-xs text-base-content/50 hover:text-primary p-1 rounded-md" onclick="document.getElementById('models-modal-{{.Name}}').showModal()" title="Manage models (add/disable)">
               <svg xmlns="http://www.w3.org/2000/svg" class="size-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/></svg>
             </button>
-
-            <!-- Models Modal -->
-            <dialog id="models-modal-{{.Name}}" class="modal modal-bottom sm:modal-middle">
-              <div class="modal-box max-w-lg text-left border border-base-content/10 shadow-2xl p-6 rounded-2xl">
-                <div class="flex items-center justify-between border-b border-base-content/10 pb-3">
-                  <div>
-                    <h3 class="text-base font-bold flex items-center gap-2">
-                      <span class="font-mono text-primary">{{.Name}}</span>
-                      <span class="badge badge-ghost badge-sm px-2 py-0.5">{{len .Models}} active</span>
-                      {{if .DisabledModels}}
-                        <span class="badge badge-warning badge-outline badge-sm px-2 py-0.5">{{len .DisabledModels}} disabled</span>
-                      {{end}}
-                    </h3>
-                    <p class="text-xs text-base-content/60 mt-0.5">Manage cached models: add custom models or disable specific IDs</p>
-                  </div>
-                  <form method="dialog">
-                    <button class="btn btn-sm btn-circle btn-ghost">✕</button>
-                  </form>
-                </div>
-
-                <!-- Manual Add Model Form -->
-                <form action="/providers/{{.Name}}/models" method="POST" hx-post="/providers/{{.Name}}/models" hx-target="#providers" hx-swap="innerHTML" hx-on::after-request="document.getElementById('models-modal-{{.Name}}')?.showModal()" class="flex items-center gap-2 pt-4">
-                  <input type="text" name="model_id" placeholder="Add model ID (e.g. gpt-4.5-preview, claude-3-7-sonnet)" class="input input-bordered input-sm flex-1 font-mono text-xs px-3.5 py-2.5 h-auto min-h-[2.5rem] rounded-xl" required>
-                  <button type="submit" class="btn btn-sm btn-primary px-4 h-auto min-h-[2.5rem] rounded-xl font-medium gap-1.5 shadow-sm">
-                    <svg xmlns="http://www.w3.org/2000/svg" class="size-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/></svg>
-                    Add Model
-                  </button>
-                </form>
-
-                <div class="py-4 max-h-80 overflow-y-auto space-y-4">
-                  <!-- Active Models -->
-                  <div>
-                    <div class="text-xs font-bold text-base-content/60 uppercase tracking-wider mb-2 flex items-center justify-between">
-                      <span>Active Models ({{len .Models}})</span>
-                    </div>
-                    {{if not .Models}}
-                      <div class="text-xs text-base-content/40 italic py-2">No active models. Add one above or click Refresh.</div>
-                    {{end}}
-                    <div class="space-y-1.5">
-                      {{$provName := .Name}}
-                      {{range .Models}}
-                      <div class="flex items-center justify-between p-2.5 rounded-xl bg-base-200/50 hover:bg-base-200/80 font-mono text-xs border border-base-content/5 transition-colors">
-                        <span class="font-semibold text-base-content">{{.}}</span>
-                        <div class="flex items-center gap-1.5">
-                          <button type="button" class="btn btn-ghost btn-xs text-base-content/60 hover:text-base-content px-2 rounded-lg" onclick="navigator.clipboard.writeText('{{.}}'); this.innerText='Copied!'">Copy ID</button>
-                          
-                          <form action="/providers/{{$provName}}/models/disable" method="POST" hx-post="/providers/{{$provName}}/models/disable" hx-target="#providers" hx-swap="innerHTML" hx-on::after-request="document.getElementById('models-modal-{{$provName}}')?.showModal()" class="inline">
-                            <input type="hidden" name="model_id" value="{{.}}">
-                            <button type="submit" class="btn btn-ghost btn-xs text-warning hover:bg-warning/15 px-2 rounded-lg" title="Disable this model (will not be routed)">Disable</button>
-                          </form>
-
-                          <form action="/providers/{{$provName}}/models/delete" method="POST" hx-post="/providers/{{$provName}}/models/delete" hx-target="#providers" hx-swap="innerHTML" hx-on::after-request="document.getElementById('models-modal-{{$provName}}')?.showModal()" class="inline">
-                            <input type="hidden" name="model_id" value="{{.}}">
-                            <button type="submit" class="btn btn-ghost btn-xs text-error hover:bg-error/15 px-2 rounded-lg" title="Delete model from list">✕</button>
-                          </form>
-                        </div>
-                      </div>
-                      {{end}}
-                    </div>
-                  </div>
-
-                  <!-- Disabled Models -->
-                  {{if .DisabledModels}}
-                  <div class="border-t border-base-content/10 pt-3">
-                    <div class="text-xs font-bold text-warning/80 uppercase tracking-wider mb-2 flex items-center justify-between">
-                      <span>Disabled Models ({{len .DisabledModels}})</span>
-                    </div>
-                    <div class="space-y-1.5">
-                      {{$provName := .Name}}
-                      {{range .DisabledModels}}
-                      <div class="flex items-center justify-between p-2.5 rounded-xl bg-base-200/20 hover:bg-base-200/40 font-mono text-xs border border-dashed border-base-content/15 transition-colors">
-                        <span class="font-medium text-base-content/50 line-through">{{.}}</span>
-                        <div class="flex items-center gap-1.5">
-                          <form action="/providers/{{$provName}}/models/enable" method="POST" hx-post="/providers/{{$provName}}/models/enable" hx-target="#providers" hx-swap="innerHTML" hx-on::after-request="document.getElementById('models-modal-{{$provName}}')?.showModal()" class="inline">
-                            <input type="hidden" name="model_id" value="{{.}}">
-                            <button type="submit" class="btn btn-ghost btn-xs text-success hover:bg-success/15 px-2.5 rounded-lg" title="Enable this model">Enable</button>
-                          </form>
-
-                          <form action="/providers/{{$provName}}/models/delete" method="POST" hx-post="/providers/{{$provName}}/models/delete" hx-target="#providers" hx-swap="innerHTML" hx-on::after-request="document.getElementById('models-modal-{{$provName}}')?.showModal()" class="inline">
-                            <input type="hidden" name="model_id" value="{{.}}">
-                            <button type="submit" class="btn btn-ghost btn-xs text-error hover:bg-error/15 px-2 rounded-lg" title="Delete model permanently">✕</button>
-                          </form>
-                        </div>
-                      </div>
-                      {{end}}
-                    </div>
-                  </div>
-                  {{end}}
-                </div>
-
-                <div class="modal-action border-t border-base-content/10 pt-3">
-                  <form method="dialog">
-                    <button class="btn btn-sm btn-ghost px-4 rounded-lg">Close</button>
-                  </form>
-                </div>
-              </div>
-              <form method="dialog" class="modal-backdrop"><button>close</button></form>
-            </dialog>
           </div>
+
+          <!-- Models Modal -->
+          <dialog id="models-modal-{{.Name}}" class="modal modal-bottom sm:modal-middle">
+            {{template "models-modal-box" .}}
+            <form method="dialog" class="modal-backdrop"><button>close</button></form>
+          </dialog>
         </td>
         <td class="text-right py-3.5 px-4 whitespace-nowrap">
           <div class="flex items-center justify-end gap-2">
+            <input type="checkbox" class="toggle toggle-xs toggle-success" {{if not .Disabled}}checked{{end}} hx-post="/providers/{{.Name}}/toggle" hx-target="#providers" hx-swap="innerHTML" title="{{if .Disabled}}Enable provider{{else}}Disable provider{{end}}">
             {{if eq .Type "openai"}}
               {{if $hasKey}}
                 <button type="button" class="btn btn-xs btn-outline btn-ghost border-base-content/20 hover:border-base-content/40 px-2.5 py-1 h-auto min-h-[1.75rem] rounded-lg gap-1 font-medium" onclick="document.getElementById('key-modal-{{.Name}}').showModal()" title="API Key Configured — Click to update">
@@ -788,5 +700,151 @@
       {{end}}
     </tbody>
   </table>
+</div>
+{{end}}
+
+{{define "models-modal-box"}}
+<div id="models-content-{{.Name}}" class="modal-box max-w-lg text-left border border-base-content/10 shadow-2xl p-6 rounded-2xl">
+  <div class="flex items-center justify-between border-b border-base-content/10 pb-3">
+    <div>
+      <h3 class="text-base font-bold flex items-center gap-2">
+        <span class="font-mono text-primary">{{.Name}}</span>
+        <span class="badge badge-ghost badge-sm px-2 py-0.5">{{len .Models}} active</span>
+        {{if .DisabledModels}}
+          <span class="badge badge-warning badge-outline badge-sm px-2 py-0.5">{{len .DisabledModels}} disabled</span>
+        {{end}}
+      </h3>
+      <p class="text-xs text-base-content/60 mt-0.5">Manage cached models: add custom models or disable specific IDs</p>
+    </div>
+    <form method="dialog">
+      <button class="btn btn-sm btn-circle btn-ghost">✕</button>
+    </form>
+  </div>
+
+  <!-- Manual Add Model Form -->
+  <form action="/providers/{{.Name}}/models" method="POST" hx-post="/providers/{{.Name}}/models" hx-target="#models-content-{{.Name}}" hx-swap="outerHTML" class="flex items-center gap-2 pt-4">
+    <input type="text" name="model_id" placeholder="Add model ID (e.g. gpt-4.5-preview, claude-3-7-sonnet)" class="input input-bordered input-sm flex-1 font-mono text-xs px-3.5 py-2.5 h-auto min-h-[2.5rem] rounded-xl" required>
+    <button type="submit" class="btn btn-sm btn-primary px-4 h-auto min-h-[2.5rem] rounded-xl font-medium gap-1.5 shadow-sm">
+      <svg xmlns="http://www.w3.org/2000/svg" class="size-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/></svg>
+      Add Model
+    </button>
+  </form>
+
+  <div class="py-4 max-h-80 overflow-y-auto space-y-4">
+    <!-- Active Models -->
+    <div>
+      {{$provName := .Name}}
+      <form action="/providers/{{$provName}}/models/disable" method="POST" hx-post="/providers/{{$provName}}/models/disable" hx-target="#models-content-{{$provName}}" hx-swap="outerHTML" class="space-y-2">
+        <div class="text-xs font-bold text-base-content/60 uppercase tracking-wider mb-2 flex items-center justify-between">
+          <div class="flex items-center gap-2">
+            <span>Active Models ({{len .Models}})</span>
+            {{if .Models}}
+              <label class="normal-case font-normal text-xs text-base-content/70 flex items-center gap-1.5 cursor-pointer ml-2">
+                <input type="checkbox" class="checkbox checkbox-xs checkbox-primary" onchange="document.querySelectorAll('.active-check-{{$provName}}').forEach(c => c.checked = this.checked)">
+                <span>Select all</span>
+              </label>
+            {{end}}
+          </div>
+          {{if .Models}}
+            <button type="submit" class="btn btn-warning btn-xs rounded-lg px-2.5 font-medium gap-1" title="Disable all checked models">
+              Disable Selected
+            </button>
+          {{end}}
+        </div>
+        {{if not .Models}}
+          <div class="text-xs text-base-content/40 italic py-2">No active models. Add one above or click Refresh.</div>
+        {{end}}
+        <div class="space-y-1.5">
+          {{range .Models}}
+          <div class="flex items-center justify-between p-2.5 rounded-xl bg-base-200/50 hover:bg-base-200/80 font-mono text-xs border border-base-content/5 transition-colors">
+            <label class="flex items-center gap-2.5 cursor-pointer flex-1 mr-2 min-w-0">
+              <input type="checkbox" name="model_id" value="{{.}}" class="checkbox checkbox-xs checkbox-warning active-check-{{$provName}}">
+              <span class="font-semibold text-base-content truncate">{{.}}</span>
+            </label>
+            <div class="flex items-center gap-1.5 shrink-0">
+              <button type="button" class="btn btn-ghost btn-xs text-base-content/60 hover:text-base-content px-2 rounded-lg font-sans" onclick="navigator.clipboard.writeText('{{.}}'); this.innerText='Copied!'">Copy ID</button>
+              
+              <button type="button" hx-post="/providers/{{$provName}}/models/disable" hx-vals='{"model_id": "{{.}}"}' hx-target="#models-content-{{$provName}}" hx-swap="outerHTML" class="btn btn-ghost btn-xs text-warning hover:bg-warning/15 px-2 rounded-lg font-sans" title="Disable this model">Disable</button>
+
+              <button type="button" hx-post="/providers/{{$provName}}/models/delete" hx-vals='{"model_id": "{{.}}"}' hx-target="#models-content-{{$provName}}" hx-swap="outerHTML" hx-confirm="Delete model {{.}}?" class="btn btn-ghost btn-xs text-error hover:bg-error/15 px-2 rounded-lg font-sans" title="Delete model from list">✕</button>
+            </div>
+          </div>
+          {{end}}
+        </div>
+      </form>
+    </div>
+
+    <!-- Disabled Models -->
+    {{if .DisabledModels}}
+    <div class="border-t border-base-content/10 pt-3">
+      {{$provName := .Name}}
+      <form action="/providers/{{$provName}}/models/enable" method="POST" hx-post="/providers/{{$provName}}/models/enable" hx-target="#models-content-{{$provName}}" hx-swap="outerHTML" class="space-y-2">
+        <div class="text-xs font-bold text-warning/80 uppercase tracking-wider mb-2 flex items-center justify-between">
+          <div class="flex items-center gap-2">
+            <span>Disabled Models ({{len .DisabledModels}})</span>
+            <label class="normal-case font-normal text-xs text-base-content/70 flex items-center gap-1.5 cursor-pointer ml-2">
+              <input type="checkbox" class="checkbox checkbox-xs checkbox-success" onchange="document.querySelectorAll('.disabled-check-{{$provName}}').forEach(c => c.checked = this.checked)">
+              <span>Select all</span>
+            </label>
+          </div>
+          <button type="submit" class="btn btn-success btn-xs rounded-lg px-2.5 font-medium gap-1" title="Enable all checked models">
+            Enable Selected
+          </button>
+        </div>
+        <div class="space-y-1.5">
+          {{range .DisabledModels}}
+          <div class="flex items-center justify-between p-2.5 rounded-xl bg-base-200/20 hover:bg-base-200/40 font-mono text-xs border border-dashed border-base-content/15 transition-colors">
+            <label class="flex items-center gap-2.5 cursor-pointer flex-1 mr-2 min-w-0">
+              <input type="checkbox" name="model_id" value="{{.}}" class="checkbox checkbox-xs checkbox-success disabled-check-{{$provName}}">
+              <span class="font-medium text-base-content/50 line-through truncate">{{.}}</span>
+            </label>
+            <div class="flex items-center gap-1.5 shrink-0">
+              <button type="button" hx-post="/providers/{{$provName}}/models/enable" hx-vals='{"model_id": "{{.}}"}' hx-target="#models-content-{{$provName}}" hx-swap="outerHTML" class="btn btn-ghost btn-xs text-success hover:bg-success/15 px-2.5 rounded-lg font-sans" title="Enable this model">Enable</button>
+
+              <button type="button" hx-post="/providers/{{$provName}}/models/delete" hx-vals='{"model_id": "{{.}}"}' hx-target="#models-content-{{$provName}}" hx-swap="outerHTML" hx-confirm="Delete model {{.}} permanently?" class="btn btn-ghost btn-xs text-error hover:bg-error/15 px-2 rounded-lg font-sans" title="Delete model permanently">✕</button>
+            </div>
+          </div>
+          {{end}}
+        </div>
+      </form>
+    </div>
+    {{end}}
+  </div>
+
+  <div class="modal-action border-t border-base-content/10 pt-3">
+    <form method="dialog">
+      <button class="btn btn-sm btn-ghost px-4 rounded-lg">Close</button>
+    </form>
+  </div>
+</div>
+{{end}}
+
+{{define "models-modal-content"}}
+{{template "models-modal-box" .}}
+<div id="model-chips-{{.Name}}" hx-swap-oob="true" class="flex flex-wrap items-center gap-1.5 max-w-md">
+  {{if not .Models}}
+    <span class="text-xs text-base-content/40 italic">No models</span>
+  {{else if gt (len .Models) 3}}
+    {{range (slice .Models 0 3)}}
+      <span class="px-2.5 py-1 text-xs font-mono bg-base-200/80 text-base-content/90 rounded-md border border-base-content/10 whitespace-nowrap leading-none inline-flex items-center">{{.}}</span>
+    {{end}}
+    <button type="button" class="px-2.5 py-1 text-xs font-semibold rounded-md bg-primary/15 text-primary hover:bg-primary/25 border border-primary/25 transition-colors whitespace-nowrap leading-none cursor-pointer inline-flex items-center gap-1 shadow-2xs" onclick="document.getElementById('models-modal-{{.Name}}').showModal()" title="View all {{len .Models}} models">
+      see more ({{sub (len .Models) 3}})..
+    </button>
+  {{else}}
+    {{range .Models}}
+      <span class="px-2.5 py-1 text-xs font-mono bg-base-200/80 text-base-content/90 rounded-md border border-base-content/10 whitespace-nowrap leading-none inline-flex items-center">{{.}}</span>
+    {{end}}
+  {{end}}
+
+  {{if .DisabledModels}}
+    <span class="px-2 py-0.5 text-[11px] font-mono text-warning/80 bg-warning/10 rounded-md border border-warning/20 cursor-pointer" onclick="document.getElementById('models-modal-{{.Name}}').showModal()" title="{{len .DisabledModels}} model(s) disabled">
+      {{len .DisabledModels}} disabled
+    </span>
+  {{end}}
+
+  <button type="button" class="btn btn-ghost btn-xs text-base-content/50 hover:text-primary p-1 rounded-md" onclick="document.getElementById('models-modal-{{.Name}}').showModal()" title="Manage models (add/disable)">
+    <svg xmlns="http://www.w3.org/2000/svg" class="size-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/></svg>
+  </button>
 </div>
 {{end}}

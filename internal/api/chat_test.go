@@ -165,3 +165,63 @@ func TestComboFallsBackWhenFirstModelDisabled(t *testing.T) {
 		t.Fatalf("model = %q, want gpt-4o (first target was disabled)", gotModel)
 	}
 }
+
+func TestChatDisabledProviderRejected(t *testing.T) {
+	provider.Register("openai", func(cfg provider.Config, store provider.CredStore) provider.Provider {
+		return &fakeProvider{name: cfg.Name}
+	})
+	cfg := &config.Config{
+		Providers: []config.Provider{
+			{Name: "openai", Type: "openai", BaseURL: "https://x", Models: []string{"gpt-4o"}, Disabled: true},
+		},
+	}
+	raw, hash, prefix, _ := auth.GenerateKey()
+	v := &vault.Vault{ClientKeys: []vault.ClientKey{{ID: "k1", KeyHash: hash, Prefix: prefix, Active: true}}}
+
+	req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(`{"model":"openai/gpt-4o","messages":[]}`))
+	req.Header.Set("Authorization", "Bearer "+raw)
+	rr := httptest.NewRecorder()
+	testRouter(t, cfg, v).ServeHTTP(rr, req)
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404 for disabled provider", rr.Code)
+	}
+}
+
+func TestComboFallsBackWhenProviderDisabled(t *testing.T) {
+	var gotModel string
+	provider.Register("openai", func(cfg provider.Config, store provider.CredStore) provider.Provider {
+		return &fakeProvider{name: cfg.Name, chat: func(r provider.ChatRequest) error {
+			gotModel = r.Model
+			return nil
+		}}
+	})
+	cfg := &config.Config{
+		Providers: []config.Provider{
+			{Name: "groq", Type: "openai", BaseURL: "https://x", Models: []string{"llama-3"}, Disabled: true},
+			{Name: "openai", Type: "openai", BaseURL: "https://x", Models: []string{"gpt-4o"}},
+		},
+		Combos: []config.Combo{
+			{
+				Name:     "auto",
+				Strategy: "priority",
+				Targets: []config.ComboTarget{
+					{Provider: "groq", Model: "llama-3"},
+					{Provider: "openai", Model: "gpt-4o"},
+				},
+			},
+		},
+	}
+	raw, hash, prefix, _ := auth.GenerateKey()
+	v := &vault.Vault{ClientKeys: []vault.ClientKey{{ID: "k1", KeyHash: hash, Prefix: prefix, Active: true}}}
+
+	req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(`{"model":"auto","messages":[{"role":"user","content":"hi"}]}`))
+	req.Header.Set("Authorization", "Bearer "+raw)
+	rr := httptest.NewRecorder()
+	testRouter(t, cfg, v).ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rr.Code, rr.Body.String())
+	}
+	if gotModel != "gpt-4o" {
+		t.Fatalf("model = %q, want gpt-4o (first provider was disabled)", gotModel)
+	}
+}

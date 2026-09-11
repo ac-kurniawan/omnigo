@@ -24,6 +24,9 @@ func handleModels(getCfg func() *config.Config) http.HandlerFunc {
 			out.Data = append(out.Data, modelEntry{ID: cb.Name, Object: "model", Created: 0, OwnedBy: "combo"})
 		}
 		for _, p := range cfg.Providers {
+			if p.Disabled {
+				continue
+			}
 			for _, m := range p.Models {
 				out.Data = append(out.Data, modelEntry{ID: p.Name + "/" + m, Object: "model", Created: 0, OwnedBy: p.Name})
 			}

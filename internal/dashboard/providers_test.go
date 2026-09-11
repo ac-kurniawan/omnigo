@@ -113,3 +113,41 @@ func TestSetProviderKey(t *testing.T) {
 		t.Fatalf("config key = %q, want new_secret_key", cfg.Providers[0].APIKey)
 	}
 }
+
+func TestToggleProviderDisabled(t *testing.T) {
+	cfg := &config.Config{
+		Providers: []config.Provider{{Name: "groq", Type: "openai", BaseURL: "https://api.groq.com"}},
+	}
+	store := vault.NewMemoryStore(&vault.Vault{})
+	mutate := func(fn func(*config.Config) error) error {
+		return fn(cfg)
+	}
+	s := newServer(func() *config.Config { return cfg }, store, mutate)
+
+	req := httptest.NewRequest("POST", "/providers/groq/toggle", nil)
+	req.Header.Set("HX-Request", "true")
+	rr := httptest.NewRecorder()
+	s.routes().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rr.Code, rr.Body.String())
+	}
+	if !cfg.Providers[0].Disabled {
+		t.Fatal("expected provider disabled after toggle")
+	}
+	if !strings.Contains(rr.Body.String(), "Disabled") {
+		t.Fatalf("body missing Disabled badge: %s", rr.Body.String())
+	}
+
+	req = httptest.NewRequest("POST", "/providers/groq/toggle", nil)
+	req.Header.Set("HX-Request", "true")
+	rr = httptest.NewRecorder()
+	s.routes().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rr.Code, rr.Body.String())
+	}
+	if cfg.Providers[0].Disabled {
+		t.Fatal("expected provider enabled after second toggle")
+	}
+}

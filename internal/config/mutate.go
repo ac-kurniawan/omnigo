@@ -172,3 +172,14 @@ func DeleteModel(path, providerName, modelID string) error {
 		return fmt.Errorf("provider %q not found", providerName)
 	})
 }
+
+// SetProviderDisabled sets a provider's Disabled flag in-memory.
+func SetProviderDisabled(c *Config, name string, disabled bool) error {
+	for i := range c.Providers {
+		if c.Providers[i].Name == name {
+			c.Providers[i].Disabled = disabled
+			return nil
+		}
+	}
+	return fmt.Errorf("provider %q not found", name)
+}

@@ -140,3 +140,28 @@ func TestSetModelsPreservesDisabledModels(t *testing.T) {
 		t.Fatalf("disabled models = %v", prov.DisabledModels)
 	}
 }
+
+func TestSetProviderDisabled(t *testing.T) {
+	c := &Config{
+		Providers: []Provider{{Name: "openai-main", Type: "openai"}},
+	}
+	if err := SetProviderDisabled(c, "openai-main", true); err != nil {
+		t.Fatalf("SetProviderDisabled: %v", err)
+	}
+	if !c.Providers[0].Disabled {
+		t.Fatal("expected Disabled = true")
+	}
+	if err := SetProviderDisabled(c, "openai-main", false); err != nil {
+		t.Fatalf("SetProviderDisabled: %v", err)
+	}
+	if c.Providers[0].Disabled {
+		t.Fatal("expected Disabled = false")
+	}
+}
+
+func TestSetProviderDisabledUnknown(t *testing.T) {
+	c := &Config{}
+	if err := SetProviderDisabled(c, "nope", true); err == nil {
+		t.Fatal("expected error for unknown provider")
+	}
+}

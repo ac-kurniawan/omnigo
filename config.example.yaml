@@ -6,6 +6,7 @@ providers:
   # Antigravity provider (Google Gemini Code Assist)
   - name: agy
     type: antigravity
+    # disabled: true  # skip this provider in routing and /v1/models
     base_url: https://cloudcode-pa.googleapis.com
     models:
       - gemini-3.7-flash-medium

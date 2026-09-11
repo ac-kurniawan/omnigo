@@ -72,6 +72,7 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("GET /providers", s.getProviders)
 	mux.HandleFunc("POST /providers", s.createProvider)
 	mux.HandleFunc("POST /providers/{name}/key", s.setProviderKey)
+	mux.HandleFunc("POST /providers/{name}/toggle", s.toggleProvider)
 	mux.HandleFunc("POST /providers/{name}/delete", s.deleteProvider)
 	mux.HandleFunc("POST /providers/{name}/models", s.addModel)
 	mux.HandleFunc("POST /providers/{name}/models/disable", s.disableModel)

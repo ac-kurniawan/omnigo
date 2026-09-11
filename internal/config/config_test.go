@@ -86,3 +86,23 @@ func TestLoadProviderAPIKey(t *testing.T) {
 		t.Fatalf("APIKey = %q, want sk-12345", cfg.Providers[0].APIKey)
 	}
 }
+
+func TestLoadProviderDisabled(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "config.yaml")
+	yamlContent := `providers:
+  - name: groq
+    type: openai
+    disabled: true
+`
+	if err := os.WriteFile(p, []byte(yamlContent), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.Providers) != 1 || !cfg.Providers[0].Disabled {
+		t.Fatalf("Disabled = %v, want true", cfg.Providers[0].Disabled)
+	}
+}

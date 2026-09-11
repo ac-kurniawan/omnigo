@@ -126,6 +126,31 @@ func (s *Server) deleteProvider(w http.ResponseWriter, r *http.Request) {
 	s.renderProviders(w)
 }
 
+func (s *Server) toggleProvider(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+
+	if s.mutate != nil {
+		err := s.mutate(func(c *config.Config) error {
+			for _, p := range c.Providers {
+				if p.Name == name {
+					return config.SetProviderDisabled(c, name, !p.Disabled)
+				}
+			}
+			return fmt.Errorf("provider %q not found", name)
+		})
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+	}
+
+	if r.Header.Get("HX-Request") != "true" {
+		http.Redirect(w, r, "/", http.StatusSeeOther)
+		return
+	}
+	s.renderProviders(w)
+}
+
 func (s *Server) getProviders(w http.ResponseWriter, r *http.Request) {
 	s.renderProviders(w)
 }

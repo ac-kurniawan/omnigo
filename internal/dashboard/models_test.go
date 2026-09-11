@@ -111,3 +111,63 @@ func TestDashboardDeleteModel(t *testing.T) {
 		t.Fatalf("expected 0 models, got %v", p.Models)
 	}
 }
+
+func TestDashboardBulkDisableAndEnableModels(t *testing.T) {
+	cfg := &config.Config{
+		Providers: []config.Provider{
+			{Name: "openai", Type: "openai", Models: []string{"m1", "m2", "m3"}},
+		},
+	}
+	store := vault.NewMemoryStore(&vault.Vault{})
+	mutate := func(fn func(*config.Config) error) error {
+		return fn(cfg)
+	}
+	s := newServer(func() *config.Config { return cfg }, store, mutate)
+
+	// Bulk disable m1 and m2
+	req := httptest.NewRequest("POST", "/providers/openai/models/disable", strings.NewReader("model_id=m1&model_id=m2"))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("HX-Request", "true")
+	rr := httptest.NewRecorder()
+	s.routes().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rr.Code, rr.Body.String())
+	}
+	p := cfg.Providers[0]
+	if len(p.Models) != 1 || p.Models[0] != "m3" {
+		t.Fatalf("expected only m3 active, got %v", p.Models)
+	}
+	if len(p.DisabledModels) != 2 {
+		t.Fatalf("expected 2 disabled models, got %v", p.DisabledModels)
+	}
+	// Verify response targets modal content and OOB chips, not full providers table
+	body := rr.Body.String()
+	if !strings.Contains(body, "models-content-openai") {
+		t.Fatalf("body should contain models-content-openai to keep dialog open, got: %s", body)
+	}
+	if !strings.Contains(body, "model-chips-openai") {
+		t.Fatalf("body should contain model-chips-openai OOB swap, got: %s", body)
+	}
+	if strings.Contains(body, "<table class=\"table w-full\">") {
+		t.Fatalf("body should not re-render full table (which unmounts dialog): %s", body)
+	}
+
+	// Bulk enable m1 and m2 back
+	req = httptest.NewRequest("POST", "/providers/openai/models/enable", strings.NewReader("model_id=m1&model_id=m2"))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("HX-Request", "true")
+	rr = httptest.NewRecorder()
+	s.routes().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rr.Code, rr.Body.String())
+	}
+	p = cfg.Providers[0]
+	if len(p.Models) != 3 {
+		t.Fatalf("expected 3 active models, got %v", p.Models)
+	}
+	if len(p.DisabledModels) != 0 {
+		t.Fatalf("expected 0 disabled models, got %v", p.DisabledModels)
+	}
+}

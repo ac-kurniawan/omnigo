@@ -46,6 +46,31 @@ func TestModelsAuthorizedListsComboAndProviders(t *testing.T) {
 	}
 }
 
+func TestModelsOmitsDisabledProvider(t *testing.T) {
+	cfg := &config.Config{
+		Providers: []config.Provider{
+			{Name: "openai", Type: "openai", BaseURL: "https://x", Models: []string{"gpt-4o"}},
+			{Name: "groq", Type: "openai", BaseURL: "https://x", Models: []string{"llama-3"}, Disabled: true},
+		},
+	}
+	raw, hash, prefix, _ := auth.GenerateKey()
+	v := &vault.Vault{ClientKeys: []vault.ClientKey{{ID: "k1", KeyHash: hash, Prefix: prefix, Active: true}}}
+	req := httptest.NewRequest("GET", "/v1/models", nil)
+	req.Header.Set("Authorization", "Bearer "+raw)
+	rr := httptest.NewRecorder()
+	testRouter(t, cfg, v).ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, body %s", rr.Code, rr.Body.String())
+	}
+	body := rr.Body.String()
+	if !containsStr(body, "openai/gpt-4o") {
+		t.Fatalf("missing enabled provider model: %s", body)
+	}
+	if containsStr(body, "groq/llama-3") {
+		t.Fatalf("disabled provider model leaked: %s", body)
+	}
+}
+
 func TestChatCompletionsAuthRequired(t *testing.T) {
 	rr := httptest.NewRecorder()
 	testRouter(t, &config.Config{}, &vault.Vault{}).ServeHTTP(rr, httptest.NewRequest("POST", "/v1/chat/completions", nil))

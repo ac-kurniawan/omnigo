@@ -73,7 +73,7 @@ func resolveDirect(cfg *config.Config, store *vault.Store, model string) (provid
 		modelID := model[i+1:]
 		for _, pc := range cfg.Providers {
 			if pc.Name == provName {
-				if pc.IsModelDisabled(modelID) {
+				if pc.Disabled || pc.IsModelDisabled(modelID) {
 					return nil, "", false
 				}
 				p, err := buildProvider(pc, store)
@@ -85,6 +85,9 @@ func resolveDirect(cfg *config.Config, store *vault.Store, model string) (provid
 		}
 	}
 	for _, pc := range cfg.Providers {
+		if pc.Disabled {
+			continue
+		}
 		for _, m := range pc.Models {
 			if m == model {
 				if pc.IsModelDisabled(model) {
@@ -127,6 +130,9 @@ func runCombo(w http.ResponseWriter, r *http.Request, cfg *config.Config, store 
 func providerForName(cfg *config.Config, store *vault.Store, name string) (provider.Provider, bool) {
 	for _, pc := range cfg.Providers {
 		if pc.Name == name {
+			if pc.Disabled {
+				return nil, false
+			}
 			p, err := buildProvider(pc, store)
 			if err != nil {
 				return nil, false
