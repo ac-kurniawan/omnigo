@@ -992,21 +992,13 @@
         <td class="py-3.5 px-4"><code class="text-primary font-mono text-xs bg-base-200/80 px-2.5 py-1 rounded-md border border-base-content/10">{{.Prefix}}…</code></td>
         <td class="text-xs text-base-content/70 font-mono py-3.5 px-4">{{.CreatedAt.Format "2006-01-02 15:04"}}</td>
         <td class="py-3.5 px-4">
-          {{if .Active}}
-            <span class="badge badge-success badge-sm font-mono px-2.5 py-1">active</span>
-          {{else}}
-            <span class="badge badge-ghost badge-sm opacity-40 font-mono px-2.5 py-1">revoked</span>
-          {{end}}
+          <span class="badge badge-success badge-sm font-mono px-2.5 py-1">active</span>
         </td>
         <td class="text-right py-3.5 px-4 whitespace-nowrap">
-          {{if .Active}}
-            <button hx-post="/keys/{{.ID}}/revoke" hx-target="#keys" hx-swap="innerHTML" hx-confirm="Revoke key {{.Prefix}}…?" class="btn btn-xs btn-outline btn-error px-2.5 py-1 h-auto min-h-[1.75rem] rounded-lg gap-1 font-medium">
-              <svg xmlns="http://www.w3.org/2000/svg" class="size-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M18.364 18.364A9 9 0 005.636 5.636m12.728 12.728A9 9 0 015.636 5.636m12.728 12.728L5.636 5.636" /></svg>
-              Revoke
-            </button>
-          {{else}}
-            <span class="text-xs text-base-content/40 italic">—</span>
-          {{end}}
+          <button hx-post="/keys/{{.ID}}/revoke" hx-target="#keys" hx-swap="innerHTML" hx-confirm="Revoke key {{.Prefix}}…?" class="btn btn-xs btn-outline btn-error px-2.5 py-1 h-auto min-h-[1.75rem] rounded-lg gap-1 font-medium">
+            <svg xmlns="http://www.w3.org/2000/svg" class="size-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M18.364 18.364A9 9 0 005.636 5.636m12.728 12.728A9 9 0 015.636 5.636m12.728 12.728L5.636 5.636" /></svg>
+            Revoke
+          </button>
         </td>
       </tr>
       {{end}}

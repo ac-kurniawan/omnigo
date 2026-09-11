@@ -132,7 +132,7 @@ func (s *Server) index(w http.ResponseWriter, r *http.Request) {
 	data := viewData{
 		Providers: cfg.Providers,
 		Combos:    cfg.Combos,
-		Keys:      s.store.Get().ClientKeys,
+		Keys:      activeKeys(s.store.Get().ClientKeys),
 		Secrets:   s.store.Get().ProviderSecrets,
 		Tracker:   s.tracker,
 	}

@@ -62,6 +62,16 @@ func (s *Server) getKeys(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) renderKeys(w http.ResponseWriter, newKey string) {
-	data := viewData{Keys: s.store.Get().ClientKeys, NewKey: newKey}
+	data := viewData{Keys: activeKeys(s.store.Get().ClientKeys), NewKey: newKey}
 	_ = s.tmpl.ExecuteTemplate(w, "keys", data)
+}
+
+func activeKeys(keys []vault.ClientKey) []vault.ClientKey {
+	var active []vault.ClientKey
+	for _, k := range keys {
+		if k.Active {
+			active = append(active, k)
+		}
+	}
+	return active
 }
