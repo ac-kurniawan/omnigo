@@ -21,7 +21,8 @@ type ChatRequest struct {
 }
 
 // Body returns the request JSON payload intended for upstream forwarding,
-// ensuring the "model" field reflects req.Model (the resolved bare model id).
+// ensuring the "model" field reflects req.Model (the resolved bare model id)
+// and normalizes "developer" role messages to "system" for broad provider compatibility.
 func (r ChatRequest) Body() ([]byte, error) {
 	if len(r.Raw) > 0 {
 		var rawMap map[string]any
@@ -29,13 +30,29 @@ func (r ChatRequest) Body() ([]byte, error) {
 		dec.UseNumber()
 		if err := dec.Decode(&rawMap); err == nil {
 			rawMap["model"] = r.Model
+			if rawMsgs, ok := rawMap["messages"].([]any); ok {
+				for _, item := range rawMsgs {
+					if msgMap, ok := item.(map[string]any); ok {
+						if role, ok := msgMap["role"].(string); ok && role == "developer" {
+							msgMap["role"] = "system"
+						}
+					}
+				}
+			}
 			return json.Marshal(rawMap)
+		}
+	}
+	msgs := make([]Message, len(r.Messages))
+	copy(msgs, r.Messages)
+	for i := range msgs {
+		if msgs[i].Role == "developer" {
+			msgs[i].Role = "system"
 		}
 	}
 	return json.Marshal(map[string]any{
 		"model":    r.Model,
 		"stream":   r.Stream,
-		"messages": r.Messages,
+		"messages": msgs,
 	})
 }
 

@@ -47,3 +47,29 @@ func TestChatRequestBodySynthesizesWithoutRaw(t *testing.T) {
 		t.Fatalf("body = %+v", got)
 	}
 }
+
+func TestChatRequestBodyNormalizesDeveloperRole(t *testing.T) {
+	req := ChatRequest{
+		Model: "gemini-3.8-flash",
+		Raw:   []byte(`{"model":"myrouter/gemini-3.8-flash","messages":[{"role":"developer","content":"system instructions"},{"role":"user","content":"hi"}]}`),
+	}
+	body, err := req.Body()
+	if err != nil {
+		t.Fatalf("Body: %v", err)
+	}
+	var got struct {
+		Messages []struct {
+			Role    string `json:"role"`
+			Content string `json:"content"`
+		} `json:"messages"`
+	}
+	if err := json.Unmarshal(body, &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(got.Messages) != 2 || got.Messages[0].Role != "system" {
+		t.Fatalf("expected developer role normalized to system, got %+v", got.Messages)
+	}
+	if got.Messages[1].Role != "user" {
+		t.Fatalf("expected user role preserved, got %+v", got.Messages[1])
+	}
+}
