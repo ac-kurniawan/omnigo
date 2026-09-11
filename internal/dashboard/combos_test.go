@@ -43,6 +43,47 @@ func TestAddCombo(t *testing.T) {
 	}
 }
 
+func TestAddComboMultipleTargetsOrdered(t *testing.T) {
+	cfg := &config.Config{
+		Providers: []config.Provider{
+			{Name: "openai-main", Type: "openai"},
+			{Name: "agy", Type: "antigravity"},
+		},
+	}
+	store := vault.NewMemoryStore(&vault.Vault{})
+	mutate := func(fn func(*config.Config) error) error {
+		return fn(cfg)
+	}
+	s := newServer(func() *config.Config { return cfg }, store, mutate)
+
+	// targets passed as ordered entries
+	req := httptest.NewRequest("POST", "/combos", strings.NewReader("name=fast&strategy=priority&targets=agy/m1&targets=openai-main/m2&targets=agy/m3"))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("HX-Request", "true")
+	rr := httptest.NewRecorder()
+	s.routes().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rr.Code, rr.Body.String())
+	}
+	if len(cfg.Combos) != 1 || cfg.Combos[0].Name != "fast" {
+		t.Fatalf("combos = %+v", cfg.Combos)
+	}
+	cb := cfg.Combos[0]
+	if len(cb.Targets) != 3 {
+		t.Fatalf("expected 3 targets, got %+v", cb.Targets)
+	}
+	if cb.Targets[0].Provider != "agy" || cb.Targets[0].Model != "m1" {
+		t.Fatalf("target[0] = %+v, want agy/m1", cb.Targets[0])
+	}
+	if cb.Targets[1].Provider != "openai-main" || cb.Targets[1].Model != "m2" {
+		t.Fatalf("target[1] = %+v, want openai-main/m2", cb.Targets[1])
+	}
+	if cb.Targets[2].Provider != "agy" || cb.Targets[2].Model != "m3" {
+		t.Fatalf("target[2] = %+v, want agy/m3", cb.Targets[2])
+	}
+}
+
 func TestDeleteCombo(t *testing.T) {
 	cfg := &config.Config{
 		Combos: []config.Combo{{Name: "smart", Strategy: "priority"}},

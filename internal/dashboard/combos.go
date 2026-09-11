@@ -11,22 +11,38 @@ import (
 func (s *Server) createCombo(w http.ResponseWriter, r *http.Request) {
 	name := r.FormValue("name")
 	strategy := r.FormValue("strategy")
-	targetsStr := r.FormValue("targets")
+	_ = r.ParseForm()
 
 	if name == "" || strategy == "" {
 		http.Error(w, "name and strategy are required", http.StatusBadRequest)
 		return
 	}
 
-	var targets []config.ComboTarget
-	rawTargets := strings.FieldsFunc(targetsStr, func(c rune) bool {
-		return c == ',' || c == '\n' || c == '\r' || c == ' '
-	})
-	for _, t := range rawTargets {
-		t = strings.TrimSpace(t)
-		if t == "" {
-			continue
+	var rawTargets []string
+	if formTargets := r.Form["targets"]; len(formTargets) > 0 {
+		for _, ft := range formTargets {
+			for _, item := range strings.FieldsFunc(ft, func(c rune) bool {
+				return c == ',' || c == '\n' || c == '\r'
+			}) {
+				item = strings.TrimSpace(item)
+				if item != "" {
+					rawTargets = append(rawTargets, item)
+				}
+			}
 		}
+	} else if targetsStr := r.FormValue("targets"); targetsStr != "" {
+		for _, item := range strings.FieldsFunc(targetsStr, func(c rune) bool {
+			return c == ',' || c == '\n' || c == '\r' || c == ' '
+		}) {
+			item = strings.TrimSpace(item)
+			if item != "" {
+				rawTargets = append(rawTargets, item)
+			}
+		}
+	}
+
+	var targets []config.ComboTarget
+	for _, t := range rawTargets {
 		parts := strings.SplitN(t, "/", 2)
 		if len(parts) == 2 {
 			targets = append(targets, config.ComboTarget{
@@ -97,6 +113,9 @@ func (s *Server) getCombos(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) renderCombos(w http.ResponseWriter) {
-	data := viewData{Combos: s.getCfg().Combos}
+	data := viewData{
+		Providers: s.getCfg().Providers,
+		Combos:    s.getCfg().Combos,
+	}
 	_ = s.tmpl.ExecuteTemplate(w, "combos", data)
 }

@@ -197,32 +197,143 @@
               Create New Routing Combo
             </div>
             <div class="collapse-content pt-2">
-              <form action="/combos" method="POST" hx-post="/combos" hx-target="#combos" hx-swap="innerHTML" class="space-y-4">
-                <div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
+              <form action="/combos" method="POST" hx-post="/combos" hx-target="#combos" hx-swap="innerHTML" class="space-y-4" onsubmit="return validateComboForm(this)">
+                <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
                   <div>
                     <label class="label pb-1.5 pt-0 text-xs font-semibold text-base-content/70">Combo Name</label>
-                    <input type="text" name="name" placeholder="e.g. auto, coding, cheap" class="input input-bordered input-sm w-full font-mono text-xs px-3 py-2 h-auto min-h-[2.25rem] rounded-lg" required>
+                    <input type="text" name="name" id="combo-name-input" placeholder="e.g. auto, coding, cheap" class="input input-bordered input-sm w-full font-mono text-xs px-3 py-2 h-auto min-h-[2.25rem] rounded-lg" required>
                   </div>
                   <div>
                     <label class="label pb-1.5 pt-0 text-xs font-semibold text-base-content/70">Routing Strategy</label>
                     <select name="strategy" class="select select-bordered select-sm w-full font-mono text-xs px-3 h-auto min-h-[2.25rem] rounded-lg" required>
-                      <option value="priority">priority (Try targets first to last)</option>
+                      <option value="priority">priority (Try targets first to last in order)</option>
                       <option value="fill-first">fill-first (Exhaust primary quota first)</option>
                     </select>
                   </div>
-                  <div>
-                    <label class="label pb-1.5 pt-0 text-xs font-semibold text-base-content/70">Target Chain (provider/model)</label>
-                    <input type="text" name="targets" placeholder="agy/gemini-3.7-flash, openai/gpt-4o" class="input input-bordered input-sm w-full font-mono text-xs px-3 py-2 h-auto min-h-[2.25rem] rounded-lg" required>
+                </div>
+
+                <!-- Target Fallback Chain Section -->
+                <div class="space-y-2 pt-1">
+                  <div class="flex items-center justify-between">
+                    <label class="text-xs font-semibold text-base-content/70 flex items-center gap-1.5">
+                      <span>Target Fallback Chain</span>
+                      <span class="badge badge-xs badge-ghost font-mono" id="combo-chain-count">0 models</span>
+                    </label>
+                    <button type="button" class="btn btn-xs btn-primary btn-outline rounded-lg gap-1.5 font-medium px-3" onclick="openComboModelPicker()">
+                      <svg xmlns="http://www.w3.org/2000/svg" class="size-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/></svg>
+                      Select Models
+                    </button>
+                  </div>
+
+                  <!-- Hidden input holding ordered targets string -->
+                  <input type="hidden" name="targets" id="combo-targets-hidden" required>
+
+                  <!-- Ordered Chain List Container -->
+                  <div id="combo-chain-container" class="space-y-1.5 min-h-[3.5rem] p-3 rounded-xl bg-base-100 border border-dashed border-base-content/15">
+                    <div id="combo-chain-empty" class="text-center py-4 text-xs text-base-content/40 italic flex flex-col items-center gap-1.5">
+                      <span>No models added to target chain yet.</span>
+                      <button type="button" class="btn btn-xs btn-ghost text-primary hover:underline p-0 h-auto" onclick="openComboModelPicker()">
+                        Click here to select models &rarr;
+                      </button>
+                    </div>
+                    <div id="combo-chain-items" class="space-y-1.5 hidden">
+                      <!-- Rendered dynamically by comboChainManager -->
+                    </div>
                   </div>
                 </div>
-                <div class="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 pt-2">
-                  <span class="text-xs text-base-content/50">Comma-separated target list: <code>&lt;provider&gt;/&lt;model&gt;</code> in fallback order.</span>
+
+                <div class="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 pt-2 border-t border-base-content/10">
+                  <span class="text-xs text-base-content/50">Models are routed sequentially in the order listed above. Use ▲ / ▼ to reorder fallback priority.</span>
                   <button type="submit" class="btn btn-primary btn-sm px-5 h-auto min-h-[2.25rem] rounded-lg gap-1.5 shadow-sm font-medium">
                     <svg xmlns="http://www.w3.org/2000/svg" class="size-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>
                     Create Combo
                   </button>
                 </div>
               </form>
+
+              <!-- Combo Model Picker Modal -->
+              <dialog id="combo-model-picker-modal" class="modal modal-bottom sm:modal-middle">
+                <div class="modal-box max-w-xl text-left border border-base-content/10 shadow-2xl p-6 rounded-2xl">
+                  <div class="flex items-center justify-between border-b border-base-content/10 pb-3">
+                    <div>
+                      <h3 class="text-base font-bold flex items-center gap-2">
+                        <span>Select Target Models</span>
+                        <span class="badge badge-primary badge-outline badge-sm" id="picker-total-selected">0 selected</span>
+                      </h3>
+                      <p class="text-xs text-base-content/60 mt-0.5">Check models to include in the combo fallback chain.</p>
+                    </div>
+                    <form method="dialog">
+                      <button class="btn btn-sm btn-circle btn-ghost">✕</button>
+                    </form>
+                  </div>
+
+                  <!-- Search filter input -->
+                  <div class="pt-4 pb-2">
+                    <div class="relative">
+                      <input type="text" id="combo-picker-search" placeholder="Filter models or providers... (e.g. gpt, sonnet, agy)" class="input input-bordered input-sm w-full font-mono text-xs pl-8 pr-3 py-2 rounded-xl" oninput="filterComboPickerModels(this.value)">
+                      <svg xmlns="http://www.w3.org/2000/svg" class="size-4 text-base-content/40 absolute left-2.5 top-2.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" /></svg>
+                    </div>
+                  </div>
+
+                  <!-- Models List grouped by Provider -->
+                  <div class="py-2 max-h-80 overflow-y-auto space-y-3" id="combo-picker-providers-list">
+                    {{if not .Providers}}
+                      <div class="text-xs text-base-content/40 italic py-6 text-center">
+                        No providers configured. Please add an upstream provider first.
+                      </div>
+                    {{end}}
+                    {{range .Providers}}
+                      {{$provName := .Name}}
+                      {{$provType := .Type}}
+                      {{$provDisabled := .Disabled}}
+                      <div class="picker-provider-group border border-base-content/10 rounded-xl p-3 bg-base-200/30 space-y-2" data-provider="{{$provName}}">
+                        <div class="flex items-center justify-between border-b border-base-content/5 pb-2">
+                          <div class="flex items-center gap-2">
+                            <span class="font-bold text-xs font-mono text-primary">{{$provName}}</span>
+                            <span class="badge badge-ghost badge-xs font-mono">{{$provType}}</span>
+                            {{if $provDisabled}}
+                              <span class="badge badge-ghost badge-xs text-warning">disabled</span>
+                            {{end}}
+                          </div>
+                          {{if .Models}}
+                            <label class="normal-case font-normal text-xs text-base-content/70 flex items-center gap-1.5 cursor-pointer">
+                              <input type="checkbox" class="checkbox checkbox-xs checkbox-primary picker-select-all" data-provider="{{$provName}}" onchange="toggleProviderAllInPicker('{{$provName}}', this.checked)">
+                              <span>Select all</span>
+                            </label>
+                          {{end}}
+                        </div>
+                        {{if not .Models}}
+                          <div class="text-[11px] text-base-content/40 italic py-1">No active cached models for this provider.</div>
+                        {{else}}
+                          <div class="grid grid-cols-1 gap-1.5">
+                            {{range .Models}}
+                              <label class="picker-model-item flex items-center justify-between p-2 rounded-lg bg-base-100 hover:bg-base-200/80 cursor-pointer font-mono text-xs border border-base-content/5 transition-colors" data-search="{{$provName}} {{.}}">
+                                <div class="flex items-center gap-2.5 min-w-0">
+                                  <input type="checkbox" class="checkbox checkbox-xs checkbox-primary picker-model-checkbox" data-target="{{$provName}}/{{.}}" data-provider="{{$provName}}" data-model="{{.}}" onchange="updatePickerCounter()">
+                                  <span class="font-medium text-base-content truncate">{{.}}</span>
+                                </div>
+                                <span class="text-[10px] text-base-content/40 font-mono shrink-0 ml-2">{{$provName}}/{{.}}</span>
+                              </label>
+                            {{end}}
+                          </div>
+                        {{end}}
+                      </div>
+                    {{end}}
+                  </div>
+
+                  <!-- Modal Action Footer -->
+                  <div class="modal-action border-t border-base-content/10 pt-3 flex items-center justify-between">
+                    <form method="dialog">
+                      <button class="btn btn-sm btn-ghost px-4 rounded-xl">Cancel</button>
+                    </form>
+                    <button type="button" class="btn btn-sm btn-primary px-5 rounded-xl font-medium gap-1.5 shadow-sm" onclick="applyComboPickerSelection()">
+                      <svg xmlns="http://www.w3.org/2000/svg" class="size-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>
+                      Apply Selection
+                    </button>
+                  </div>
+                </div>
+                <form method="dialog" class="modal-backdrop"><button>close</button></form>
+              </dialog>
             </div>
           </div>
 
@@ -357,6 +468,148 @@
               </div>`;
           }
         } catch (e) {}
+      }
+    });
+
+    // --- Combo Target Chain Manager ---
+    let comboTargets = [];
+
+    function openComboModelPicker() {
+      document.querySelectorAll('.picker-model-checkbox').forEach(cb => {
+        cb.checked = comboTargets.includes(cb.dataset.target);
+      });
+      updatePickerCounter();
+      document.getElementById('combo-model-picker-modal')?.showModal();
+    }
+
+    function updatePickerCounter() {
+      const count = document.querySelectorAll('.picker-model-checkbox:checked').length;
+      const badge = document.getElementById('picker-total-selected');
+      if (badge) badge.innerText = `${count} selected`;
+    }
+
+    function filterComboPickerModels(query) {
+      const q = (query || '').toLowerCase().trim();
+      document.querySelectorAll('.picker-provider-group').forEach(group => {
+        let groupHasMatch = false;
+        group.querySelectorAll('.picker-model-item').forEach(item => {
+          const match = !q || (item.dataset.search || '').toLowerCase().includes(q);
+          item.style.display = match ? 'flex' : 'none';
+          if (match) groupHasMatch = true;
+        });
+        group.style.display = groupHasMatch ? 'block' : 'none';
+      });
+    }
+
+    function toggleProviderAllInPicker(provName, checked) {
+      document.querySelectorAll(`.picker-model-checkbox[data-provider="${provName}"]`).forEach(cb => {
+        const item = cb.closest('.picker-model-item');
+        if (!item || item.style.display !== 'none') {
+          cb.checked = checked;
+        }
+      });
+      updatePickerCounter();
+    }
+
+    function applyComboPickerSelection() {
+      const selected = [];
+      document.querySelectorAll('.picker-model-checkbox:checked').forEach(cb => {
+        selected.push(cb.dataset.target);
+      });
+      // Retain previous order for already-included items, append new ones
+      const newChain = [];
+      comboTargets.forEach(t => {
+        if (selected.includes(t)) {
+          newChain.push(t);
+        }
+      });
+      selected.forEach(t => {
+        if (!newChain.includes(t)) {
+          newChain.push(t);
+        }
+      });
+      comboTargets = newChain;
+      renderComboChain();
+      document.getElementById('combo-model-picker-modal')?.close();
+    }
+
+    function renderComboChain() {
+      const container = document.getElementById('combo-chain-items');
+      const empty = document.getElementById('combo-chain-empty');
+      const countBadge = document.getElementById('combo-chain-count');
+      const hiddenInput = document.getElementById('combo-targets-hidden');
+
+      if (countBadge) countBadge.innerText = `${comboTargets.length} model${comboTargets.length === 1 ? '' : 's'}`;
+      if (hiddenInput) hiddenInput.value = comboTargets.join(',');
+
+      if (comboTargets.length === 0) {
+        if (empty) empty.classList.remove('hidden');
+        if (container) {
+          container.classList.add('hidden');
+          container.innerHTML = '';
+        }
+        return;
+      }
+
+      if (empty) empty.classList.add('hidden');
+      if (container) {
+        container.classList.remove('hidden');
+        container.innerHTML = comboTargets.map((target, idx) => {
+          const parts = target.split('/');
+          const prov = parts[0] || '';
+          const model = parts.slice(1).join('/') || '';
+          const isFirst = idx === 0;
+          const isLast = idx === comboTargets.length - 1;
+          const priorityLabel = idx === 0 ? 'Primary' : `Fallback ${idx}`;
+          return `
+            <div class="flex items-center justify-between p-2.5 rounded-xl bg-base-200/60 hover:bg-base-200 border border-base-content/10 font-mono text-xs transition-colors">
+              <div class="flex items-center gap-2.5 min-w-0 flex-1">
+                <span class="badge ${idx === 0 ? 'badge-primary' : 'badge-ghost'} badge-xs font-sans font-bold px-2 py-0.5 shrink-0">#${idx + 1} ${priorityLabel}</span>
+                <div class="flex items-center gap-1.5 truncate">
+                  <span class="font-bold text-primary">${prov}</span>
+                  <span class="text-base-content/40">/</span>
+                  <span class="font-medium text-base-content truncate">${model}</span>
+                </div>
+              </div>
+              <div class="flex items-center gap-1 shrink-0 ml-2 font-sans">
+                <button type="button" class="btn btn-ghost btn-xs size-7 min-h-0 p-0 rounded-lg text-base-content/70 hover:text-primary ${isFirst ? 'opacity-20 cursor-not-allowed' : ''}" ${isFirst ? 'disabled' : ''} onclick="moveComboTarget(${idx}, -1)" title="Move up in priority">▲</button>
+                <button type="button" class="btn btn-ghost btn-xs size-7 min-h-0 p-0 rounded-lg text-base-content/70 hover:text-primary ${isLast ? 'opacity-20 cursor-not-allowed' : ''}" ${isLast ? 'disabled' : ''} onclick="moveComboTarget(${idx}, 1)" title="Move down in priority">▼</button>
+                <button type="button" class="btn btn-ghost btn-xs size-7 min-h-0 p-0 rounded-lg text-error hover:bg-error/15" onclick="removeComboTarget(${idx})" title="Remove from combo">✕</button>
+              </div>
+            </div>
+          `;
+        }).join('');
+      }
+    }
+
+    function moveComboTarget(index, direction) {
+      const newIndex = index + direction;
+      if (newIndex < 0 || newIndex >= comboTargets.length) return;
+      const temp = comboTargets[index];
+      comboTargets[index] = comboTargets[newIndex];
+      comboTargets[newIndex] = temp;
+      renderComboChain();
+    }
+
+    function removeComboTarget(index) {
+      comboTargets.splice(index, 1);
+      renderComboChain();
+    }
+
+    function validateComboForm(form) {
+      if (comboTargets.length === 0) {
+        openComboModelPicker();
+        return false;
+      }
+      return true;
+    }
+
+    // Reset combo form on successful HTMX combo creation
+    document.body.addEventListener('htmx:afterRequest', function(evt) {
+      if (evt.detail.successful && evt.detail.elt && evt.detail.elt.matches('form[action="/combos"]')) {
+        comboTargets = [];
+        renderComboChain();
+        evt.detail.elt.reset();
       }
     });
   </script>
