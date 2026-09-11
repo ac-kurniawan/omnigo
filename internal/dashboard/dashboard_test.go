@@ -32,6 +32,12 @@ func TestIndexRendersProvidersCombosAndKeys(t *testing.T) {
 	if !strings.Contains(body, "openai") || !strings.Contains(body, "auto") || !strings.Contains(body, "ak-12345678") {
 		t.Fatalf("body = %s", body)
 	}
+	if !strings.Contains(body, "copyToClipboard") {
+		t.Fatalf("body missing copyToClipboard function")
+	}
+	if strings.Contains(body, "onclick=\"navigator.clipboard") {
+		t.Fatalf("body contains raw onclick navigator.clipboard which fails in insecure contexts")
+	}
 }
 
 func TestServesStaticHtmx(t *testing.T) {
