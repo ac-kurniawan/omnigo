@@ -923,13 +923,14 @@
             {{range $i, $t := .Targets}}
               {{$drained := isDrained $.Tracker $t.Provider $t.Model}}
               {{$remaining := drainRemaining $.Tracker $t.Provider $t.Model}}
+              {{$reason := drainReason $.Tracker $t.Provider $t.Model}}
               {{if gt $i 0}}
                 <span class="text-base-content/40 text-xs font-bold">➔</span>
               {{end}}
               <span class="px-2.5 py-1 rounded-lg text-xs font-mono bg-base-200/80 border border-base-content/10 inline-flex items-center gap-1.5 leading-none shadow-sm{{if $drained}} border-warning/40 bg-warning/10 text-warning{{end}}">
                 <span class="text-primary font-bold">{{$t.Provider}}</span><span class="text-base-content/40">/</span><span>{{$t.Model}}</span>
                 {{if $drained}}
-                  <span class="badge badge-warning badge-xs font-sans px-1.5 py-0.5 text-[10px] gap-1" title="Drained for next {{$remaining}}">
+                  <span class="badge badge-warning badge-xs font-sans px-1.5 py-0.5 text-[10px] gap-1" title="Drained for next {{$remaining}}{{if $reason}} &#10;Reason: {{$reason}}{{end}}">
                     drained ({{$remaining}})
                     <button type="button" hx-post="/combos/drains/reset" hx-vals='{"provider": "{{$t.Provider}}", "model": "{{$t.Model}}"}' hx-target="#combos" hx-swap="innerHTML" class="cursor-pointer font-bold hover:text-base-content" title="Clear drained state now">✕</button>
                   </span>

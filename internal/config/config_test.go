@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 const validYAML = `server:
@@ -113,5 +114,67 @@ func TestLoadProviderDisabled(t *testing.T) {
 	}
 	if len(cfg.Providers) != 1 || !cfg.Providers[0].Disabled {
 		t.Fatalf("Disabled = %v, want true", cfg.Providers[0].Disabled)
+	}
+}
+
+func TestTimeoutDefaultIs30s(t *testing.T) {
+	cfg := &Config{}
+	if got := cfg.DefaultTimeout(); got != 30*time.Second {
+		t.Fatalf("DefaultTimeout = %v, want 30s", got)
+	}
+	if got := cfg.Server.ParsedTimeout(); got != 30*time.Second {
+		t.Fatalf("Server.ParsedTimeout = %v, want 30s", got)
+	}
+	p := Provider{Name: "test", Type: "openai"}
+	if got := p.ParsedTimeout(cfg.DefaultTimeout()); got != 30*time.Second {
+		t.Fatalf("Provider.ParsedTimeout = %v, want 30s", got)
+	}
+}
+
+func TestTimeoutServerConfigured(t *testing.T) {
+	cfg := &Config{
+		Server: Server{Timeout: "45s"},
+	}
+	if got := cfg.DefaultTimeout(); got != 45*time.Second {
+		t.Fatalf("DefaultTimeout = %v, want 45s", got)
+	}
+	p := Provider{Name: "test", Type: "openai"}
+	if got := p.ParsedTimeout(cfg.DefaultTimeout()); got != 45*time.Second {
+		t.Fatalf("Provider.ParsedTimeout = %v, want 45s", got)
+	}
+}
+
+func TestTimeoutProviderOverride(t *testing.T) {
+	cfg := &Config{
+		Server: Server{Timeout: "20s"},
+		Providers: []Provider{
+			{Name: "fast", Type: "openai", Timeout: "5s"},
+			{Name: "normal", Type: "openai"},
+		},
+	}
+	if got := cfg.Providers[0].ParsedTimeout(cfg.DefaultTimeout()); got != 5*time.Second {
+		t.Fatalf("fast provider timeout = %v, want 5s", got)
+	}
+	if got := cfg.Providers[1].ParsedTimeout(cfg.DefaultTimeout()); got != 20*time.Second {
+		t.Fatalf("normal provider timeout = %v, want 20s", got)
+	}
+}
+
+func TestValidateRejectsInvalidTimeout(t *testing.T) {
+	tests := []struct {
+		name string
+		cfg  *Config
+	}{
+		{"invalid server timeout", &Config{Server: Server{Timeout: "invalid"}}},
+		{"negative server timeout", &Config{Server: Server{Timeout: "-10s"}}},
+		{"invalid top-level timeout", &Config{Timeout: "invalid"}},
+		{"invalid provider timeout", &Config{Providers: []Provider{{Name: "p", Type: "openai", Timeout: "invalid"}}}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if err := tt.cfg.Validate(); err == nil {
+				t.Errorf("%s: expected validation error", tt.name)
+			}
+		})
 	}
 }

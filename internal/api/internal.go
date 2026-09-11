@@ -11,11 +11,12 @@ import (
 func handleRefreshModels(getCfg func() *config.Config, store *vault.Store, mutate config.MutateFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		name := r.PathValue("provider")
+		cfg := getCfg()
 		for _, pc := range getCfg().Providers {
 			if pc.Name != name {
 				continue
 			}
-			p, err := buildProvider(pc, store)
+			p, err := buildProvider(pc, store, cfg.DefaultTimeout())
 			if err != nil {
 				writeError(w, http.StatusInternalServerError, err.Error())
 				return
@@ -46,11 +47,12 @@ func handleRefreshModels(getCfg func() *config.Config, store *vault.Store, mutat
 func handleTestProvider(getCfg func() *config.Config, store *vault.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		name := r.PathValue("provider")
+		cfg := getCfg()
 		for _, pc := range getCfg().Providers {
 			if pc.Name != name {
 				continue
 			}
-			p, err := buildProvider(pc, store)
+			p, err := buildProvider(pc, store, cfg.DefaultTimeout())
 			if err != nil {
 				writeError(w, http.StatusInternalServerError, err.Error())
 				return

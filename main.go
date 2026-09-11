@@ -148,7 +148,13 @@ func main() {
 
 	addr := state.getCfg().Server.Host + ":" + strconv.Itoa(state.getCfg().Server.Port)
 	log.Printf("OmniGo %s listening on http://%s (config: %s)", version, addr, paths.Config)
-	if err := http.ListenAndServe(addr, newApp(state.getCfg, state.store, state.mutate, tracker)); err != nil {
+	srv := &http.Server{
+		Addr:              addr,
+		Handler:           newApp(state.getCfg, state.store, state.mutate, tracker),
+		ReadHeaderTimeout: 10 * time.Second,
+		IdleTimeout:       state.getCfg().DefaultTimeout() * 2,
+	}
+	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		log.Fatal(err)
 	}
 }

@@ -9,8 +9,20 @@ import (
 )
 
 type Server struct {
-	Host string `yaml:"host"`
-	Port int    `yaml:"port"`
+	Host    string `yaml:"host"`
+	Port    int    `yaml:"port"`
+	Timeout string `yaml:"timeout,omitempty"`
+}
+
+func (s Server) ParsedTimeout() time.Duration {
+	if s.Timeout == "" {
+		return 30 * time.Second
+	}
+	d, err := time.ParseDuration(s.Timeout)
+	if err != nil || d <= 0 {
+		return 30 * time.Second
+	}
+	return d
 }
 
 type Provider struct {
@@ -21,6 +33,21 @@ type Provider struct {
 	Models         []string `yaml:"models"`
 	DisabledModels []string `yaml:"disabled_models,omitempty"`
 	Disabled       bool     `yaml:"disabled,omitempty"`
+	Timeout        string   `yaml:"timeout,omitempty"`
+}
+
+func (p Provider) ParsedTimeout(defaultTimeout time.Duration) time.Duration {
+	if defaultTimeout <= 0 {
+		defaultTimeout = 30 * time.Second
+	}
+	if p.Timeout == "" {
+		return defaultTimeout
+	}
+	d, err := time.ParseDuration(p.Timeout)
+	if err != nil || d <= 0 {
+		return defaultTimeout
+	}
+	return d
 }
 
 func (p Provider) IsModelDisabled(model string) bool {
@@ -59,6 +86,20 @@ type Config struct {
 	Server    Server     `yaml:"server"`
 	Providers []Provider `yaml:"providers"`
 	Combos    []Combo    `yaml:"combos"`
+	Timeout   string     `yaml:"timeout,omitempty"`
+}
+
+func (c *Config) DefaultTimeout() time.Duration {
+	if c.Server.Timeout != "" {
+		return c.Server.ParsedTimeout()
+	}
+	if c.Timeout != "" {
+		d, err := time.ParseDuration(c.Timeout)
+		if err == nil && d > 0 {
+			return d
+		}
+	}
+	return 30 * time.Second
 }
 
 func Load(path string) (*Config, error) {
@@ -80,9 +121,27 @@ var validTypes = map[string]bool{"openai": true, "antigravity": true}
 var validStrategies = map[string]bool{"priority": true, "fill-first": true}
 
 func (c *Config) Validate() error {
+	if c.Server.Timeout != "" {
+		d, err := time.ParseDuration(c.Server.Timeout)
+		if err != nil || d <= 0 {
+			return fmt.Errorf("server: invalid timeout %q", c.Server.Timeout)
+		}
+	}
+	if c.Timeout != "" {
+		d, err := time.ParseDuration(c.Timeout)
+		if err != nil || d <= 0 {
+			return fmt.Errorf("invalid timeout %q", c.Timeout)
+		}
+	}
 	for _, p := range c.Providers {
 		if !validTypes[p.Type] {
 			return fmt.Errorf("provider %q: unknown type %q", p.Name, p.Type)
+		}
+		if p.Timeout != "" {
+			d, err := time.ParseDuration(p.Timeout)
+			if err != nil || d <= 0 {
+				return fmt.Errorf("provider %q: invalid timeout %q", p.Name, p.Timeout)
+			}
 		}
 	}
 	for _, cb := range c.Combos {

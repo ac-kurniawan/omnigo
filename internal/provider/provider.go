@@ -54,6 +54,7 @@ type Config struct {
 	Name    string
 	BaseURL string
 	Models  []string
+	Timeout time.Duration
 }
 
 type Credentials struct {

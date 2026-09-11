@@ -59,6 +59,22 @@ func TestOpenAIChatUpstreamErrorReturnsError(t *testing.T) {
 	}
 }
 
+func TestOpenAITimeoutConfigured(t *testing.T) {
+	store := staticStore{Credentials{APIKey: "sk-test"}}
+	p1 := NewOpenAI(Config{Name: "openai", BaseURL: "https://example.com", Timeout: 15 * time.Second}, store)
+	op1, ok := p1.(*openAIProvider)
+	if !ok || op1.client.Timeout != 15*time.Second {
+		t.Fatalf("client.Timeout = %v, want 15s", op1.client.Timeout)
+	}
+
+	// Default when unset or <= 0
+	p2 := NewOpenAI(Config{Name: "openai", BaseURL: "https://example.com"}, store)
+	op2, ok := p2.(*openAIProvider)
+	if !ok || op2.client.Timeout != 30*time.Second {
+		t.Fatalf("client.Timeout = %v, want default 30s", op2.client.Timeout)
+	}
+}
+
 type staticStore struct{ c Credentials }
 
 func (s staticStore) Get() Credentials      { return s.c }

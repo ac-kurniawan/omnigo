@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ac-kurniawan/omnigo/internal/auth"
 	"github.com/ac-kurniawan/omnigo/internal/combo"
@@ -93,6 +94,30 @@ func TestProviderFallsBackToConfigAPIKey(t *testing.T) {
 	_, _ = buildProvider(cfg.Providers[0], vault.NewMemoryStore(v))
 	if gotKey != "sk-from-config" {
 		t.Fatalf("gotKey = %q, want sk-from-config", gotKey)
+	}
+}
+
+func TestProviderReceivesConfiguredTimeout(t *testing.T) {
+	var gotTimeout time.Duration
+	provider.Register("openai", func(cfg provider.Config, store provider.CredStore) provider.Provider {
+		gotTimeout = cfg.Timeout
+		return &fakeProvider{name: cfg.Name}
+	})
+	cfg := &config.Config{
+		Server: config.Server{Timeout: "40s"},
+		Providers: []config.Provider{
+			{Name: "openai-custom", Type: "openai", Timeout: "12s"},
+			{Name: "openai-default", Type: "openai"},
+		},
+	}
+	v := &vault.Vault{}
+	_, _ = buildProvider(cfg.Providers[0], vault.NewMemoryStore(v), cfg.DefaultTimeout())
+	if gotTimeout != 12*time.Second {
+		t.Fatalf("custom provider timeout = %v, want 12s", gotTimeout)
+	}
+	_, _ = buildProvider(cfg.Providers[1], vault.NewMemoryStore(v), cfg.DefaultTimeout())
+	if gotTimeout != 40*time.Second {
+		t.Fatalf("default provider timeout = %v, want 40s (from server)", gotTimeout)
 	}
 }
 

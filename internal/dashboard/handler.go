@@ -77,6 +77,12 @@ func newServer(getCfg func() *config.Config, store *vault.Store, mutate config.M
 			s := int(rem.Seconds()) % 60
 			return fmt.Sprintf("%dm%02ds", m, s)
 		},
+		"drainReason": func(tr *combo.Tracker, provider, model string) string {
+			if tr == nil {
+				return ""
+			}
+			return tr.DrainReason(combo.Target{Provider: provider, Model: model})
+		},
 	}).ParseFS(templatesFS, "templates/*.html"))
 
 	s := &Server{

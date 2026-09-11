@@ -2,10 +2,16 @@ package combo
 
 import (
 	"encoding/json"
+	"log"
 	"os"
 	"sync"
 	"time"
 )
+
+type drainEntry struct {
+	Until  time.Time `json:"until"`
+	Reason string    `json:"reason,omitempty"`
+}
 
 // Tracker maintains exhaustion/drain state for targets.
 // It keeps state in RAM for lock-free-like fast reads and flushes to a JSON file
@@ -13,13 +19,13 @@ import (
 type Tracker struct {
 	mu     sync.RWMutex
 	path   string
-	drains map[string]time.Time // key: "provider/model" -> drain until
+	drains map[string]drainEntry // key: "provider/model" -> entry
 }
 
 func NewTracker(path string) *Tracker {
 	t := &Tracker{
 		path:   path,
-		drains: make(map[string]time.Time),
+		drains: make(map[string]drainEntry),
 	}
 	if path != "" {
 		t.load()
@@ -33,42 +39,57 @@ func targetKey(t Target) string {
 
 func (t *Tracker) IsDrained(target Target) bool {
 	t.mu.RLock()
-	until, ok := t.drains[targetKey(target)]
+	entry, ok := t.drains[targetKey(target)]
 	t.mu.RUnlock()
 	if !ok {
 		return false
 	}
-	return time.Now().Before(until)
+	return time.Now().Before(entry.Until)
 }
 
 func (t *Tracker) DrainRemaining(target Target) time.Duration {
 	t.mu.RLock()
-	until, ok := t.drains[targetKey(target)]
+	entry, ok := t.drains[targetKey(target)]
 	t.mu.RUnlock()
 	if !ok {
 		return 0
 	}
-	rem := time.Until(until)
+	rem := time.Until(entry.Until)
 	if rem < 0 {
 		return 0
 	}
 	return rem
 }
 
-func (t *Tracker) MarkDrained(target Target, ttl time.Duration) {
+func (t *Tracker) DrainReason(target Target) string {
+	t.mu.RLock()
+	entry, ok := t.drains[targetKey(target)]
+	t.mu.RUnlock()
+	if !ok || !time.Now().Before(entry.Until) {
+		return ""
+	}
+	return entry.Reason
+}
+
+func (t *Tracker) MarkDrained(target Target, ttl time.Duration, reason string) {
 	if ttl <= 0 {
 		return
 	}
+	key := targetKey(target)
+	until := time.Now().Add(ttl)
 	t.mu.Lock()
-	t.drains[targetKey(target)] = time.Now().Add(ttl)
+	t.drains[key] = drainEntry{Until: until, Reason: reason}
 	t.mu.Unlock()
+	log.Printf("[drained] %s for %v (reason: %s)", key, ttl.Round(time.Second), reason)
 	t.persist()
 }
 
 func (t *Tracker) Clear(target Target) {
+	key := targetKey(target)
 	t.mu.Lock()
-	delete(t.drains, targetKey(target))
+	delete(t.drains, key)
 	t.mu.Unlock()
+	log.Printf("[drained-cleared] %s", key)
 	t.persist()
 }
 
@@ -77,16 +98,29 @@ func (t *Tracker) load() {
 	if err != nil {
 		return
 	}
-	var stored map[string]time.Time
-	if err := json.Unmarshal(b, &stored); err != nil {
+	// First try new format map[string]drainEntry
+	var stored map[string]drainEntry
+	if err := json.Unmarshal(b, &stored); err == nil && len(stored) > 0 {
+		now := time.Now()
+		t.mu.Lock()
+		defer t.mu.Unlock()
+		for k, entry := range stored {
+			if entry.Until.After(now) {
+				t.drains[k] = entry
+			}
+		}
 		return
 	}
-	now := time.Now()
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	for k, until := range stored {
-		if until.After(now) {
-			t.drains[k] = until
+	// Fallback to legacy map[string]time.Time
+	var legacy map[string]time.Time
+	if err := json.Unmarshal(b, &legacy); err == nil {
+		now := time.Now()
+		t.mu.Lock()
+		defer t.mu.Unlock()
+		for k, until := range legacy {
+			if until.After(now) {
+				t.drains[k] = drainEntry{Until: until, Reason: ""}
+			}
 		}
 	}
 }
@@ -96,11 +130,11 @@ func (t *Tracker) persist() {
 		return
 	}
 	t.mu.RLock()
-	active := make(map[string]time.Time)
+	active := make(map[string]drainEntry)
 	now := time.Now()
-	for k, until := range t.drains {
-		if until.After(now) {
-			active[k] = until
+	for k, entry := range t.drains {
+		if entry.Until.After(now) {
+			active[k] = entry
 		}
 	}
 	t.mu.RUnlock()

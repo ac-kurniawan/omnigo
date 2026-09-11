@@ -24,7 +24,11 @@ func New(cfg provider.Config, store provider.CredStore) provider.Provider {
 	if base := strings.TrimRight(cfg.BaseURL, "/"); base != "" {
 		baseURL = base
 	}
-	return &Provider{name: cfg.Name, store: store, client: &http.Client{Timeout: 60 * time.Second}}
+	timeout := cfg.Timeout
+	if timeout <= 0 {
+		timeout = 30 * time.Second
+	}
+	return &Provider{name: cfg.Name, store: store, client: &http.Client{Timeout: timeout}}
 }
 
 func (p *Provider) Name() string { return p.name }

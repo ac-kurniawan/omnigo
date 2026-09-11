@@ -19,7 +19,11 @@ type openAIProvider struct {
 }
 
 func NewOpenAI(cfg Config, store CredStore) Provider {
-	return &openAIProvider{name: cfg.Name, baseURL: strings.TrimRight(cfg.BaseURL, "/"), store: store, client: &http.Client{Timeout: 30 * time.Second}}
+	timeout := cfg.Timeout
+	if timeout <= 0 {
+		timeout = 30 * time.Second
+	}
+	return &openAIProvider{name: cfg.Name, baseURL: strings.TrimRight(cfg.BaseURL, "/"), store: store, client: &http.Client{Timeout: timeout}}
 }
 
 func (p *openAIProvider) Name() string { return p.name }

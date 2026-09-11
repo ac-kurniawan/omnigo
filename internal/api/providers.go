@@ -2,6 +2,7 @@ package api
 
 import (
 	"fmt"
+	"time"
 
 	"github.com/ac-kurniawan/omnigo/internal/config"
 	"github.com/ac-kurniawan/omnigo/internal/provider"
@@ -46,10 +47,20 @@ func (s credStore) Put(c provider.Credentials) error {
 	})
 }
 
-func buildProvider(cfg config.Provider, store *vault.Store) (provider.Provider, error) {
+func buildProvider(cfg config.Provider, store *vault.Store, defaultTimeout ...time.Duration) (provider.Provider, error) {
 	factory, ok := provider.Get(cfg.Type)
 	if !ok {
 		return nil, fmt.Errorf("unknown provider type %q", cfg.Type)
 	}
-	return factory(provider.Config{Name: cfg.Name, BaseURL: cfg.BaseURL, Models: cfg.Models}, credStore{store: store, name: cfg.Name, cfgKey: cfg.APIKey}), nil
+	def := 30 * time.Second
+	if len(defaultTimeout) > 0 && defaultTimeout[0] > 0 {
+		def = defaultTimeout[0]
+	}
+	timeout := cfg.ParsedTimeout(def)
+	return factory(provider.Config{
+		Name:    cfg.Name,
+		BaseURL: cfg.BaseURL,
+		Models:  cfg.Models,
+		Timeout: timeout,
+	}, credStore{store: store, name: cfg.Name, cfgKey: cfg.APIKey}), nil
 }

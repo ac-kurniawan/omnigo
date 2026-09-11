@@ -52,7 +52,7 @@ func (c Combo) Run(ctx context.Context, dispatch DispatchFunc) (Target, error) {
 				if ttl <= 0 {
 					ttl = 60 * time.Second
 				}
-				c.Tracker.MarkDrained(t, ttl)
+				c.Tracker.MarkDrained(t, ttl, err.Error())
 			}
 			continue
 		}

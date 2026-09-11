@@ -76,7 +76,7 @@ func resolveDirect(cfg *config.Config, store *vault.Store, model string) (provid
 				if pc.Disabled || pc.IsModelDisabled(modelID) {
 					return nil, "", false
 				}
-				p, err := buildProvider(pc, store)
+				p, err := buildProvider(pc, store, cfg.DefaultTimeout())
 				if err != nil {
 					return nil, "", false
 				}
@@ -93,7 +93,7 @@ func resolveDirect(cfg *config.Config, store *vault.Store, model string) (provid
 				if pc.IsModelDisabled(model) {
 					return nil, "", false
 				}
-				p, err := buildProvider(pc, store)
+				p, err := buildProvider(pc, store, cfg.DefaultTimeout())
 				if err != nil {
 					return nil, "", false
 				}
@@ -138,7 +138,7 @@ func providerForName(cfg *config.Config, store *vault.Store, name string) (provi
 			if pc.Disabled {
 				return nil, false
 			}
-			p, err := buildProvider(pc, store)
+			p, err := buildProvider(pc, store, cfg.DefaultTimeout())
 			if err != nil {
 				return nil, false
 			}

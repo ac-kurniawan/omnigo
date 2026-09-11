@@ -95,7 +95,7 @@ func TestFillFirstSkipsDrainedTarget(t *testing.T) {
 	t1 := Target{Provider: "a", Model: "m1"}
 	t2 := Target{Provider: "b", Model: "m2"}
 
-	tr.MarkDrained(t1, 1*time.Minute)
+	tr.MarkDrained(t1, 1*time.Minute, "previously exhausted")
 
 	c := Combo{
 		Name:     "auto",
@@ -155,6 +155,9 @@ func TestFillFirstMarksDrainedOnFailure(t *testing.T) {
 	if !tr.IsDrained(t1) {
 		t.Fatalf("target 1 should have been marked drained after failure")
 	}
+	if got := tr.DrainReason(t1); got != "upstream failure" {
+		t.Fatalf("drain reason = %q, want 'upstream failure'", got)
+	}
 }
 
 func TestPriorityDoesNotMarkDrainedOrSkip(t *testing.T) {
@@ -162,7 +165,7 @@ func TestPriorityDoesNotMarkDrainedOrSkip(t *testing.T) {
 	t1 := Target{Provider: "a", Model: "m1"}
 	t2 := Target{Provider: "b", Model: "m2"}
 
-	tr.MarkDrained(t1, 1*time.Minute)
+	tr.MarkDrained(t1, 1*time.Minute, "ignore me")
 
 	c := Combo{
 		Name:     "auto",

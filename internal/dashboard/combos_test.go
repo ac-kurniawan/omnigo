@@ -96,7 +96,7 @@ func TestResetDrainedTarget(t *testing.T) {
 	}
 	store := vault.NewMemoryStore(&vault.Vault{})
 	tr := combo.NewTracker("")
-	tr.MarkDrained(combo.Target{Provider: "agy", Model: "m1"}, 1*time.Minute)
+	tr.MarkDrained(combo.Target{Provider: "agy", Model: "m1"}, 1*time.Minute, "upstream 500: internal server error")
 
 	s := newServer(func() *config.Config { return cfg }, store, nil, tr)
 
@@ -115,6 +115,37 @@ func TestResetDrainedTarget(t *testing.T) {
 	}
 	if tr.IsDrained(combo.Target{Provider: "agy", Model: "m1"}) {
 		t.Fatal("expected target to be cleared after reset")
+	}
+}
+
+func TestCombosRenderDrainedBadgeWithReason(t *testing.T) {
+	cfg := &config.Config{
+		Combos: []config.Combo{{
+			Name:     "smart",
+			Strategy: "fill-first",
+			Targets:  []config.ComboTarget{{Provider: "openai", Model: "gpt-4o"}},
+		}},
+	}
+	store := vault.NewMemoryStore(&vault.Vault{})
+	tr := combo.NewTracker("")
+	tr.MarkDrained(combo.Target{Provider: "openai", Model: "gpt-4o"}, 2*time.Minute, "rate limited (429)")
+
+	s := newServer(func() *config.Config { return cfg }, store, nil, tr)
+
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest("GET", "/combos", nil)
+	req.Header.Set("HX-Request", "true")
+	s.routes().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d", rr.Code)
+	}
+	body := rr.Body.String()
+	if !strings.Contains(body, "drained") {
+		t.Fatalf("expected drained badge in body: %s", body)
+	}
+	if !strings.Contains(body, "Reason: rate limited (429)") {
+		t.Fatalf("expected drain reason in tooltip: %s", body)
 	}
 }
 
