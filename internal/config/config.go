@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
@@ -40,6 +41,18 @@ type Combo struct {
 	Name     string        `yaml:"name"`
 	Strategy string        `yaml:"strategy"`
 	Targets  []ComboTarget `yaml:"targets"`
+	DrainTTL string        `yaml:"drain_ttl,omitempty"`
+}
+
+func (c Combo) ParsedDrainTTL() time.Duration {
+	if c.DrainTTL == "" {
+		return 60 * time.Second
+	}
+	d, err := time.ParseDuration(c.DrainTTL)
+	if err != nil || d <= 0 {
+		return 60 * time.Second
+	}
+	return d
 }
 
 type Config struct {
@@ -75,6 +88,12 @@ func (c *Config) Validate() error {
 	for _, cb := range c.Combos {
 		if !validStrategies[cb.Strategy] {
 			return fmt.Errorf("combo %q: unknown strategy %q", cb.Name, cb.Strategy)
+		}
+		if cb.DrainTTL != "" {
+			d, err := time.ParseDuration(cb.DrainTTL)
+			if err != nil || d <= 0 {
+				return fmt.Errorf("combo %q: invalid drain_ttl %q", cb.Name, cb.DrainTTL)
+			}
 		}
 	}
 	return nil

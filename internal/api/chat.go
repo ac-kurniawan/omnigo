@@ -14,7 +14,7 @@ import (
 	"github.com/ac-kurniawan/omnigo/internal/vault"
 )
 
-func handleChat(getCfg func() *config.Config, store *vault.Store) http.HandlerFunc {
+func handleChat(getCfg func() *config.Config, store *vault.Store, tracker *combo.Tracker) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		raw, err := io.ReadAll(r.Body)
 		if err != nil {
@@ -42,7 +42,7 @@ func handleChat(getCfg func() *config.Config, store *vault.Store) http.HandlerFu
 		req := provider.ChatRequest{Model: body.Model, Stream: body.Stream, Messages: msgs, Raw: raw}
 
 		if cb, ok := findCombo(cfg, body.Model); ok {
-			runCombo(w, r, cfg, store, cb, req)
+			runCombo(w, r, cfg, store, cb, req, tracker)
 			return
 		}
 
@@ -104,8 +104,13 @@ func resolveDirect(cfg *config.Config, store *vault.Store, model string) (provid
 	return nil, "", false
 }
 
-func runCombo(w http.ResponseWriter, r *http.Request, cfg *config.Config, store *vault.Store, cb config.Combo, req provider.ChatRequest) {
-	c := combo.Combo{Name: cb.Name, Strategy: cb.Strategy}
+func runCombo(w http.ResponseWriter, r *http.Request, cfg *config.Config, store *vault.Store, cb config.Combo, req provider.ChatRequest, tracker *combo.Tracker) {
+	c := combo.Combo{
+		Name:     cb.Name,
+		Strategy: cb.Strategy,
+		Tracker:  tracker,
+		DrainTTL: cb.ParsedDrainTTL(),
+	}
 	for _, t := range cb.Targets {
 		c.Targets = append(c.Targets, combo.Target{Provider: t.Provider, Model: t.Model})
 	}

@@ -4,9 +4,12 @@ import (
 	"crypto/rand"
 	"embed"
 	"encoding/hex"
+	"fmt"
 	"html/template"
 	"net/http"
+	"time"
 
+	"github.com/ac-kurniawan/omnigo/internal/combo"
 	"github.com/ac-kurniawan/omnigo/internal/config"
 	"github.com/ac-kurniawan/omnigo/internal/provider/antigravity"
 	"github.com/ac-kurniawan/omnigo/internal/vault"
@@ -24,13 +27,15 @@ type viewData struct {
 	Keys      []vault.ClientKey
 	Secrets   map[string]vault.ProviderSecret
 	NewKey    string
+	Tracker   *combo.Tracker
 }
 
 type Server struct {
-	getCfg func() *config.Config
-	store  *vault.Store
-	mutate config.MutateFunc
-	tmpl   *template.Template
+	getCfg  func() *config.Config
+	store   *vault.Store
+	mutate  config.MutateFunc
+	tmpl    *template.Template
+	tracker *combo.Tracker
 
 	// exchange/discover are injectable OAuth seams (defaults to the
 	// antigravity package); tests override them with fakes.
@@ -38,20 +43,48 @@ type Server struct {
 	discover func(r *http.Request, accessToken string) (string, error)
 }
 
-func NewHandler(getCfg func() *config.Config, store *vault.Store, mutate config.MutateFunc) http.Handler {
-	return newServer(getCfg, store, mutate).routes()
+func NewHandler(getCfg func() *config.Config, store *vault.Store, mutate config.MutateFunc, tracker ...*combo.Tracker) http.Handler {
+	var tr *combo.Tracker
+	if len(tracker) > 0 {
+		tr = tracker[0]
+	}
+	return newServer(getCfg, store, mutate, tr).routes()
 }
 
-func newServer(getCfg func() *config.Config, store *vault.Store, mutate config.MutateFunc) *Server {
+func newServer(getCfg func() *config.Config, store *vault.Store, mutate config.MutateFunc, tracker ...*combo.Tracker) *Server {
+	var tr *combo.Tracker
+	if len(tracker) > 0 {
+		tr = tracker[0]
+	}
 	tmpl := template.Must(template.New("root").Funcs(template.FuncMap{
 		"sub": func(a, b int) int { return a - b },
+		"isDrained": func(tr *combo.Tracker, provider, model string) bool {
+			if tr == nil {
+				return false
+			}
+			return tr.IsDrained(combo.Target{Provider: provider, Model: model})
+		},
+		"drainRemaining": func(tr *combo.Tracker, provider, model string) string {
+			if tr == nil {
+				return ""
+			}
+			rem := tr.DrainRemaining(combo.Target{Provider: provider, Model: model})
+			if rem <= 0 {
+				return ""
+			}
+			rem = rem.Round(time.Second)
+			m := int(rem.Minutes())
+			s := int(rem.Seconds()) % 60
+			return fmt.Sprintf("%dm%02ds", m, s)
+		},
 	}).ParseFS(templatesFS, "templates/*.html"))
 
 	s := &Server{
-		getCfg: getCfg,
-		store:  store,
-		mutate: mutate,
-		tmpl:   tmpl,
+		getCfg:  getCfg,
+		store:   store,
+		mutate:  mutate,
+		tmpl:    tmpl,
+		tracker: tr,
 	}
 	s.exchange = func(r *http.Request, code, redirectURI string) (*antigravity.Token, error) {
 		return antigravity.ExchangeCode(r.Context(), code, redirectURI)
@@ -81,6 +114,7 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("GET /combos", s.getCombos)
 	mux.HandleFunc("POST /combos", s.createCombo)
 	mux.HandleFunc("POST /combos/{name}/delete", s.deleteCombo)
+	mux.HandleFunc("POST /combos/drains/reset", s.resetDrain)
 	mux.HandleFunc("GET /keys", s.getKeys)
 	mux.HandleFunc("POST /keys", s.createKey)
 	mux.HandleFunc("POST /keys/{id}/revoke", s.revokeKey)
@@ -94,6 +128,7 @@ func (s *Server) index(w http.ResponseWriter, r *http.Request) {
 		Combos:    cfg.Combos,
 		Keys:      s.store.Get().ClientKeys,
 		Secrets:   s.store.Get().ProviderSecrets,
+		Tracker:   s.tracker,
 	}
 	_ = s.tmpl.ExecuteTemplate(w, "index.html", data)
 }

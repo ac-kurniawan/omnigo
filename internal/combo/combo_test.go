@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 )
 
 func TestPriorityFallsBackOnFailure(t *testing.T) {
@@ -86,5 +87,105 @@ func TestAllFailReturnsLastError(t *testing.T) {
 	_, err := c.Run(context.Background(), dispatch)
 	if err == nil {
 		t.Fatal("expected error when all targets fail")
+	}
+}
+
+func TestFillFirstSkipsDrainedTarget(t *testing.T) {
+	tr := NewTracker("")
+	t1 := Target{Provider: "a", Model: "m1"}
+	t2 := Target{Provider: "b", Model: "m2"}
+
+	tr.MarkDrained(t1, 1*time.Minute)
+
+	c := Combo{
+		Name:     "auto",
+		Strategy: "fill-first",
+		Targets:  []Target{t1, t2},
+		Tracker:  tr,
+		DrainTTL: 1 * time.Minute,
+	}
+
+	var called []string
+	dispatch := func(_ context.Context, tgt Target) error {
+		called = append(called, tgt.Provider)
+		return nil
+	}
+
+	got, err := c.Run(context.Background(), dispatch)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if got.Provider != "b" {
+		t.Fatalf("got provider %q, want b (since a was drained)", got.Provider)
+	}
+	if len(called) != 1 || called[0] != "b" {
+		t.Fatalf("called = %v, want only b", called)
+	}
+}
+
+func TestFillFirstMarksDrainedOnFailure(t *testing.T) {
+	tr := NewTracker("")
+	t1 := Target{Provider: "a", Model: "m1"}
+	t2 := Target{Provider: "b", Model: "m2"}
+
+	c := Combo{
+		Name:     "auto",
+		Strategy: "fill-first",
+		Targets:  []Target{t1, t2},
+		Tracker:  tr,
+		DrainTTL: 1 * time.Minute,
+	}
+
+	dispatch := func(_ context.Context, tgt Target) error {
+		if tgt.Provider == "a" {
+			return errors.New("upstream failure")
+		}
+		return nil
+	}
+
+	got, err := c.Run(context.Background(), dispatch)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if got.Provider != "b" {
+		t.Fatalf("got provider %q, want b", got.Provider)
+	}
+
+	// Verify that t1 was marked drained in tracker
+	if !tr.IsDrained(t1) {
+		t.Fatalf("target 1 should have been marked drained after failure")
+	}
+}
+
+func TestPriorityDoesNotMarkDrainedOrSkip(t *testing.T) {
+	tr := NewTracker("")
+	t1 := Target{Provider: "a", Model: "m1"}
+	t2 := Target{Provider: "b", Model: "m2"}
+
+	tr.MarkDrained(t1, 1*time.Minute)
+
+	c := Combo{
+		Name:     "auto",
+		Strategy: "priority",
+		Targets:  []Target{t1, t2},
+		Tracker:  tr,
+	}
+
+	var called []string
+	dispatch := func(_ context.Context, tgt Target) error {
+		called = append(called, tgt.Provider)
+		return nil
+	}
+
+	got, err := c.Run(context.Background(), dispatch)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	// priority is stateless; it tries t1 first regardless of drain state
+	if got.Provider != "a" {
+		t.Fatalf("got %q, want a (priority ignores drain)", got.Provider)
+	}
+	if len(called) != 1 || called[0] != "a" {
+		t.Fatalf("called = %v, want a", called)
 	}
 }

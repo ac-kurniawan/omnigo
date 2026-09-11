@@ -5,7 +5,9 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/ac-kurniawan/omnigo/internal/combo"
 	"github.com/ac-kurniawan/omnigo/internal/config"
 	"github.com/ac-kurniawan/omnigo/internal/vault"
 )
@@ -21,7 +23,7 @@ func TestAddCombo(t *testing.T) {
 	mutate := func(fn func(*config.Config) error) error {
 		return fn(cfg)
 	}
-	s := newServer(func() *config.Config { return cfg }, store, mutate)
+	s := newServer(func() *config.Config { return cfg }, store, mutate, nil)
 
 	req := httptest.NewRequest("POST", "/combos", strings.NewReader("name=smart&strategy=priority&targets=agy/gemini-3.7-flash,openai-main/gpt-4o"))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
@@ -54,7 +56,7 @@ func TestAddComboMultipleTargetsOrdered(t *testing.T) {
 	mutate := func(fn func(*config.Config) error) error {
 		return fn(cfg)
 	}
-	s := newServer(func() *config.Config { return cfg }, store, mutate)
+	s := newServer(func() *config.Config { return cfg }, store, mutate, nil)
 
 	// targets passed as ordered entries
 	req := httptest.NewRequest("POST", "/combos", strings.NewReader("name=fast&strategy=priority&targets=agy/m1&targets=openai-main/m2&targets=agy/m3"))
@@ -84,6 +86,38 @@ func TestAddComboMultipleTargetsOrdered(t *testing.T) {
 	}
 }
 
+func TestResetDrainedTarget(t *testing.T) {
+	cfg := &config.Config{
+		Combos: []config.Combo{{
+			Name:     "smart",
+			Strategy: "fill-first",
+			Targets:  []config.ComboTarget{{Provider: "agy", Model: "m1"}},
+		}},
+	}
+	store := vault.NewMemoryStore(&vault.Vault{})
+	tr := combo.NewTracker("")
+	tr.MarkDrained(combo.Target{Provider: "agy", Model: "m1"}, 1*time.Minute)
+
+	s := newServer(func() *config.Config { return cfg }, store, nil, tr)
+
+	if !tr.IsDrained(combo.Target{Provider: "agy", Model: "m1"}) {
+		t.Fatal("expected drained before reset")
+	}
+
+	req := httptest.NewRequest("POST", "/combos/drains/reset", strings.NewReader("provider=agy&model=m1"))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("HX-Request", "true")
+	rr := httptest.NewRecorder()
+	s.routes().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d", rr.Code)
+	}
+	if tr.IsDrained(combo.Target{Provider: "agy", Model: "m1"}) {
+		t.Fatal("expected target to be cleared after reset")
+	}
+}
+
 func TestDeleteCombo(t *testing.T) {
 	cfg := &config.Config{
 		Combos: []config.Combo{{Name: "smart", Strategy: "priority"}},
@@ -92,7 +126,7 @@ func TestDeleteCombo(t *testing.T) {
 	mutate := func(fn func(*config.Config) error) error {
 		return fn(cfg)
 	}
-	s := newServer(func() *config.Config { return cfg }, store, mutate)
+	s := newServer(func() *config.Config { return cfg }, store, mutate, nil)
 
 	rr := httptest.NewRecorder()
 	req := httptest.NewRequest("POST", "/combos/smart/delete", nil)

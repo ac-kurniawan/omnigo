@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/ac-kurniawan/omnigo/internal/api"
+	"github.com/ac-kurniawan/omnigo/internal/combo"
 	"github.com/ac-kurniawan/omnigo/internal/config"
 	"github.com/ac-kurniawan/omnigo/internal/dashboard"
 	"github.com/ac-kurniawan/omnigo/internal/vault"
@@ -97,13 +98,13 @@ func (s *appState) mutate(fn func(*config.Config) error) error {
 	return s.reload()
 }
 
-func newApp(getCfg func() *config.Config, store *vault.Store, mutate config.MutateFunc) http.Handler {
-	apiHandler := api.NewRouter(getCfg, store, mutate)
+func newApp(getCfg func() *config.Config, store *vault.Store, mutate config.MutateFunc, tracker *combo.Tracker) http.Handler {
+	apiHandler := api.NewRouter(getCfg, store, mutate, tracker)
 
 	root := http.NewServeMux()
 	root.Handle("/v1/", apiHandler)
 	root.Handle("/internal/", apiHandler)
-	root.Handle("/", dashboard.NewHandler(getCfg, store, mutate))
+	root.Handle("/", dashboard.NewHandler(getCfg, store, mutate, tracker))
 	return root
 }
 
@@ -139,13 +140,15 @@ func main() {
 		log.Fatalf("startup: %v", err)
 	}
 
+	tracker := combo.NewTracker(paths.Drains)
+
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	go state.watch(ctx, 2*time.Second)
 
 	addr := state.getCfg().Server.Host + ":" + strconv.Itoa(state.getCfg().Server.Port)
 	log.Printf("OmniGo %s listening on http://%s (config: %s)", version, addr, paths.Config)
-	if err := http.ListenAndServe(addr, newApp(state.getCfg, state.store, state.mutate)); err != nil {
+	if err := http.ListenAndServe(addr, newApp(state.getCfg, state.store, state.mutate, tracker)); err != nil {
 		log.Fatal(err)
 	}
 }

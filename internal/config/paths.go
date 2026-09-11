@@ -32,6 +32,7 @@ type Paths struct {
 	Config string
 	Auth   string
 	Key    string
+	Drains string
 }
 
 // DefaultConfigDir returns the default configuration directory (~/.config/omnigo on unix).
@@ -73,6 +74,8 @@ func ResolvePaths(dirFlag, cfgFlag, authFlag, keyFlag string) (*Paths, error) {
 		keyPath = filepath.Join(dir, ".secret.key")
 	}
 
+	drainsPath := filepath.Join(dir, "drains.json")
+
 	// Ensure the base directory or config's parent directory exists
 	targetDir := dir
 	if cfgFlag != "" {
@@ -107,5 +110,6 @@ func ResolvePaths(dirFlag, cfgFlag, authFlag, keyFlag string) (*Paths, error) {
 		Config: cfgPath,
 		Auth:   authPath,
 		Key:    keyPath,
+		Drains: drainsPath,
 	}, nil
 }

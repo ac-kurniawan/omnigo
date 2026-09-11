@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/ac-kurniawan/omnigo/internal/auth"
+	"github.com/ac-kurniawan/omnigo/internal/combo"
 	"github.com/ac-kurniawan/omnigo/internal/config"
 	"github.com/ac-kurniawan/omnigo/internal/provider"
 	"github.com/ac-kurniawan/omnigo/internal/vault"
@@ -255,6 +256,77 @@ func TestChatDirectModelWithMultipleSlashes(t *testing.T) {
 	}
 	if gotModel != "routers9/deepseek-v4-flash-0731" {
 		t.Fatalf("model = %q, want routers9/deepseek-v4-flash-0731", gotModel)
+	}
+}
+
+func TestChatFillFirstUsesTrackerAndDrains(t *testing.T) {
+	var calls []string
+	provider.Register("openai", func(cfg provider.Config, store provider.CredStore) provider.Provider {
+		return &fakeProvider{
+			name: cfg.Name,
+			chat: func(r provider.ChatRequest) error {
+				calls = append(calls, cfg.Name)
+				if cfg.Name == "prov-a" {
+					return fmt.Errorf("rate limited (429)")
+				}
+				return nil
+			},
+		}
+	})
+
+	cfg := &config.Config{
+		Providers: []config.Provider{
+			{Name: "prov-a", Type: "openai", BaseURL: "https://a", Models: []string{"m1"}},
+			{Name: "prov-b", Type: "openai", BaseURL: "https://b", Models: []string{"m2"}},
+		},
+		Combos: []config.Combo{
+			{
+				Name:     "smart",
+				Strategy: "fill-first",
+				DrainTTL: "1m",
+				Targets: []config.ComboTarget{
+					{Provider: "prov-a", Model: "m1"},
+					{Provider: "prov-b", Model: "m2"},
+				},
+			},
+		},
+	}
+
+	tr := combo.NewTracker("")
+	raw, hash, prefix, _ := auth.GenerateKey()
+	v := &vault.Vault{ClientKeys: []vault.ClientKey{{ID: "k1", KeyHash: hash, Prefix: prefix, Active: true}}}
+
+	router := NewRouter(func() *config.Config { return cfg }, vault.NewMemoryStore(v), nil, tr)
+
+	// Request 1: prov-a fails, marks drained, falls back to prov-b
+	req1 := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(`{"model":"smart","messages":[{"role":"user","content":"hi"}]}`))
+	req1.Header.Set("Authorization", "Bearer "+raw)
+	rr1 := httptest.NewRecorder()
+	router.ServeHTTP(rr1, req1)
+
+	if rr1.Code != http.StatusOK {
+		t.Fatalf("req1 status = %d: %s", rr1.Code, rr1.Body.String())
+	}
+	if len(calls) != 2 || calls[0] != "prov-a" || calls[1] != "prov-b" {
+		t.Fatalf("calls = %v, want [prov-a prov-b]", calls)
+	}
+
+	if !tr.IsDrained(combo.Target{Provider: "prov-a", Model: "m1"}) {
+		t.Fatal("prov-a/m1 should be marked drained")
+	}
+
+	// Request 2: prov-a is already drained -> fill-first directly calls prov-b!
+	calls = nil
+	req2 := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(`{"model":"smart","messages":[{"role":"user","content":"hi again"}]}`))
+	req2.Header.Set("Authorization", "Bearer "+raw)
+	rr2 := httptest.NewRecorder()
+	router.ServeHTTP(rr2, req2)
+
+	if rr2.Code != http.StatusOK {
+		t.Fatalf("req2 status = %d: %s", rr2.Code, rr2.Body.String())
+	}
+	if len(calls) != 1 || calls[0] != "prov-b" {
+		t.Fatalf("req2 calls = %v, want only [prov-b] (skipped drained prov-a)", calls)
 	}
 }
 

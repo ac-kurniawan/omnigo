@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/ac-kurniawan/omnigo/internal/combo"
 	"github.com/ac-kurniawan/omnigo/internal/config"
 )
 
@@ -56,6 +57,7 @@ func (s *Server) createCombo(w http.ResponseWriter, r *http.Request) {
 		Name:     name,
 		Strategy: strategy,
 		Targets:  targets,
+		DrainTTL: r.FormValue("drain_ttl"),
 	}
 
 	if s.mutate != nil {
@@ -112,10 +114,24 @@ func (s *Server) getCombos(w http.ResponseWriter, r *http.Request) {
 	s.renderCombos(w)
 }
 
+func (s *Server) resetDrain(w http.ResponseWriter, r *http.Request) {
+	provider := r.FormValue("provider")
+	model := r.FormValue("model")
+	if s.tracker != nil && provider != "" && model != "" {
+		s.tracker.Clear(combo.Target{Provider: provider, Model: model})
+	}
+	if r.Header.Get("HX-Request") != "true" {
+		http.Redirect(w, r, "/", http.StatusSeeOther)
+		return
+	}
+	s.renderCombos(w)
+}
+
 func (s *Server) renderCombos(w http.ResponseWriter) {
 	data := viewData{
 		Providers: s.getCfg().Providers,
 		Combos:    s.getCfg().Combos,
+		Tracker:   s.tracker,
 	}
 	_ = s.tmpl.ExecuteTemplate(w, "combos", data)
 }

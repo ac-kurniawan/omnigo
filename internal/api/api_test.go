@@ -13,7 +13,7 @@ import (
 func testRouter(t *testing.T, cfg *config.Config, v *vault.Vault) http.Handler {
 	return NewRouter(func() *config.Config { return cfg }, vault.NewMemoryStore(v), func(fn func(*config.Config) error) error {
 		return fn(cfg)
-	})
+	}, nil)
 }
 
 func TestModelsUnauthorized(t *testing.T) {

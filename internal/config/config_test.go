@@ -60,10 +60,19 @@ func TestValidateRejectsUnknownStrategy(t *testing.T) {
 func TestValidateAcceptsKnownValues(t *testing.T) {
 	cfg := &Config{
 		Providers: []Provider{{Name: "a", Type: "openai"}, {Name: "b", Type: "antigravity"}},
-		Combos:    []Combo{{Name: "auto", Strategy: "priority"}, {Name: "x", Strategy: "fill-first"}},
+		Combos:    []Combo{{Name: "auto", Strategy: "priority"}, {Name: "x", Strategy: "fill-first", DrainTTL: "30s"}},
 	}
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("Validate: %v", err)
+	}
+}
+
+func TestValidateRejectsInvalidDrainTTL(t *testing.T) {
+	cfg := &Config{
+		Combos: []Combo{{Name: "x", Strategy: "fill-first", DrainTTL: "invalid-duration"}},
+	}
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected error for invalid drain_ttl duration")
 	}
 }
 

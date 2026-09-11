@@ -22,7 +22,7 @@ func TestAppServesDashboardAndGateV1(t *testing.T) {
 	store := vault.NewMemoryStore(&vault.Vault{ProviderSecrets: map[string]vault.ProviderSecret{}})
 	app := newApp(func() *config.Config { return cfg }, store, func(fn func(*config.Config) error) error {
 		return fn(cfg)
-	})
+	}, nil)
 
 	rr := httptest.NewRecorder()
 	app.ServeHTTP(rr, httptest.NewRequest("GET", "/", nil))

@@ -13,7 +13,7 @@ import (
 func testHandler(t *testing.T, cfg *config.Config, v *vault.Vault) http.Handler {
 	return NewHandler(func() *config.Config { return cfg }, vault.NewMemoryStore(v), func(fn func(*config.Config) error) error {
 		return fn(cfg)
-	})
+	}, nil)
 }
 
 func TestIndexRendersProvidersCombosAndKeys(t *testing.T) {
