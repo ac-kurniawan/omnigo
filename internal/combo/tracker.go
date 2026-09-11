@@ -93,6 +93,28 @@ func (t *Tracker) Clear(target Target) {
 	t.persist()
 }
 
+func (t *Tracker) ClearAll() {
+	t.mu.Lock()
+	count := len(t.drains)
+	t.drains = make(map[string]drainEntry)
+	t.mu.Unlock()
+	log.Printf("[drained-cleared-all] cleared %d targets", count)
+	t.persist()
+}
+
+func (t *Tracker) DrainedCount() int {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	now := time.Now()
+	count := 0
+	for _, entry := range t.drains {
+		if now.Before(entry.Until) {
+			count++
+		}
+	}
+	return count
+}
+
 func (t *Tracker) load() {
 	b, err := os.ReadFile(t.path)
 	if err != nil {

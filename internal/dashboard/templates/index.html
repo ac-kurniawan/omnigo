@@ -22,6 +22,9 @@
         b.classList.remove('tab-active', 'bg-base-100', 'shadow-sm', 'text-primary');
       });
       btn.classList.add('tab-active', 'bg-base-100', 'shadow-sm', 'text-primary');
+      if (id === 'combos' && window.htmx) {
+        htmx.trigger('#combos', 'refreshCombos');
+      }
     }
 
     function copyToClipboard(text, btn, successText = 'Copied!') {
@@ -388,7 +391,7 @@
           </div>
 
           <!-- Combos Table -->
-          <div id="combos">{{template "combos" .}}</div>
+          <div id="combos" hx-get="/combos" hx-trigger="every 2s, refreshCombos from:body" hx-swap="innerHTML">{{template "combos" .}}</div>
         </div>
       </div>
 
@@ -888,6 +891,26 @@
 {{end}}
 
 {{define "combos"}}
+{{$drainedCount := drainedCount .Tracker}}
+<div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-4 px-4 py-3 rounded-xl border {{if gt $drainedCount 0}}border-warning/30 bg-warning/10{{else}}border-success/20 bg-success/5{{end}}">
+  <div class="flex items-center gap-2 text-xs font-medium">
+    {{if gt $drainedCount 0}}
+      <span class="relative flex size-2.5">
+        <span class="absolute inline-flex size-full animate-ping rounded-full bg-warning opacity-60"></span>
+        <span class="relative inline-flex size-2.5 rounded-full bg-warning"></span>
+      </span>
+      <span class="text-warning">{{$drainedCount}} target{{if gt $drainedCount 1}}s{{end}} in fallback cooldown</span>
+      <span class="text-base-content/40">· refreshing every 2s</span>
+    {{else}}
+      <span class="size-2.5 rounded-full bg-success"></span>
+      <span class="text-success">All fallback targets operational</span>
+      <span class="text-base-content/40">· live</span>
+    {{end}}
+  </div>
+  {{if gt $drainedCount 0}}
+    <button type="button" hx-post="/combos/drains/reset-all" hx-target="#combos" hx-swap="innerHTML" hx-confirm="Clear all drained target cooldowns?" class="btn btn-warning btn-outline btn-xs rounded-lg px-3">Reset All Drains</button>
+  {{end}}
+</div>
 <div class="overflow-x-auto">
   <table class="table w-full">
     <thead>
@@ -928,6 +951,14 @@
                 <span class="text-base-content/40 text-xs font-bold">➔</span>
               {{end}}
               <span class="px-2.5 py-1 rounded-lg text-xs font-mono bg-base-200/80 border border-base-content/10 inline-flex items-center gap-1.5 leading-none shadow-sm{{if $drained}} border-warning/40 bg-warning/10 text-warning{{end}}">
+                {{if $drained}}
+                  <span class="relative flex size-2 shrink-0">
+                    <span class="absolute inline-flex size-full animate-ping rounded-full bg-warning opacity-60"></span>
+                    <span class="relative inline-flex size-2 rounded-full bg-warning"></span>
+                  </span>
+                {{else}}
+                  <span class="size-2 shrink-0 rounded-full bg-success"></span>
+                {{end}}
                 <span class="text-primary font-bold">{{$t.Provider}}</span><span class="text-base-content/40">/</span><span>{{$t.Model}}</span>
                 {{if $drained}}
                   <span class="badge badge-warning badge-xs font-sans px-1.5 py-0.5 text-[10px] gap-1" title="Drained for next {{$remaining}}{{if $reason}} &#10;Reason: {{$reason}}{{end}}">

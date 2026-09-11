@@ -83,6 +83,12 @@ func newServer(getCfg func() *config.Config, store *vault.Store, mutate config.M
 			}
 			return tr.DrainReason(combo.Target{Provider: provider, Model: model})
 		},
+		"drainedCount": func(tr *combo.Tracker) int {
+			if tr == nil {
+				return 0
+			}
+			return tr.DrainedCount()
+		},
 	}).ParseFS(templatesFS, "templates/*.html"))
 
 	s := &Server{
@@ -121,6 +127,7 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("POST /combos", s.createCombo)
 	mux.HandleFunc("POST /combos/{name}/delete", s.deleteCombo)
 	mux.HandleFunc("POST /combos/drains/reset", s.resetDrain)
+	mux.HandleFunc("POST /combos/drains/reset-all", s.resetAllDrains)
 	mux.HandleFunc("GET /keys", s.getKeys)
 	mux.HandleFunc("POST /keys", s.createKey)
 	mux.HandleFunc("POST /keys/{id}/revoke", s.revokeKey)

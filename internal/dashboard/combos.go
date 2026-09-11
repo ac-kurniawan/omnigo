@@ -127,6 +127,17 @@ func (s *Server) resetDrain(w http.ResponseWriter, r *http.Request) {
 	s.renderCombos(w)
 }
 
+func (s *Server) resetAllDrains(w http.ResponseWriter, r *http.Request) {
+	if s.tracker != nil {
+		s.tracker.ClearAll()
+	}
+	if r.Header.Get("HX-Request") != "true" {
+		http.Redirect(w, r, "/", http.StatusSeeOther)
+		return
+	}
+	s.renderCombos(w)
+}
+
 func (s *Server) renderCombos(w http.ResponseWriter) {
 	data := viewData{
 		Providers: s.getCfg().Providers,

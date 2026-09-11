@@ -61,6 +61,32 @@ func TestTrackerClear(t *testing.T) {
 	}
 }
 
+func TestTrackerClearAllAndCount(t *testing.T) {
+	tr := NewTracker("")
+	t1 := Target{Provider: "openai", Model: "gpt-4o"}
+	t2 := Target{Provider: "agy", Model: "gemini-2.5"}
+
+	if tr.DrainedCount() != 0 {
+		t.Fatalf("expected 0 drained, got %d", tr.DrainedCount())
+	}
+
+	tr.MarkDrained(t1, time.Minute, "rate limit")
+	tr.MarkDrained(t2, time.Minute, "500 error")
+
+	if tr.DrainedCount() != 2 {
+		t.Fatalf("expected 2 drained, got %d", tr.DrainedCount())
+	}
+
+	tr.ClearAll()
+
+	if tr.DrainedCount() != 0 {
+		t.Fatalf("expected 0 drained after ClearAll, got %d", tr.DrainedCount())
+	}
+	if tr.IsDrained(t1) || tr.IsDrained(t2) {
+		t.Fatal("expected all targets to be cleared")
+	}
+}
+
 func TestTrackerPersistence(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "drains.json")

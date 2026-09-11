@@ -118,6 +118,41 @@ func TestResetDrainedTarget(t *testing.T) {
 	}
 }
 
+func TestResetAllDrains(t *testing.T) {
+	cfg := &config.Config{
+		Combos: []config.Combo{{
+			Name:     "smart",
+			Strategy: "fill-first",
+			Targets: []config.ComboTarget{
+				{Provider: "agy", Model: "m1"},
+				{Provider: "openai", Model: "gpt-4o"},
+			},
+		}},
+	}
+	store := vault.NewMemoryStore(&vault.Vault{})
+	tr := combo.NewTracker("")
+	tr.MarkDrained(combo.Target{Provider: "agy", Model: "m1"}, 1*time.Minute, "upstream error")
+	tr.MarkDrained(combo.Target{Provider: "openai", Model: "gpt-4o"}, 1*time.Minute, "rate limit")
+
+	s := newServer(func() *config.Config { return cfg }, store, nil, tr)
+
+	if tr.DrainedCount() != 2 {
+		t.Fatalf("expected 2 drained targets, got %d", tr.DrainedCount())
+	}
+
+	req := httptest.NewRequest("POST", "/combos/drains/reset-all", nil)
+	req.Header.Set("HX-Request", "true")
+	rr := httptest.NewRecorder()
+	s.routes().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d", rr.Code)
+	}
+	if tr.DrainedCount() != 0 {
+		t.Fatalf("expected 0 drained targets after reset-all, got %d", tr.DrainedCount())
+	}
+}
+
 func TestCombosRenderDrainedBadgeWithReason(t *testing.T) {
 	cfg := &config.Config{
 		Combos: []config.Combo{{
@@ -146,6 +181,43 @@ func TestCombosRenderDrainedBadgeWithReason(t *testing.T) {
 	}
 	if !strings.Contains(body, "Reason: rate limited (429)") {
 		t.Fatalf("expected drain reason in tooltip: %s", body)
+	}
+}
+
+func TestCombosRenderLiveAlertWhenDrained(t *testing.T) {
+	cfg := &config.Config{
+		Combos: []config.Combo{{
+			Name:     "smart",
+			Strategy: "fill-first",
+			Targets:  []config.ComboTarget{{Provider: "openai", Model: "gpt-4o"}},
+		}},
+	}
+	store := vault.NewMemoryStore(&vault.Vault{})
+	tr := combo.NewTracker("")
+
+	s := newServer(func() *config.Config { return cfg }, store, nil, tr)
+
+	// Healthy state: operational indicator
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest("GET", "/combos", nil)
+	req.Header.Set("HX-Request", "true")
+	s.routes().ServeHTTP(rr, req)
+	if !strings.Contains(rr.Body.String(), "All fallback targets operational") {
+		t.Fatalf("expected operational text in body, got: %s", rr.Body.String())
+	}
+
+	// Drained state: warning alert banner and Reset All Drains button
+	tr.MarkDrained(combo.Target{Provider: "openai", Model: "gpt-4o"}, 1*time.Minute, "rate limit")
+	rr2 := httptest.NewRecorder()
+	req2 := httptest.NewRequest("GET", "/combos", nil)
+	req2.Header.Set("HX-Request", "true")
+	s.routes().ServeHTTP(rr2, req2)
+	body2 := rr2.Body.String()
+	if !strings.Contains(body2, "Reset All Drains") {
+		t.Fatalf("expected Reset All Drains button in body, got: %s", body2)
+	}
+	if !strings.Contains(body2, "1 target in fallback cooldown") {
+		t.Fatalf("expected cooldown count in body, got: %s", body2)
 	}
 }
 
