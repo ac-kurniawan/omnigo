@@ -118,7 +118,7 @@ func Load(path string) (*Config, error) {
 }
 
 var validTypes = map[string]bool{"openai": true, "antigravity": true}
-var validStrategies = map[string]bool{"priority": true, "fill-first": true}
+var validStrategies = map[string]bool{"priority": true, "fill-first": true, "reliable": true, "round-robin": true}
 
 func (c *Config) Validate() error {
 	if c.Server.Timeout != "" {

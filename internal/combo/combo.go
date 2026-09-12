@@ -3,6 +3,9 @@ package combo
 import (
 	"context"
 	"fmt"
+	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -21,45 +24,65 @@ type Combo struct {
 
 type DispatchFunc func(ctx context.Context, t Target) error
 
-// Run executes targets according to the combo strategy.
-// For "fill-first", non-drained targets are tried in order; if all are drained,
-// drained targets are tried as fallback. Any failed attempt marks that target as drained.
-// For "priority", targets are always executed strictly in configured order without state.
+var roundRobinCounters sync.Map
+
 func (c Combo) Run(ctx context.Context, dispatch DispatchFunc) (Target, error) {
-	targets := c.Targets
-	isFillFirst := c.Strategy == "fill-first" && c.Tracker != nil
+	targets := c.orderedTargets()
+	tracksFailures := (c.Strategy == "fill-first" || c.Strategy == "reliable" || c.Strategy == "round-robin") && c.Tracker != nil
 
-	if isFillFirst {
-		var healthy []Target
-		var drained []Target
-		for _, t := range c.Targets {
-			if c.Tracker.IsDrained(t) {
-				drained = append(drained, t)
-			} else {
-				healthy = append(healthy, t)
-			}
-		}
-		// Try healthy targets first, fallback to drained targets if all are drained
-		targets = append(healthy, drained...)
-	}
-
+	var failures []string
 	var lastErr error
-	for _, t := range targets {
-		if err := dispatch(ctx, t); err != nil {
+	for _, target := range targets {
+		if err := dispatch(ctx, target); err != nil {
 			lastErr = err
-			if isFillFirst {
-				ttl := c.DrainTTL
-				if ttl <= 0 {
-					ttl = 60 * time.Second
-				}
-				c.Tracker.MarkDrained(t, ttl, err.Error())
+			failures = append(failures, fmt.Sprintf("%s: %v", targetKey(target), err))
+			if tracksFailures {
+				c.Tracker.MarkDrained(target, c.drainTTL(), err.Error())
 			}
 			continue
 		}
-		return t, nil
+		return target, nil
 	}
-	if lastErr == nil {
-		lastErr = fmt.Errorf("combo %q has no targets", c.Name)
+	if len(failures) == 0 {
+		return Target{}, fmt.Errorf("combo %q has no healthy targets", c.Name)
+	}
+	if c.Strategy == "reliable" || c.Strategy == "round-robin" {
+		return Target{}, fmt.Errorf("combo %q failed: %s", c.Name, strings.Join(failures, "; "))
 	}
 	return Target{}, lastErr
+}
+
+func (c Combo) orderedTargets() []Target {
+	if c.Strategy != "fill-first" && c.Strategy != "reliable" && c.Strategy != "round-robin" {
+		return c.Targets
+	}
+
+	healthy := make([]Target, 0, len(c.Targets))
+	drained := make([]Target, 0, len(c.Targets))
+	for _, target := range c.Targets {
+		if c.Tracker != nil && c.Tracker.IsDrained(target) {
+			drained = append(drained, target)
+		} else {
+			healthy = append(healthy, target)
+		}
+	}
+	if c.Strategy == "fill-first" {
+		return append(healthy, drained...)
+	}
+	if c.Strategy != "round-robin" || len(healthy) < 2 {
+		return healthy
+	}
+
+	counter, _ := roundRobinCounters.LoadOrStore(c.Name, &atomic.Uint64{})
+	start := int(counter.(*atomic.Uint64).Add(1)-1) % len(healthy)
+	rotated := make([]Target, 0, len(healthy))
+	rotated = append(rotated, healthy[start:]...)
+	return append(rotated, healthy[:start]...)
+}
+
+func (c Combo) drainTTL() time.Duration {
+	if c.DrainTTL > 0 {
+		return c.DrainTTL
+	}
+	return 60 * time.Second
 }
