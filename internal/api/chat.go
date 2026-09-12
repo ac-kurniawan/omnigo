@@ -33,7 +33,7 @@ func handleChat(getCfg func() *config.Config, store *vault.Store, tracker *combo
 			Stream   bool   `json:"stream"`
 			Messages []struct {
 				Role    string `json:"role"`
-				Content string `json:"content"`
+				Content any    `json:"content"`
 			} `json:"messages"`
 		}
 		if err := json.Unmarshal(raw, &body); err != nil || body.Model == "" {
