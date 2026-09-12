@@ -125,6 +125,7 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("POST /providers/{name}/models/delete", s.deleteModel)
 	mux.HandleFunc("GET /combos", s.getCombos)
 	mux.HandleFunc("POST /combos", s.createCombo)
+	mux.HandleFunc("POST /combos/{name}", s.updateCombo)
 	mux.HandleFunc("POST /combos/{name}/delete", s.deleteCombo)
 	mux.HandleFunc("POST /combos/drains/reset", s.resetDrain)
 	mux.HandleFunc("POST /combos/drains/reset-all", s.resetAllDrains)

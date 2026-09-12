@@ -121,6 +121,7 @@ func runCombo(w http.ResponseWriter, r *http.Request, cfg *config.Config, store 
 	for _, t := range cb.Targets {
 		c.Targets = append(c.Targets, combo.Target{Provider: t.Provider, Model: t.Model})
 	}
+	responseCommitted := false
 	_, err := c.Run(r.Context(), func(ctx context.Context, t combo.Target) error {
 		p, ok := providerForName(cfg, store, t.Provider)
 		if !ok {
@@ -132,11 +133,47 @@ func runCombo(w http.ResponseWriter, r *http.Request, cfg *config.Config, store 
 			}
 		}
 		req.Model = t.Model
-		return p.ChatCompletion(ctx, req, w)
+		if cb.Strategy != "reliable" && cb.Strategy != "round-robin" {
+			return p.ChatCompletion(ctx, req, w)
+		}
+		attempt := newBufferedResponseWriter(w, req.Stream)
+		providerErr := p.ChatCompletion(ctx, req, attempt)
+		responseCommitted = responseCommitted || attempt.committed
+		err := attempt.finish(providerErr)
+		if errors.Is(err, errResponseCommitted) {
+			responseCommitted = true
+			if tracker != nil {
+				tracker.MarkDrained(t, cb.ParsedDrainTTL(), sanitizeFailure(err))
+			}
+			return nil
+		}
+		if err != nil {
+			return errors.New(sanitizeFailure(err))
+		}
+		return nil
 	})
-	if err != nil {
-		writeError(w, http.StatusBadGateway, err.Error())
+	if err != nil && !responseCommitted {
+		writeError(w, http.StatusBadGateway, sanitizeFailure(err))
 	}
+}
+
+func sanitizeFailure(err error) string {
+	if err == nil {
+		return "upstream failure"
+	}
+	fields := strings.Fields(err.Error())
+	redactNext := false
+	for i, field := range fields {
+		trimmed := strings.Trim(field, `"'(),;`)
+		lower := strings.ToLower(trimmed)
+		if redactNext || strings.HasPrefix(lower, "sk-") || strings.Contains(lower, "token=") || strings.Contains(lower, "api_key=") || strings.Contains(lower, "apikey=") {
+			fields[i] = "[redacted]"
+			redactNext = false
+			continue
+		}
+		redactNext = lower == "bearer" || strings.HasSuffix(lower, "token:") || strings.HasSuffix(lower, "api_key:") || strings.HasSuffix(lower, "apikey:")
+	}
+	return strings.Join(fields, " ")
 }
 
 func providerForName(cfg *config.Config, store *vault.Store, name string) (provider.Provider, bool) {
