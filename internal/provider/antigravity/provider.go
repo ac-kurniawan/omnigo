@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/ac-kurniawan/omnigo/internal/provider"
@@ -20,6 +21,13 @@ type Provider struct {
 	client *http.Client
 }
 
+var sseBufferPool = sync.Pool{
+	New: func() any {
+		b := make([]byte, 64*1024)
+		return &b
+	},
+}
+
 func New(cfg provider.Config, store provider.CredStore) provider.Provider {
 	if base := strings.TrimRight(cfg.BaseURL, "/"); base != "" {
 		baseURL = base
@@ -28,7 +36,7 @@ func New(cfg provider.Config, store provider.CredStore) provider.Provider {
 	if timeout <= 0 {
 		timeout = 30 * time.Second
 	}
-	return &Provider{name: cfg.Name, store: store, client: &http.Client{Timeout: timeout}}
+	return &Provider{name: cfg.Name, store: store, client: &http.Client{Timeout: timeout, Transport: cfg.Transport}}
 }
 
 func (p *Provider) Name() string { return p.name }
@@ -210,7 +218,9 @@ func (p *Provider) completeToOpenAI(r io.Reader, model string, w http.ResponseWr
 func aggregateSSE(r io.Reader) (string, error) {
 	var text strings.Builder
 	scanner := bufio.NewScanner(r)
-	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	bufp := sseBufferPool.Get().(*[]byte)
+	defer sseBufferPool.Put(bufp)
+	scanner.Buffer((*bufp)[:0], 1024*1024)
 	for scanner.Scan() {
 		line := scanner.Text()
 		if !strings.HasPrefix(line, "data: ") {
@@ -231,7 +241,9 @@ func aggregateSSE(r io.Reader) (string, error) {
 func (p *Provider) streamToOpenAI(ctx context.Context, r io.Reader, w http.ResponseWriter) error {
 	w.Header().Set("Content-Type", "text/event-stream")
 	scanner := bufio.NewScanner(r)
-	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	bufp := sseBufferPool.Get().(*[]byte)
+	defer sseBufferPool.Put(bufp)
+	scanner.Buffer((*bufp)[:0], 1024*1024)
 	flusher, _ := w.(http.Flusher)
 	for scanner.Scan() {
 		line := scanner.Text()

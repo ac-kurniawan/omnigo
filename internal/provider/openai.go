@@ -8,8 +8,16 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 )
+
+var streamBufferPool = sync.Pool{
+	New: func() any {
+		b := make([]byte, 4096)
+		return &b
+	},
+}
 
 type openAIProvider struct {
 	name    string
@@ -23,7 +31,7 @@ func NewOpenAI(cfg Config, store CredStore) Provider {
 	if timeout <= 0 {
 		timeout = 30 * time.Second
 	}
-	return &openAIProvider{name: cfg.Name, baseURL: strings.TrimRight(cfg.BaseURL, "/"), store: store, client: &http.Client{Timeout: timeout}}
+	return &openAIProvider{name: cfg.Name, baseURL: strings.TrimRight(cfg.BaseURL, "/"), store: store, client: &http.Client{Timeout: timeout, Transport: cfg.Transport}}
 }
 
 func (p *openAIProvider) Name() string { return p.name }
@@ -95,7 +103,9 @@ func (p *openAIProvider) ChatCompletion(ctx context.Context, req ChatRequest, w 
 	}
 	w.WriteHeader(resp.StatusCode)
 	flusher, _ := w.(http.Flusher)
-	buf := make([]byte, 4096)
+	bufp := streamBufferPool.Get().(*[]byte)
+	defer streamBufferPool.Put(bufp)
+	buf := *bufp
 	for {
 		n, rErr := resp.Body.Read(buf)
 		if n > 0 {

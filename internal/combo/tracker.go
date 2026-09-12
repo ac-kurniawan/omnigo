@@ -17,18 +17,25 @@ type drainEntry struct {
 // It keeps state in RAM for lock-free-like fast reads and flushes to a JSON file
 // on mutations if a path is configured.
 type Tracker struct {
-	mu     sync.RWMutex
-	path   string
-	drains map[string]drainEntry // key: "provider/model" -> entry
+	mu        sync.RWMutex
+	path      string
+	drains    map[string]drainEntry // key: "provider/model" -> entry
+	save      chan struct{}
+	flush     chan chan struct{}
+	writeFile func(string, []byte, os.FileMode) error
 }
 
 func NewTracker(path string) *Tracker {
 	t := &Tracker{
-		path:   path,
-		drains: make(map[string]drainEntry),
+		path:      path,
+		drains:    make(map[string]drainEntry),
+		writeFile: os.WriteFile,
 	}
 	if path != "" {
 		t.load()
+		t.save = make(chan struct{}, 1)
+		t.flush = make(chan chan struct{})
+		go t.persistLoop()
 	}
 	return t
 }
@@ -81,7 +88,7 @@ func (t *Tracker) MarkDrained(target Target, ttl time.Duration, reason string) {
 	t.drains[key] = drainEntry{Until: until, Reason: reason}
 	t.mu.Unlock()
 	log.Printf("[drained] %s for %v (reason: %s)", key, ttl.Round(time.Second), reason)
-	t.persist()
+	t.schedulePersist()
 }
 
 func (t *Tracker) Clear(target Target) {
@@ -90,7 +97,7 @@ func (t *Tracker) Clear(target Target) {
 	delete(t.drains, key)
 	t.mu.Unlock()
 	log.Printf("[drained-cleared] %s", key)
-	t.persist()
+	t.schedulePersist()
 }
 
 func (t *Tracker) ClearAll() {
@@ -99,7 +106,7 @@ func (t *Tracker) ClearAll() {
 	t.drains = make(map[string]drainEntry)
 	t.mu.Unlock()
 	log.Printf("[drained-cleared-all] cleared %d targets", count)
-	t.persist()
+	t.schedulePersist()
 }
 
 func (t *Tracker) DrainedCount() int {
@@ -147,10 +154,42 @@ func (t *Tracker) load() {
 	}
 }
 
-func (t *Tracker) persist() {
-	if t.path == "" {
+func (t *Tracker) schedulePersist() {
+	if t.save == nil {
 		return
 	}
+	select {
+	case t.save <- struct{}{}:
+	default:
+	}
+}
+
+func (t *Tracker) Flush() {
+	if t.flush == nil {
+		return
+	}
+	done := make(chan struct{})
+	t.flush <- done
+	<-done
+}
+
+func (t *Tracker) persistLoop() {
+	for {
+		select {
+		case <-t.save:
+			t.persist()
+		case done := <-t.flush:
+			select {
+			case <-t.save:
+			default:
+			}
+			t.persist()
+			close(done)
+		}
+	}
+}
+
+func (t *Tracker) persist() {
 	t.mu.RLock()
 	active := make(map[string]drainEntry)
 	now := time.Now()
@@ -168,5 +207,5 @@ func (t *Tracker) persist() {
 	if err := os.Chmod(t.path, 0o600); err != nil && !os.IsNotExist(err) {
 		return
 	}
-	_ = os.WriteFile(t.path, b, 0o600)
+	_ = t.writeFile(t.path, b, 0o600)
 }

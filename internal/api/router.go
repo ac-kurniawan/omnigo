@@ -10,17 +10,20 @@ import (
 )
 
 func NewRouter(getCfg func() *config.Config, store *vault.Store, mutate config.MutateFunc, tracker *combo.Tracker, version string) http.Handler {
+	registry := newProviderRegistry(store)
+	registry.ensure(getCfg())
 	mux := http.NewServeMux()
+	authed := auth.Middleware(store.Get)
 
 	mux.HandleFunc("GET /health", handleHealth(version))
 
 	// /v1/* is gated by client API keys.
-	mux.Handle("POST /v1/chat/completions", auth.Middleware(store.Get)(http.HandlerFunc(handleChat(getCfg, store, tracker))))
-	mux.Handle("GET /v1/models", auth.Middleware(store.Get)(http.HandlerFunc(handleModels(getCfg))))
-	mux.Handle("GET /v1/models/{model...}", auth.Middleware(store.Get)(http.HandlerFunc(handleModel(getCfg))))
+	mux.Handle("POST /v1/chat/completions", authed(http.HandlerFunc(handleChat(getCfg, registry, tracker))))
+	mux.Handle("GET /v1/models", authed(http.HandlerFunc(handleModels(getCfg))))
+	mux.Handle("GET /v1/models/{model...}", authed(http.HandlerFunc(handleModel(getCfg))))
 
-	mux.Handle("POST /internal/refresh-models/{provider}", auth.Middleware(store.Get)(http.HandlerFunc(handleRefreshModels(getCfg, store, mutate))))
-	mux.Handle("POST /internal/test/{provider}", auth.Middleware(store.Get)(http.HandlerFunc(handleTestProvider(getCfg, store))))
+	mux.Handle("POST /internal/refresh-models/{provider}", authed(http.HandlerFunc(handleRefreshModels(getCfg, registry, mutate))))
+	mux.Handle("POST /internal/test/{provider}", authed(http.HandlerFunc(handleTestProvider(getCfg, registry))))
 
 	return mux
 }

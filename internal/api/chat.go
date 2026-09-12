@@ -12,10 +12,9 @@ import (
 	"github.com/ac-kurniawan/omnigo/internal/combo"
 	"github.com/ac-kurniawan/omnigo/internal/config"
 	"github.com/ac-kurniawan/omnigo/internal/provider"
-	"github.com/ac-kurniawan/omnigo/internal/vault"
 )
 
-func handleChat(getCfg func() *config.Config, store *vault.Store, tracker *combo.Tracker) http.HandlerFunc {
+func handleChat(getCfg func() *config.Config, registry *providerRegistry, tracker *combo.Tracker) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		r.Body = http.MaxBytesReader(w, r.Body, 10<<20)
 		raw, err := io.ReadAll(r.Body)
@@ -49,11 +48,11 @@ func handleChat(getCfg func() *config.Config, store *vault.Store, tracker *combo
 		req := provider.ChatRequest{Model: body.Model, Stream: body.Stream, Messages: msgs, Raw: raw}
 
 		if cb, ok := findCombo(cfg, body.Model); ok {
-			runCombo(w, r, cfg, store, cb, req, tracker)
+			runCombo(w, r, cfg, registry, cb, req, tracker)
 			return
 		}
 
-		p, model, ok := resolveDirect(cfg, store, body.Model)
+		p, model, ok := resolveDirect(cfg, registry, body.Model)
 		if !ok {
 			writeError(w, http.StatusNotFound, "model not found: "+body.Model)
 			return
@@ -74,7 +73,7 @@ func findCombo(cfg *config.Config, name string) (config.Combo, bool) {
 	return config.Combo{}, false
 }
 
-func resolveDirect(cfg *config.Config, store *vault.Store, model string) (provider.Provider, string, bool) {
+func resolveDirect(cfg *config.Config, registry *providerRegistry, model string) (provider.Provider, string, bool) {
 	if i := strings.Index(model, "/"); i > 0 {
 		provName := model[:i]
 		modelID := model[i+1:]
@@ -83,8 +82,8 @@ func resolveDirect(cfg *config.Config, store *vault.Store, model string) (provid
 				if pc.Disabled || pc.IsModelDisabled(modelID) {
 					return nil, "", false
 				}
-				p, err := buildProvider(pc, store, cfg.DefaultTimeout())
-				if err != nil {
+				p, ok := registry.Get(cfg, pc.Name)
+				if !ok {
 					return nil, "", false
 				}
 				return p, modelID, true
@@ -100,8 +99,8 @@ func resolveDirect(cfg *config.Config, store *vault.Store, model string) (provid
 				if pc.IsModelDisabled(model) {
 					return nil, "", false
 				}
-				p, err := buildProvider(pc, store, cfg.DefaultTimeout())
-				if err != nil {
+				p, ok := registry.Get(cfg, pc.Name)
+				if !ok {
 					return nil, "", false
 				}
 				return p, model, true
@@ -111,7 +110,7 @@ func resolveDirect(cfg *config.Config, store *vault.Store, model string) (provid
 	return nil, "", false
 }
 
-func runCombo(w http.ResponseWriter, r *http.Request, cfg *config.Config, store *vault.Store, cb config.Combo, req provider.ChatRequest, tracker *combo.Tracker) {
+func runCombo(w http.ResponseWriter, r *http.Request, cfg *config.Config, registry *providerRegistry, cb config.Combo, req provider.ChatRequest, tracker *combo.Tracker) {
 	c := combo.Combo{
 		Name:     cb.Name,
 		Strategy: cb.Strategy,
@@ -123,7 +122,7 @@ func runCombo(w http.ResponseWriter, r *http.Request, cfg *config.Config, store 
 	}
 	responseCommitted := false
 	_, err := c.Run(r.Context(), func(ctx context.Context, t combo.Target) error {
-		p, ok := providerForName(cfg, store, t.Provider)
+		p, ok := providerForName(cfg, registry, t.Provider)
 		if !ok {
 			return fmt.Errorf("unknown provider: %s", t.Provider)
 		}
@@ -176,17 +175,13 @@ func sanitizeFailure(err error) string {
 	return strings.Join(fields, " ")
 }
 
-func providerForName(cfg *config.Config, store *vault.Store, name string) (provider.Provider, bool) {
+func providerForName(cfg *config.Config, registry *providerRegistry, name string) (provider.Provider, bool) {
 	for _, pc := range cfg.Providers {
 		if pc.Name == name {
 			if pc.Disabled {
 				return nil, false
 			}
-			p, err := buildProvider(pc, store, cfg.DefaultTimeout())
-			if err != nil {
-				return nil, false
-			}
-			return p, true
+			return registry.Get(cfg, name)
 		}
 	}
 	return nil, false

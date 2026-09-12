@@ -8,7 +8,13 @@ import (
 	"io"
 	"net/http"
 	"sort"
+	"time"
 )
+
+// unaryClient bounds the OAuth and metadata calls so a hung Google endpoint
+// cannot leak goroutines indefinitely. Streaming completions use their own
+// client with the configured provider timeout.
+var unaryClient = &http.Client{Timeout: 15 * time.Second}
 
 // baseURL is a var so tests can override it with an httptest server.
 var baseURL = "https://cloudcode-pa.googleapis.com"
@@ -47,7 +53,7 @@ func post(ctx context.Context, path, accessToken string, body any) (*http.Respon
 	if accessToken != "" {
 		req.Header.Set("Authorization", "Bearer "+accessToken)
 	}
-	return http.DefaultClient.Do(req)
+	return unaryClient.Do(req)
 }
 
 func extractProjectID(bodyBytes []byte) string {
