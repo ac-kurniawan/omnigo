@@ -3,7 +3,6 @@ package auth
 import (
 	"crypto/rand"
 	"crypto/sha256"
-	"crypto/subtle"
 	"encoding/hex"
 
 	"github.com/ac-kurniawan/omnigo/internal/vault"
@@ -35,12 +34,17 @@ func GenerateKey() (raw, hash, prefix string, err error) {
 	return raw, hash, prefix, nil
 }
 
-func Lookup(keys []vault.ClientKey, raw string) (vault.ClientKey, bool) {
-	h := HashKey(raw)
-	for _, k := range keys {
-		if k.Active && subtle.ConstantTimeCompare([]byte(k.KeyHash), []byte(h)) == 1 {
-			return k, true
+func IndexKeys(keys []vault.ClientKey) map[string]vault.ClientKey {
+	index := make(map[string]vault.ClientKey, len(keys))
+	for _, key := range keys {
+		if key.Active && len(key.KeyHash) == sha256.Size*2 {
+			index[key.KeyHash] = key
 		}
 	}
-	return vault.ClientKey{}, false
+	return index
+}
+
+func Lookup(keys map[string]vault.ClientKey, raw string) (vault.ClientKey, bool) {
+	key, ok := keys[HashKey(raw)]
+	return key, ok
 }
