@@ -13,7 +13,18 @@ import (
 func testRouter(t *testing.T, cfg *config.Config, v *vault.Vault) http.Handler {
 	return NewRouter(func() *config.Config { return cfg }, vault.NewMemoryStore(v), func(fn func(*config.Config) error) error {
 		return fn(cfg)
-	}, nil)
+	}, nil, "test-version")
+}
+
+func TestHealth(t *testing.T) {
+	rr := httptest.NewRecorder()
+	testRouter(t, &config.Config{}, &vault.Vault{}).ServeHTTP(rr, httptest.NewRequest("GET", "/health", nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, body %s", rr.Code, rr.Body.String())
+	}
+	if body := rr.Body.String(); !containsStr(body, `"status":"ok"`) || !containsStr(body, `"version":"test-version"`) {
+		t.Fatalf("body = %s", body)
+	}
 }
 
 func TestModelsUnauthorized(t *testing.T) {
@@ -43,6 +54,53 @@ func TestModelsAuthorizedListsComboAndProviders(t *testing.T) {
 	body := rr.Body.String()
 	if !containsStr(body, "auto") || !containsStr(body, "openai/gpt-4o") {
 		t.Fatalf("body = %s", body)
+	}
+}
+
+func TestModelAuthorizedRetrievesSingleProviderModel(t *testing.T) {
+	cfg := &config.Config{Providers: []config.Provider{{Name: "openai", Type: "openai", BaseURL: "https://x", Models: []string{"gpt-4o"}}}}
+	raw, hash, prefix, _ := auth.GenerateKey()
+	v := &vault.Vault{ClientKeys: []vault.ClientKey{{ID: "k1", KeyHash: hash, Prefix: prefix, Active: true}}}
+	req := httptest.NewRequest("GET", "/v1/models/openai/gpt-4o", nil)
+	req.Header.Set("Authorization", "Bearer "+raw)
+	rr := httptest.NewRecorder()
+
+	testRouter(t, cfg, v).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, body %s", rr.Code, rr.Body.String())
+	}
+	if body := rr.Body.String(); !containsStr(body, `"id":"openai/gpt-4o"`) || !containsStr(body, `"object":"model"`) || !containsStr(body, `"owned_by":"openai"`) {
+		t.Fatalf("body = %s", body)
+	}
+}
+
+func TestModelRetrievesCombo(t *testing.T) {
+	cfg := &config.Config{Combos: []config.Combo{{Name: "auto", Strategy: "priority"}}}
+	raw, hash, prefix, _ := auth.GenerateKey()
+	v := &vault.Vault{ClientKeys: []vault.ClientKey{{ID: "k1", KeyHash: hash, Prefix: prefix, Active: true}}}
+	req := httptest.NewRequest("GET", "/v1/models/auto", nil)
+	req.Header.Set("Authorization", "Bearer "+raw)
+	rr := httptest.NewRecorder()
+
+	testRouter(t, cfg, v).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK || !containsStr(rr.Body.String(), `"id":"auto"`) {
+		t.Fatalf("status = %d, body %s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestModelNotFound(t *testing.T) {
+	raw, hash, prefix, _ := auth.GenerateKey()
+	v := &vault.Vault{ClientKeys: []vault.ClientKey{{ID: "k1", KeyHash: hash, Prefix: prefix, Active: true}}}
+	req := httptest.NewRequest("GET", "/v1/models/missing", nil)
+	req.Header.Set("Authorization", "Bearer "+raw)
+	rr := httptest.NewRecorder()
+
+	testRouter(t, &config.Config{}, v).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", rr.Code)
 	}
 }
 
