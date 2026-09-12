@@ -99,9 +99,10 @@ func (s *appState) mutate(fn func(*config.Config) error) error {
 }
 
 func newApp(getCfg func() *config.Config, store *vault.Store, mutate config.MutateFunc, tracker *combo.Tracker) http.Handler {
-	apiHandler := api.NewRouter(getCfg, store, mutate, tracker)
+	apiHandler := api.NewRouter(getCfg, store, mutate, tracker, version)
 
 	root := http.NewServeMux()
+	root.Handle("/health", apiHandler)
 	root.Handle("/v1/", apiHandler)
 	root.Handle("/internal/", apiHandler)
 	root.Handle("/", dashboard.NewHandler(getCfg, store, mutate, tracker))

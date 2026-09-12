@@ -89,6 +89,9 @@ func (p *Provider) ChatCompletion(ctx context.Context, req provider.ChatRequest,
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("antigravity: status %d", resp.StatusCode)
 	}
+	if !req.Stream {
+		return p.completeToOpenAI(resp.Body, req.Model, w)
+	}
 	return p.streamToOpenAI(ctx, resp.Body, w)
 }
 
@@ -175,6 +178,54 @@ func (p *Provider) forceRefreshToken(ctx context.Context) (provider.Credentials,
 		return c, err
 	}
 	return c, nil
+}
+
+func (p *Provider) completeToOpenAI(r io.Reader, model string, w http.ResponseWriter) error {
+	text, err := aggregateSSE(r)
+	if err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	return json.NewEncoder(w).Encode(map[string]any{
+		"id":      "chatcmpl-" + newRequestID(),
+		"object":  "chat.completion",
+		"created": time.Now().Unix(),
+		"model":   model,
+		"choices": []any{map[string]any{
+			"index": 0,
+			"message": map[string]any{
+				"role":    "assistant",
+				"content": text,
+			},
+			"finish_reason": "stop",
+		}},
+		"usage": map[string]any{
+			"prompt_tokens":     0,
+			"completion_tokens": 0,
+			"total_tokens":      0,
+		},
+	})
+}
+
+func aggregateSSE(r io.Reader) (string, error) {
+	var text strings.Builder
+	scanner := bufio.NewScanner(r)
+	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	for scanner.Scan() {
+		line := scanner.Text()
+		if !strings.HasPrefix(line, "data: ") {
+			continue
+		}
+		chunk, err := geminiChunkText([]byte(line))
+		if err != nil {
+			return "", err
+		}
+		text.WriteString(chunk)
+	}
+	if err := scanner.Err(); err != nil {
+		return "", err
+	}
+	return text.String(), nil
 }
 
 func (p *Provider) streamToOpenAI(ctx context.Context, r io.Reader, w http.ResponseWriter) error {
