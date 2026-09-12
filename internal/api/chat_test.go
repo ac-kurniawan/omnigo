@@ -68,6 +68,39 @@ func TestChatRoutesToCombo(t *testing.T) {
 	}
 }
 
+func TestChatAcceptsMultimodalContent(t *testing.T) {
+	var got provider.ChatRequest
+	provider.Register("openai", func(cfg provider.Config, store provider.CredStore) provider.Provider {
+		return &fakeProvider{name: cfg.Name, chat: func(r provider.ChatRequest) error {
+			got = r
+			return nil
+		}}
+	})
+	cfg := &config.Config{Providers: []config.Provider{{Name: "openai", Type: "openai", BaseURL: "https://x", Models: []string{"gpt-4o"}}}}
+	rawKey, hash, prefix, _ := auth.GenerateKey()
+	v := &vault.Vault{ClientKeys: []vault.ClientKey{{ID: "k1", KeyHash: hash, Prefix: prefix, Active: true}}}
+	body := `{"model":"openai/gpt-4o","messages":[{"role":"user","content":[{"type":"text","text":"describe this"},{"type":"image_url","image_url":{"url":"data:image/png;base64,abc"}}]}]}`
+	req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+rawKey)
+	rr := httptest.NewRecorder()
+
+	testRouter(t, cfg, v).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d body %s", rr.Code, rr.Body.String())
+	}
+	if len(got.Messages) != 1 {
+		t.Fatalf("messages = %+v", got.Messages)
+	}
+	parts, ok := got.Messages[0].Content.([]any)
+	if !ok || len(parts) != 2 {
+		t.Fatalf("content = %#v", got.Messages[0].Content)
+	}
+	if string(got.Raw) != body {
+		t.Fatalf("raw request changed: %s", got.Raw)
+	}
+}
+
 func TestChatUnknownModelNotFound(t *testing.T) {
 	cfg := &config.Config{}
 	raw, hash, prefix, _ := auth.GenerateKey()
@@ -319,7 +352,7 @@ func TestChatFillFirstUsesTrackerAndDrains(t *testing.T) {
 	raw, hash, prefix, _ := auth.GenerateKey()
 	v := &vault.Vault{ClientKeys: []vault.ClientKey{{ID: "k1", KeyHash: hash, Prefix: prefix, Active: true}}}
 
-	router := NewRouter(func() *config.Config { return cfg }, vault.NewMemoryStore(v), nil, tr)
+	router := NewRouter(func() *config.Config { return cfg }, vault.NewMemoryStore(v), nil, tr, "test-version")
 
 	// Request 1: prov-a fails, marks drained, falls back to prov-b
 	req1 := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(`{"model":"smart","messages":[{"role":"user","content":"hi"}]}`))

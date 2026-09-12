@@ -188,6 +188,53 @@ func TestChatStreamsOpenAISSE(t *testing.T) {
 	}
 }
 
+func TestChatNonStreamingReturnsOpenAIJSON(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Write([]byte("data: {\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"hel\"}]}}]}\n\n"))
+		w.Write([]byte("data: {\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"lo\"}]}}]}\n\n"))
+	}))
+	defer srv.Close()
+
+	p := New(provider.Config{Name: "agy", BaseURL: srv.URL}, staticStore{provider.Credentials{AccessToken: "tok", ProjectID: "p", ExpiresAt: time.Now().Add(time.Hour)}})
+	rec := httptest.NewRecorder()
+	req := provider.ChatRequest{Model: "gemini-3.7-flash-medium", Stream: false, Messages: []provider.Message{{Role: "user", Content: "hi"}}}
+	if err := p.ChatCompletion(context.Background(), req, rec); err != nil {
+		t.Fatalf("ChatCompletion: %v", err)
+	}
+	if got := rec.Header().Get("Content-Type"); got != "application/json" {
+		t.Fatalf("Content-Type = %q, want application/json", got)
+	}
+	var body struct {
+		Object  string `json:"object"`
+		Model   string `json:"model"`
+		Choices []struct {
+			Message struct {
+				Role    string `json:"role"`
+				Content string `json:"content"`
+			} `json:"message"`
+			FinishReason string `json:"finish_reason"`
+		} `json:"choices"`
+		Usage struct {
+			PromptTokens     int `json:"prompt_tokens"`
+			CompletionTokens int `json:"completion_tokens"`
+			TotalTokens      int `json:"total_tokens"`
+		} `json:"usage"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode response: %v; body = %s", err, rec.Body.String())
+	}
+	if body.Object != "chat.completion" || body.Model != req.Model {
+		t.Fatalf("response metadata = %+v", body)
+	}
+	if len(body.Choices) != 1 || body.Choices[0].Message.Role != "assistant" || body.Choices[0].Message.Content != "hello" || body.Choices[0].FinishReason != "stop" {
+		t.Fatalf("choices = %+v", body.Choices)
+	}
+	if body.Usage.PromptTokens != 0 || body.Usage.CompletionTokens != 0 || body.Usage.TotalTokens != 0 {
+		t.Fatalf("usage = %+v", body.Usage)
+	}
+}
+
 func TestChatRetriesOn401(t *testing.T) {
 	// Token refresh server
 	tokenSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

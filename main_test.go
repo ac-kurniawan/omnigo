@@ -25,6 +25,12 @@ func TestAppServesDashboardAndGateV1(t *testing.T) {
 	}, nil)
 
 	rr := httptest.NewRecorder()
+	app.ServeHTTP(rr, httptest.NewRequest("GET", "/health", nil))
+	if rr.Code != http.StatusOK || !strings.Contains(rr.Body.String(), `"status":"ok"`) || !strings.Contains(rr.Body.String(), `"version":"dev"`) {
+		t.Fatalf("health: status %d body %s", rr.Code, rr.Body.String())
+	}
+
+	rr = httptest.NewRecorder()
 	app.ServeHTTP(rr, httptest.NewRequest("GET", "/", nil))
 	if rr.Code != http.StatusOK || !strings.Contains(rr.Body.String(), "openai") {
 		t.Fatalf("dashboard: status %d body %s", rr.Code, rr.Body.String())

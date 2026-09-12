@@ -43,6 +43,29 @@ func TestToEnvelopeMapsRolesAndParts(t *testing.T) {
 	}
 }
 
+func TestToEnvelopeExtractsMultimodalTextParts(t *testing.T) {
+	req := provider.ChatRequest{
+		Model: "gemini-3.7-flash-medium",
+		Messages: []provider.Message{{
+			Role: "user",
+			Content: []any{
+				map[string]any{"type": "text", "text": "describe this"},
+				map[string]any{"type": "image_url", "image_url": map[string]any{"url": "https://example.invalid/image.png"}},
+				map[string]any{"type": "text", "text": "please"},
+			},
+		}},
+	}
+	env, err := ToEnvelope("proj-1", req.Model, req)
+	if err != nil {
+		t.Fatalf("ToEnvelope: %v", err)
+	}
+	contents := env["request"].(map[string]any)["contents"].([]any)
+	parts := contents[0].(map[string]any)["parts"].([]any)
+	if len(parts) != 2 || parts[0].(map[string]any)["text"] != "describe this" || parts[1].(map[string]any)["text"] != "please" {
+		t.Fatalf("parts = %#v", parts)
+	}
+}
+
 func TestTranslateSSEDelta(t *testing.T) {
 	gemini := []byte(`data: {"candidates":[{"content":{"role":"model","parts":[{"text":"hel"}]}}]}`)
 	out, err := TranslateSSE(gemini)
