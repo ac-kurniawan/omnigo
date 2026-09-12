@@ -64,7 +64,12 @@ func TestValidateRejectsUnknownStrategy(t *testing.T) {
 func TestValidateAcceptsKnownValues(t *testing.T) {
 	cfg := &Config{
 		Providers: []Provider{{Name: "a", Type: "openai"}, {Name: "b", Type: "antigravity"}},
-		Combos:    []Combo{{Name: "auto", Strategy: "priority"}, {Name: "x", Strategy: "fill-first", DrainTTL: "30s"}},
+		Combos: []Combo{
+			{Name: "auto", Strategy: "priority"},
+			{Name: "x", Strategy: "fill-first", DrainTTL: "30s"},
+			{Name: "safe", Strategy: "reliable", DrainTTL: "30s"},
+			{Name: "balanced", Strategy: "round-robin", DrainTTL: "30s"},
+		},
 	}
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("Validate: %v", err)
