@@ -3,6 +3,8 @@ package combo
 import (
 	"context"
 	"errors"
+	"fmt"
+	"sync"
 	"testing"
 	"time"
 )
@@ -157,6 +159,132 @@ func TestFillFirstMarksDrainedOnFailure(t *testing.T) {
 	}
 	if got := tr.DrainReason(t1); got != "upstream failure" {
 		t.Fatalf("drain reason = %q, want 'upstream failure'", got)
+	}
+}
+
+func TestReliableSkipsDrainedAndMarksFailures(t *testing.T) {
+	tr := NewTracker("")
+	t1 := Target{Provider: "a", Model: "m1"}
+	t2 := Target{Provider: "b", Model: "m2"}
+	t3 := Target{Provider: "c", Model: "m3"}
+	tr.MarkDrained(t1, time.Minute, "previous failure")
+
+	c := Combo{Name: "safe", Strategy: "reliable", Targets: []Target{t1, t2, t3}, Tracker: tr, DrainTTL: time.Minute}
+	var called []string
+	got, err := c.Run(context.Background(), func(_ context.Context, target Target) error {
+		called = append(called, target.Provider)
+		if target == t2 {
+			return errors.New("upstream status 503")
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if got != t3 || len(called) != 2 || called[0] != "b" || called[1] != "c" {
+		t.Fatalf("got %+v, called %v", got, called)
+	}
+	if !tr.IsDrained(t2) {
+		t.Fatal("failed target should be drained")
+	}
+}
+
+func TestReliableAllFailReturnsAggregateError(t *testing.T) {
+	c := Combo{Name: t.Name() + "-safe", Strategy: "reliable", Targets: []Target{
+		{Provider: "a", Model: "m1"},
+		{Provider: "b", Model: "m2"},
+	}}
+	_, err := c.Run(context.Background(), func(_ context.Context, target Target) error {
+		return fmt.Errorf("failure-%s", target.Provider)
+	})
+	if err == nil {
+		t.Fatal("expected aggregate error")
+	}
+	want := fmt.Sprintf(`combo %q failed: a/m1: failure-a; b/m2: failure-b`, c.Name)
+	if err.Error() != want {
+		t.Fatalf("error = %q, want %q", err, want)
+	}
+}
+
+func TestRoundRobinConcurrentRotation(t *testing.T) {
+	tr := NewTracker("")
+	targets := []Target{
+		{Provider: "a", Model: "m1"},
+		{Provider: "b", Model: "m2"},
+		{Provider: "c", Model: "m3"},
+	}
+	tr.MarkDrained(targets[1], time.Minute, "unavailable")
+	c := Combo{Name: t.Name() + "-balanced", Strategy: "round-robin", Targets: targets, Tracker: tr, DrainTTL: time.Minute}
+
+	const requests = 100
+	counts := make(map[string]int)
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	for range requests {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			got, err := c.Run(context.Background(), func(_ context.Context, target Target) error { return nil })
+			if err != nil {
+				t.Errorf("Run: %v", err)
+				return
+			}
+			mu.Lock()
+			counts[got.Provider]++
+			mu.Unlock()
+		}()
+	}
+	wg.Wait()
+
+	if counts["a"] != requests/2 || counts["c"] != requests/2 || counts["b"] != 0 {
+		t.Fatalf("counts = %v, want a=50 c=50 b=0", counts)
+	}
+}
+
+func TestReliableDrainTTLExpires(t *testing.T) {
+	tr := NewTracker("")
+	t1 := Target{Provider: "a", Model: "m1"}
+	t2 := Target{Provider: "b", Model: "m2"}
+	c := Combo{Name: "safe", Strategy: "reliable", Targets: []Target{t1, t2}, Tracker: tr, DrainTTL: 10 * time.Millisecond}
+	_, err := c.Run(context.Background(), func(_ context.Context, target Target) error {
+		if target == t1 {
+			return errors.New("temporary failure")
+		}
+		return nil
+	})
+	if err != nil || !tr.IsDrained(t1) {
+		t.Fatalf("Run = %v, drained = %v", err, tr.IsDrained(t1))
+	}
+	time.Sleep(20 * time.Millisecond)
+	var first Target
+	_, err = c.Run(context.Background(), func(_ context.Context, target Target) error {
+		first = target
+		return nil
+	})
+	if err != nil || first != t1 {
+		t.Fatalf("Run = %v, first target after TTL = %+v", err, first)
+	}
+}
+
+func TestRoundRobinFailedTargetDrainsAndFallsBack(t *testing.T) {
+	tr := NewTracker("")
+	t1 := Target{Provider: "a", Model: "m1"}
+	t2 := Target{Provider: "b", Model: "m2"}
+	c := Combo{Name: t.Name() + "-balanced", Strategy: "round-robin", Targets: []Target{t1, t2}, Tracker: tr, DrainTTL: time.Minute}
+
+	var called []Target
+	got, err := c.Run(context.Background(), func(_ context.Context, target Target) error {
+		called = append(called, target)
+		if target == t1 {
+			return errors.New("connection refused")
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if got != t2 || len(called) != 2 || !tr.IsDrained(t1) {
+		t.Fatalf("got %+v, called %+v, drained=%v", got, called, tr.IsDrained(t1))
 	}
 }
 
