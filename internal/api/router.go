@@ -15,6 +15,7 @@ func NewRouter(getCfg func() *config.Config, store *vault.Store, mutate config.M
 	// /v1/* is gated by client API keys.
 	mux.Handle("POST /v1/chat/completions", auth.Middleware(store.Get)(http.HandlerFunc(handleChat(getCfg, store, tracker))))
 	mux.Handle("GET /v1/models", auth.Middleware(store.Get)(http.HandlerFunc(handleModels(getCfg))))
+	mux.Handle("GET /v1/models/{model...}", auth.Middleware(store.Get)(http.HandlerFunc(handleModel(getCfg))))
 
 	mux.Handle("POST /internal/refresh-models/{provider}", auth.Middleware(store.Get)(http.HandlerFunc(handleRefreshModels(getCfg, store, mutate))))
 	mux.Handle("POST /internal/test/{provider}", auth.Middleware(store.Get)(http.HandlerFunc(handleTestProvider(getCfg, store))))
