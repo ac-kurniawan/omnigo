@@ -10,7 +10,7 @@ import (
 
 type Message struct {
 	Role    string `json:"role"`
-	Content string `json:"content"`
+	Content any    `json:"content"`
 }
 
 type ChatRequest struct {
@@ -68,10 +68,11 @@ type TestResult struct {
 }
 
 type Config struct {
-	Name    string
-	BaseURL string
-	Models  []string
-	Timeout time.Duration
+	Name      string
+	BaseURL   string
+	Models    []string
+	Timeout   time.Duration
+	Transport http.RoundTripper
 }
 
 type Credentials struct {

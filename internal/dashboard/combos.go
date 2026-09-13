@@ -83,6 +83,35 @@ func (s *Server) createCombo(w http.ResponseWriter, r *http.Request) {
 	s.renderCombos(w)
 }
 
+func (s *Server) updateCombo(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	strategy := r.FormValue("strategy")
+	if strategy == "" {
+		http.Error(w, "strategy is required", http.StatusBadRequest)
+		return
+	}
+	if s.mutate != nil {
+		err := s.mutate(func(c *config.Config) error {
+			for i := range c.Combos {
+				if c.Combos[i].Name == name {
+					c.Combos[i].Strategy = strategy
+					return nil
+				}
+			}
+			return fmt.Errorf("combo %q not found", name)
+		})
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+	}
+	if r.Header.Get("HX-Request") != "true" {
+		http.Redirect(w, r, "/", http.StatusSeeOther)
+		return
+	}
+	s.renderCombos(w)
+}
+
 func (s *Server) deleteCombo(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 

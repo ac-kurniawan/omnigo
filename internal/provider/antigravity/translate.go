@@ -30,9 +30,27 @@ func newRequestID() string {
 func ToEnvelope(projectID, model string, req provider.ChatRequest) (map[string]any, error) {
 	contents := make([]any, 0, len(req.Messages))
 	for _, m := range req.Messages {
+		parts := make([]any, 0, 1)
+		switch content := m.Content.(type) {
+		case string:
+			parts = append(parts, map[string]any{"text": content})
+		case []any:
+			for _, rawPart := range content {
+				part, ok := rawPart.(map[string]any)
+				if !ok || part["type"] != "text" {
+					continue
+				}
+				if text, ok := part["text"].(string); ok {
+					parts = append(parts, map[string]any{"text": text})
+				}
+			}
+		}
+		if len(parts) == 0 {
+			continue
+		}
 		contents = append(contents, map[string]any{
 			"role":  role(m.Role),
-			"parts": []any{map[string]any{"text": m.Content}},
+			"parts": parts,
 		})
 	}
 	return map[string]any{
@@ -45,26 +63,42 @@ func ToEnvelope(projectID, model string, req provider.ChatRequest) (map[string]a
 	}, nil
 }
 
+type geminiChunk struct {
+	Candidates []struct {
+		Content struct {
+			Parts []struct {
+				Text string `json:"text"`
+			} `json:"parts"`
+		} `json:"content"`
+	} `json:"candidates"`
+}
+
+func geminiChunkText(chunk []byte) (string, error) {
+	payload := strings.TrimSpace(strings.TrimPrefix(string(chunk), "data: "))
+	var body geminiChunk
+	if err := json.Unmarshal([]byte(payload), &body); err != nil {
+		return "", fmt.Errorf("parse gemini chunk: %w", err)
+	}
+	if len(body.Candidates) == 0 {
+		return "", nil
+	}
+	var text strings.Builder
+	for _, part := range body.Candidates[0].Content.Parts {
+		text.WriteString(part.Text)
+	}
+	return text.String(), nil
+}
+
 // TranslateSSE converts one Gemini SSE `data:` line into an OpenAI SSE
 // `data:` line, or returns nil when the chunk carries no candidate text.
 func TranslateSSE(geminiChunk []byte) ([]byte, error) {
-	payload := strings.TrimSpace(strings.TrimPrefix(string(geminiChunk), "data: "))
-	var body struct {
-		Candidates []struct {
-			Content struct {
-				Parts []struct {
-					Text string `json:"text"`
-				} `json:"parts"`
-			} `json:"content"`
-		} `json:"candidates"`
+	text, err := geminiChunkText(geminiChunk)
+	if err != nil {
+		return nil, err
 	}
-	if err := json.Unmarshal([]byte(payload), &body); err != nil {
-		return nil, fmt.Errorf("parse gemini chunk: %w", err)
-	}
-	if len(body.Candidates) == 0 || len(body.Candidates[0].Content.Parts) == 0 {
+	if text == "" {
 		return nil, nil
 	}
-	text := body.Candidates[0].Content.Parts[0].Text
 	out := map[string]any{
 		"id":      "chatcmpl-omnigo",
 		"object":  "chat.completion.chunk",

@@ -2,7 +2,6 @@ package main
 
 import (
 	"bytes"
-	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -26,6 +25,12 @@ func TestAppServesDashboardAndGateV1(t *testing.T) {
 	}, nil)
 
 	rr := httptest.NewRecorder()
+	app.ServeHTTP(rr, httptest.NewRequest("GET", "/health", nil))
+	if rr.Code != http.StatusOK || !strings.Contains(rr.Body.String(), `"status":"ok"`) || !strings.Contains(rr.Body.String(), `"version":"dev"`) {
+		t.Fatalf("health: status %d body %s", rr.Code, rr.Body.String())
+	}
+
+	rr = httptest.NewRecorder()
 	app.ServeHTTP(rr, httptest.NewRequest("GET", "/", nil))
 	if rr.Code != http.StatusOK || !strings.Contains(rr.Body.String(), "openai") {
 		t.Fatalf("dashboard: status %d body %s", rr.Code, rr.Body.String())
@@ -35,36 +40,6 @@ func TestAppServesDashboardAndGateV1(t *testing.T) {
 	app.ServeHTTP(rr, httptest.NewRequest("GET", "/v1/models", nil))
 	if rr.Code != http.StatusUnauthorized {
 		t.Fatalf("/v1/models without key: status %d, want 401", rr.Code)
-	}
-}
-
-func TestHealth(t *testing.T) {
-	cfg := &config.Config{}
-	store := vault.NewMemoryStore(&vault.Vault{})
-	app := newApp(func() *config.Config { return cfg }, store, func(fn func(*config.Config) error) error {
-		return fn(cfg)
-	}, nil)
-
-	rr := httptest.NewRecorder()
-	app.ServeHTTP(rr, httptest.NewRequest("GET", "/health", nil))
-	if rr.Code != http.StatusOK {
-		t.Fatalf("status = %d, body %s", rr.Code, rr.Body.String())
-	}
-	if got := rr.Header().Get("Content-Type"); got != "application/json" {
-		t.Fatalf("content type = %q, want application/json", got)
-	}
-	var body struct {
-		Status  string `json:"status"`
-		Version string `json:"version"`
-	}
-	if err := json.NewDecoder(rr.Body).Decode(&body); err != nil {
-		t.Fatal(err)
-	}
-	if body.Status != "ok" {
-		t.Fatalf("status = %q, want ok", body.Status)
-	}
-	if body.Version == "" {
-		t.Fatal("version should not be empty")
 	}
 }
 

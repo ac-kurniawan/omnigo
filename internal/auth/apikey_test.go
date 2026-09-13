@@ -2,7 +2,9 @@ package auth
 
 import (
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/hex"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -37,7 +39,7 @@ func TestHashKeyDeterministic(t *testing.T) {
 
 func TestLookup(t *testing.T) {
 	raw, hash, prefix, _ := GenerateKey()
-	keys := []vault.ClientKey{{ID: "k1", KeyHash: hash, Prefix: prefix, Active: true}}
+	keys := IndexKeys([]vault.ClientKey{{ID: "k1", KeyHash: hash, Prefix: prefix, Active: true}})
 	if _, ok := Lookup(keys, raw); !ok {
 		t.Fatal("expected valid key to be found")
 	}
@@ -48,11 +50,11 @@ func TestLookup(t *testing.T) {
 
 func TestLookupConstantTimeComparisonRequiresFullHash(t *testing.T) {
 	raw, hash, prefix, _ := GenerateKey()
-	keys := []vault.ClientKey{
+	keys := IndexKeys([]vault.ClientKey{
 		{ID: "short", KeyHash: hash[:len(hash)-1], Prefix: prefix, Active: true},
 		{ID: "inactive", KeyHash: hash, Prefix: prefix, Active: false},
 		{ID: "valid", KeyHash: hash, Prefix: prefix, Active: true},
-	}
+	})
 
 	got, ok := Lookup(keys, raw)
 	if !ok || got.ID != "valid" {
@@ -83,5 +85,93 @@ func TestMiddlewareAllowsValidKey(t *testing.T) {
 	h.ServeHTTP(rr, req)
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rr.Code)
+	}
+}
+
+func TestKeyIndexOmitsInactiveKeys(t *testing.T) {
+	raw, hash, prefix, _ := GenerateKey()
+	index := IndexKeys([]vault.ClientKey{
+		{ID: "inactive", KeyHash: hash, Prefix: prefix, Active: false},
+	})
+	if _, ok := Lookup(index, raw); ok {
+		t.Fatal("expected inactive key to be rejected")
+	}
+}
+
+func TestMiddlewareRefreshesKeyIndex(t *testing.T) {
+	raw1, hash1, prefix1, _ := GenerateKey()
+	raw2, hash2, prefix2, _ := GenerateKey()
+	v := &vault.Vault{ClientKeys: []vault.ClientKey{{ID: "k1", KeyHash: hash1, Prefix: prefix1, Active: true}}}
+	h := Middleware(func() *vault.Vault { return v })(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	serve := func(raw string) int {
+		rr := httptest.NewRecorder()
+		req := httptest.NewRequest("GET", "/", nil)
+		req.Header.Set("Authorization", "Bearer "+raw)
+		h.ServeHTTP(rr, req)
+		return rr.Code
+	}
+	if got := serve(raw1); got != http.StatusOK {
+		t.Fatalf("first key status = %d, want 200", got)
+	}
+	v = &vault.Vault{ClientKeys: []vault.ClientKey{{ID: "k2", KeyHash: hash2, Prefix: prefix2, Active: true}}}
+	if got := serve(raw1); got != http.StatusUnauthorized {
+		t.Fatalf("revoked key status = %d, want 401", got)
+	}
+	if got := serve(raw2); got != http.StatusOK {
+		t.Fatalf("replacement key status = %d, want 200", got)
+	}
+}
+
+func BenchmarkLookup(b *testing.B) {
+	for _, count := range []int{10, 100, 1000} {
+		b.Run(fmt.Sprintf("keys-%d", count), func(b *testing.B) {
+			keys := make([]vault.ClientKey, count)
+			var raw string
+			for i := range keys {
+				raw = fmt.Sprintf("ak-benchmark-%d", i)
+				keys[i] = vault.ClientKey{ID: fmt.Sprint(i), KeyHash: HashKey(raw), Active: true}
+			}
+			index := IndexKeys(keys)
+			b.ReportAllocs()
+			b.ResetTimer()
+			for b.Loop() {
+				if _, ok := Lookup(index, raw); !ok {
+					b.Fatal("key not found")
+				}
+			}
+		})
+	}
+}
+
+// BenchmarkLookupLinearScanBaseline reproduces the pre-change linear scan over
+// the raw key slice so the O(1) index speedup is measurable in one run.
+func BenchmarkLookupLinearScanBaseline(b *testing.B) {
+	for _, count := range []int{10, 100, 1000} {
+		b.Run(fmt.Sprintf("keys-%d", count), func(b *testing.B) {
+			keys := make([]vault.ClientKey, count)
+			var raw string
+			for i := range keys {
+				raw = fmt.Sprintf("ak-benchmark-%d", i)
+				keys[i] = vault.ClientKey{ID: fmt.Sprint(i), KeyHash: HashKey(raw), Active: true}
+			}
+			b.ReportAllocs()
+			b.ResetTimer()
+			for b.Loop() {
+				h := HashKey(raw)
+				found := false
+				for _, k := range keys {
+					if k.Active && subtle.ConstantTimeCompare([]byte(k.KeyHash), []byte(h)) == 1 {
+						found = true
+						break
+					}
+				}
+				if !found {
+					b.Fatal("key not found")
+				}
+			}
+		})
 	}
 }

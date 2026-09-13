@@ -128,7 +128,7 @@ func exchange(ctx context.Context, form url.Values) (*Token, error) {
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Accept", "application/json")
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := unaryClient.Do(req)
 	if err != nil {
 		return nil, err
 	}
