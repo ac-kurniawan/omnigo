@@ -19,6 +19,13 @@ providers:
       - claude-opus-4-6-thinking
       - gpt-oss-120b-medium
 
+  # ChatGPT Codex provider (authenticate from the dashboard)
+  # - name: codex-main
+  #   type: codex
+  #   models:
+  #     - gpt-6-astra
+  #     - gpt-5.6-sol
+
   # Standard OpenAI-compatible provider
   # - name: openai-main
   #   type: openai
