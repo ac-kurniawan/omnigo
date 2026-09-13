@@ -147,13 +147,30 @@ func runCombo(w http.ResponseWriter, r *http.Request, cfg *config.Config, regist
 			return nil
 		}
 		if err != nil {
-			return errors.New(sanitizeFailure(err))
+			return sanitizedError{err: err, message: sanitizeFailure(err)}
 		}
 		return nil
 	})
 	if err != nil && !responseCommitted {
 		writeError(w, http.StatusBadGateway, sanitizeFailure(err))
 	}
+}
+
+type sanitizedError struct {
+	err     error
+	message string
+}
+
+func (e sanitizedError) Error() string {
+	return e.message
+}
+
+func (e sanitizedError) Unwrap() error {
+	return e.err
+}
+
+func (e sanitizedError) DrainReason() string {
+	return e.message
 }
 
 func sanitizeFailure(err error) string {

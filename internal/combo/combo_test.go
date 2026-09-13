@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -122,6 +123,61 @@ func TestFillFirstSkipsDrainedTarget(t *testing.T) {
 	}
 	if len(called) != 1 || called[0] != "b" {
 		t.Fatalf("called = %v, want only b", called)
+	}
+}
+
+type cooldownTestError struct {
+	ttl time.Duration
+}
+
+func (e cooldownTestError) Error() string           { return "quota exhausted" }
+func (e cooldownTestError) Cooldown() time.Duration { return e.ttl }
+func (e cooldownTestError) DrainReason() string     { return e.Error() }
+
+func TestFillFirstUsesFailureCooldownForAffectedTarget(t *testing.T) {
+	tr := NewTracker("")
+	t1 := Target{Provider: "codex", Model: "gpt"}
+	t2 := Target{Provider: "other", Model: "gpt"}
+	c := Combo{Name: "auto", Strategy: "fill-first", Targets: []Target{t1, t2}, Tracker: tr, DrainTTL: time.Minute}
+
+	got, err := c.Run(context.Background(), func(_ context.Context, target Target) error {
+		if target == t1 {
+			return fmt.Errorf("request failed: %w", cooldownTestError{ttl: 5 * time.Minute})
+		}
+		return nil
+	})
+	if err != nil || got != t2 {
+		t.Fatalf("got = %+v, error = %v", got, err)
+	}
+	remaining := tr.DrainRemaining(t1)
+	if remaining < 4*time.Minute+59*time.Second || remaining > 5*time.Minute {
+		t.Fatalf("cooldown = %v", remaining)
+	}
+	if tr.IsDrained(t2) {
+		t.Fatal("unrelated target was drained")
+	}
+	if got := tr.DrainReason(t1); got != "quota exhausted" {
+		t.Fatalf("drain reason = %q", got)
+	}
+}
+
+func TestFillFirstDoesNotPersistRawErrorReason(t *testing.T) {
+	tr := NewTracker("")
+	t1 := Target{Provider: "a", Model: "m1"}
+	t2 := Target{Provider: "b", Model: "m2"}
+	secret := "Bearer secret-token"
+	c := Combo{Name: "auto", Strategy: "fill-first", Targets: []Target{t1, t2}, Tracker: tr}
+	_, err := c.Run(context.Background(), func(_ context.Context, target Target) error {
+		if target == t1 {
+			return errors.New(secret)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reason := tr.DrainReason(t1); reason != "upstream failure" || strings.Contains(reason, secret) {
+		t.Fatalf("drain reason = %q", reason)
 	}
 }
 
