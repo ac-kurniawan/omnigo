@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -216,8 +217,8 @@ func TestRefreshErrorLeavesCredentialsUnchanged(t *testing.T) {
 	oldURL := tokenURL
 	t.Cleanup(func() { tokenURL = oldURL })
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusBadRequest)
-		_, _ = w.Write([]byte(`{"error":"invalid_grant","refresh_token":"refresh-old"}`))
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(`{"error":"temporarily_unavailable","refresh_token":"refresh-old"}`))
 	}))
 	defer server.Close()
 	tokenURL = server.URL
@@ -230,5 +231,79 @@ func TestRefreshErrorLeavesCredentialsUnchanged(t *testing.T) {
 	}
 	if got := store.Get(); got.AccessToken != original.AccessToken || got.RefreshToken != original.RefreshToken || store.puts != 0 {
 		t.Fatalf("stored = %+v, puts = %d", got, store.puts)
+	}
+}
+
+func TestUnrecoverableRefreshFastFailsUntilCredentialsChange(t *testing.T) {
+	oldURL := tokenURL
+	t.Cleanup(func() { tokenURL = oldURL })
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		call := calls.Add(1)
+		if call == 1 {
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"error":"invalid_grant","error_description":"refresh token expired: refresh-old"}`))
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"access_token":  "access-new",
+			"refresh_token": "refresh-newer",
+			"expires_in":    3600,
+		})
+	}))
+	defer server.Close()
+	tokenURL = server.URL
+
+	store := &memoryCredStore{creds: provider.Credentials{AccessToken: "access-old", RefreshToken: "refresh-old", ExpiresAt: time.Now().Add(time.Minute)}}
+	manager := NewTokenManager(store)
+	for range 2 {
+		_, err := manager.EnsureFreshToken(context.Background())
+		if err == nil || err.Error() != "codex: re-authentication required; use Connect ChatGPT" {
+			t.Fatalf("error = %v", err)
+		}
+		if strings.Contains(err.Error(), "refresh-old") || strings.Contains(err.Error(), "invalid_grant") {
+			t.Fatalf("error leaked upstream details: %v", err)
+		}
+	}
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("refresh calls = %d, want 1", got)
+	}
+	store.mu.Lock()
+	store.creds.ExpiresAt = time.Now().Add(time.Hour)
+	store.mu.Unlock()
+	if _, err := manager.EnsureFreshToken(context.Background()); err == nil || err.Error() != "codex: re-authentication required; use Connect ChatGPT" {
+		t.Fatalf("fresh dead credentials error = %v", err)
+	}
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("refresh calls = %d after fresh dead credentials, want 1", got)
+	}
+
+	store.mu.Lock()
+	store.creds.RefreshToken = "refresh-new"
+	store.creds.ExpiresAt = time.Now().Add(time.Minute)
+	store.mu.Unlock()
+	creds, err := manager.EnsureFreshToken(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if creds.AccessToken != "access-new" || calls.Load() != 2 {
+		t.Fatalf("credentials = %+v, calls = %d", creds, calls.Load())
+	}
+}
+
+func TestRefreshTokenReusedRequiresReauthentication(t *testing.T) {
+	oldURL := tokenURL
+	t.Cleanup(func() { tokenURL = oldURL })
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":{"code":"refresh_token_reused","message":"do not expose this"}}`))
+	}))
+	defer server.Close()
+	tokenURL = server.URL
+
+	manager := NewTokenManager(&memoryCredStore{creds: provider.Credentials{RefreshToken: "dead"}})
+	_, err := manager.EnsureFreshToken(context.Background())
+	if err == nil || err.Error() != "codex: re-authentication required; use Connect ChatGPT" {
+		t.Fatalf("error = %v", err)
 	}
 }

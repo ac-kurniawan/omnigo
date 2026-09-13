@@ -191,6 +191,9 @@ func (p *Provider) ChatCompletion(ctx context.Context, req provider.ChatRequest,
 		}
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusTooManyRequests {
+		return newQuotaError(resp.Header)
+	}
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
 		return fmt.Errorf("codex: upstream status %d", resp.StatusCode)
 	}

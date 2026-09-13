@@ -2,6 +2,7 @@ package combo
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -24,6 +25,10 @@ type Combo struct {
 
 type DispatchFunc func(ctx context.Context, t Target) error
 
+type drainReasoner interface {
+	DrainReason() string
+}
+
 var roundRobinCounters sync.Map
 
 func (c Combo) Run(ctx context.Context, dispatch DispatchFunc) (Target, error) {
@@ -37,7 +42,7 @@ func (c Combo) Run(ctx context.Context, dispatch DispatchFunc) (Target, error) {
 			lastErr = err
 			failures = append(failures, fmt.Sprintf("%s: %v", targetKey(target), err))
 			if tracksFailures {
-				c.Tracker.MarkDrained(target, c.drainTTL(), err.Error())
+				c.Tracker.MarkDrained(target, failureCooldown(err, c.drainTTL()), failureReason(err))
 			}
 			continue
 		}
@@ -78,6 +83,22 @@ func (c Combo) orderedTargets() []Target {
 	rotated := make([]Target, 0, len(healthy))
 	rotated = append(rotated, healthy[start:]...)
 	return append(rotated, healthy[:start]...)
+}
+
+func failureReason(err error) string {
+	var reasoner drainReasoner
+	if errors.As(err, &reasoner) {
+		return reasoner.DrainReason()
+	}
+	return "upstream failure"
+}
+
+func failureCooldown(err error, fallback time.Duration) time.Duration {
+	var cooldown interface{ Cooldown() time.Duration }
+	if errors.As(err, &cooldown) && cooldown.Cooldown() > 0 {
+		return cooldown.Cooldown()
+	}
+	return fallback
 }
 
 func (c Combo) drainTTL() time.Duration {
