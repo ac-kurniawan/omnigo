@@ -63,6 +63,32 @@ func TestRegistryKeepsDisabledProvidersForInternalEndpoints(t *testing.T) {
 	}
 }
 
+func TestRegistryReusesCodexProviderAndCredentialsAcrossReload(t *testing.T) {
+	var builds atomic.Int32
+	provider.Register("codex-reload-test", func(cfg provider.Config, store provider.CredStore) provider.Provider {
+		builds.Add(1)
+		return &fakeProvider{name: cfg.Name}
+	})
+	store := vault.NewMemoryStore(&vault.Vault{ProviderSecrets: map[string]vault.ProviderSecret{
+		"codex-main": {AccessToken: "access", RefreshToken: "refresh", AccountID: "account"},
+	}})
+	registry := newProviderRegistry(store)
+	cfg := &config.Config{Providers: []config.Provider{{Name: "codex-main", Type: "codex-reload-test", Models: []string{"gpt-old"}}}}
+	first, ok := registry.Get(cfg, "codex-main")
+	if !ok {
+		t.Fatal("Codex provider missing")
+	}
+	cfg2 := &config.Config{Providers: []config.Provider{{Name: "codex-main", Type: "codex-reload-test", Models: []string{"gpt-new"}}}}
+	second, ok := registry.Get(cfg2, "codex-main")
+	if !ok || first != second || builds.Load() != 1 {
+		t.Fatalf("provider reuse = %v, builds = %d", first == second, builds.Load())
+	}
+	secret := store.Get().ProviderSecrets["codex-main"]
+	if secret.RefreshToken != "refresh" || secret.AccountID != "account" {
+		t.Fatalf("credentials changed across reload: %+v", secret)
+	}
+}
+
 func BenchmarkBuildProviderPerRequest(b *testing.B) {
 	provider.Register("bench-baseline", func(cfg provider.Config, store provider.CredStore) provider.Provider {
 		return &fakeProvider{name: cfg.Name}

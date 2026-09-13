@@ -299,18 +299,57 @@ func TestProviderIncompleteResponseUsesLengthFinishReason(t *testing.T) {
 	}
 }
 
-func TestProviderModelsFallback(t *testing.T) {
+func TestProviderModelsUsesLiveCatalog(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/models.json" {
+			t.Fatalf("path = %q", r.URL.Path)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"models": []map[string]any{
+			{"slug": "gpt-live", "display_name": "GPT Live", "visibility": "list", "supported_in_api": true},
+			{"slug": "gpt-hidden", "visibility": "hide", "supported_in_api": true},
+			{"slug": "gpt-cli-only", "visibility": "list", "supported_in_api": false},
+		}})
+	}))
+	defer server.Close()
 	store := &memoryCredStore{creds: provider.Credentials{AccessToken: "access", AccountID: "account", ExpiresAt: time.Now().Add(time.Hour)}}
-	p := New(provider.Config{Name: "codex"}, store)
+	p := New(provider.Config{Name: "codex"}, store).(*Provider)
+	p.modelsURL = server.URL + "/models.json"
 	models, err := p.Models(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(models) == 0 || models[0].ID == "" {
+	if len(models) != 1 || models[0].ID != "gpt-live" || models[0].Name != "GPT Live" {
 		t.Fatalf("models = %+v", models)
 	}
-	if len(models) != len(DefaultModels) {
-		t.Fatalf("models = %d, want %d", len(models), len(DefaultModels))
+}
+
+func TestProviderModelsRetainsFallbackWhenCatalogUnavailableOrMalformed(t *testing.T) {
+	for _, response := range []string{"not json", `{"models":[]}`} {
+		t.Run(response, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				_, _ = io.WriteString(w, response)
+			}))
+			defer server.Close()
+			store := &memoryCredStore{creds: provider.Credentials{AccessToken: "access", AccountID: "account", ExpiresAt: time.Now().Add(time.Hour)}}
+			p := New(provider.Config{Name: "codex"}, store).(*Provider)
+			p.modelsURL = server.URL
+			models, err := p.Models(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(models) != len(DefaultModels) || models[0].ID != DefaultModels[0] {
+				t.Fatalf("models = %+v", models)
+			}
+		})
+	}
+}
+
+func TestProviderTestRequiresCompleteCredentials(t *testing.T) {
+	store := &memoryCredStore{creds: provider.Credentials{AccessToken: "access", ExpiresAt: time.Now().Add(time.Hour)}}
+	p := New(provider.Config{Name: "codex"}, store)
+	result := p.Test(context.Background())
+	if result.OK || result.Error != "codex: account ID is missing" {
+		t.Fatalf("result = %+v", result)
 	}
 }
 
