@@ -238,6 +238,75 @@ func TestProviderErrorsAreSanitized(t *testing.T) {
 	}
 }
 
+func TestProviderRateLimitCooldownUsesResetHeaders(t *testing.T) {
+	now := time.Unix(2_000_000_000, 0)
+	oldNow := timeNow
+	timeNow = func() time.Time { return now }
+	t.Cleanup(func() { timeNow = oldNow })
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("x-codex-primary-used-percent", "100")
+		w.Header().Set("x-codex-primary-window-minutes", "300")
+		w.Header().Set("x-codex-primary-reset-at", "2000007200")
+		w.Header().Set("x-codex-secondary-used-percent", "100")
+		w.Header().Set("x-codex-secondary-window-minutes", "10080")
+		w.Header().Set("x-codex-secondary-reset-at", "2000604800")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = io.WriteString(w, `{"error":"secret quota detail"}`)
+	}))
+	defer server.Close()
+
+	store := &memoryCredStore{creds: provider.Credentials{AccessToken: "access", AccountID: "account", ExpiresAt: time.Now().Add(time.Hour)}}
+	p := New(provider.Config{Name: "codex", BaseURL: server.URL, Timeout: time.Second}, store)
+	err := p.ChatCompletion(context.Background(), provider.ChatRequest{Model: "gpt", Raw: []byte(`{"messages":[{"role":"user","content":"hi"}]}`)}, httptest.NewRecorder())
+	var cooldown interface{ Cooldown() time.Duration }
+	if !errors.As(err, &cooldown) {
+		t.Fatalf("error = %v, want cooldown", err)
+	}
+	if got := cooldown.Cooldown(); got != maxQuotaCooldown {
+		t.Fatalf("cooldown = %v, want %v", got, maxQuotaCooldown)
+	}
+	if strings.Contains(err.Error(), "secret quota detail") || err.Error() != "codex: quota exhausted" {
+		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestProviderRateLimitCooldownFallsBackAndBoundsMetadata(t *testing.T) {
+	tests := []struct {
+		name    string
+		headers map[string]string
+		want    time.Duration
+	}{
+		{name: "missing reset", want: defaultQuotaCooldown},
+		{name: "expired reset", headers: map[string]string{"x-codex-primary-used-percent": "100", "x-codex-primary-reset-at": "1999999999"}, want: defaultQuotaCooldown},
+		{name: "short reset", headers: map[string]string{"x-codex-primary-used-percent": "100", "x-codex-primary-reset-at": "2000000030"}, want: minQuotaCooldown},
+		{name: "ignores unexhausted secondary", headers: map[string]string{"x-codex-primary-used-percent": "100", "x-codex-primary-reset-at": "2000000120", "x-codex-secondary-used-percent": "99", "x-codex-secondary-reset-at": "2000003600"}, want: 2 * time.Minute},
+		{name: "retry after", headers: map[string]string{"Retry-After": "90"}, want: 90 * time.Second},
+	}
+	oldNow := timeNow
+	timeNow = func() time.Time { return time.Unix(2_000_000_000, 0) }
+	t.Cleanup(func() { timeNow = oldNow })
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				for key, value := range tt.headers {
+					w.Header().Set(key, value)
+				}
+				w.WriteHeader(http.StatusTooManyRequests)
+			}))
+			defer server.Close()
+			store := &memoryCredStore{creds: provider.Credentials{AccessToken: "access", AccountID: "account", ExpiresAt: time.Now().Add(time.Hour)}}
+			p := New(provider.Config{Name: "codex", BaseURL: server.URL, Timeout: time.Second}, store)
+			err := p.ChatCompletion(context.Background(), provider.ChatRequest{Model: "gpt", Raw: []byte(`{"messages":[{"role":"user","content":"hi"}]}`)}, httptest.NewRecorder())
+			var cooldown interface{ Cooldown() time.Duration }
+			if !errors.As(err, &cooldown) || cooldown.Cooldown() != tt.want {
+				t.Fatalf("error = %v, cooldown = %v, want %v", err, cooldown.Cooldown(), tt.want)
+			}
+		})
+	}
+}
+
 func TestProviderMalformedSSEAndCancellation(t *testing.T) {
 	t.Run("malformed", func(t *testing.T) {
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

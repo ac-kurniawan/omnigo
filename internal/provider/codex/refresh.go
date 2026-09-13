@@ -13,8 +13,10 @@ import (
 )
 
 type TokenManager struct {
-	store provider.CredStore
-	mu    sync.Mutex
+	store            provider.CredStore
+	mu               sync.Mutex
+	deadAccessToken  string
+	deadRefreshToken string
 }
 
 func NewTokenManager(store provider.CredStore) *TokenManager {
@@ -25,6 +27,9 @@ func (m *TokenManager) EnsureFreshToken(ctx context.Context) (provider.Credentia
 	creds := m.store.Get()
 	if creds.AccessToken == "" && creds.RefreshToken == "" {
 		return creds, fmt.Errorf("codex: not authenticated")
+	}
+	if m.credentialsDead(creds) {
+		return creds, reauthenticationError()
 	}
 	if tokenFresh(creds) {
 		return creds, nil
@@ -51,9 +56,19 @@ func (m *TokenManager) refresh(ctx context.Context, previousAccessToken string, 
 	if creds.RefreshToken == "" {
 		return creds, fmt.Errorf("codex: no refresh token")
 	}
+	if creds.AccessToken == m.deadAccessToken && creds.RefreshToken == m.deadRefreshToken {
+		return creds, reauthenticationError()
+	}
+	m.deadAccessToken = ""
+	m.deadRefreshToken = ""
 
 	tok, err := Refresh(ctx, creds.RefreshToken)
 	if err != nil {
+		if isUnrecoverableRefreshError(err) {
+			m.deadAccessToken = creds.AccessToken
+			m.deadRefreshToken = creds.RefreshToken
+			return creds, reauthenticationError()
+		}
 		return creds, err
 	}
 	creds.AccessToken = tok.AccessToken
@@ -72,6 +87,16 @@ func (m *TokenManager) refresh(ctx context.Context, previousAccessToken string, 
 		return creds, fmt.Errorf("persist refreshed Codex credentials: %w", err)
 	}
 	return creds, nil
+}
+
+func (m *TokenManager) credentialsDead(creds provider.Credentials) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return creds.AccessToken == m.deadAccessToken && creds.RefreshToken == m.deadRefreshToken
+}
+
+func reauthenticationError() error {
+	return fmt.Errorf("codex: re-authentication required; use Connect ChatGPT")
 }
 
 func tokenFresh(creds provider.Credentials) bool {
