@@ -21,8 +21,10 @@ OmniGo is the deliberately smaller version:
     Ollama, …) with a Bearer API key.
   - `antigravity` — Google *Gemini Code Assist* via OAuth2 (auth-code flow,
     automatic token refresh, OpenAI↔Gemini translation).
-  - No static model list: models are fetched from each provider's live
-    `/models` (or `:fetchAvailableModels`) endpoint and cached.
+  - `codex` — ChatGPT Codex via OAuth2 with PKCE and automatic rotating-token
+    refresh, translating the Responses SSE API to OpenAI chat completions.
+  - Models are fetched from each provider's live or official catalog and cached;
+    Codex retains a conservative static fallback when its catalog is unavailable.
 - **API key management** — issue client keys (`ak-…`) to access the gateway.
 - **Combo management** — route one model name across a fallback chain with
   `priority` or `fill-first` strategy.
@@ -80,6 +82,17 @@ You can override the directory or individual files via CLI flags or environment 
 - `-config <path>`, `-auth <path>`, `-key <path>`
 
 A reference template is available at [`config.example.yaml`](./config.example.yaml).
+
+### Codex OAuth setup
+
+1. Add a provider with `type: codex` in `config.yaml` or choose **codex** in the dashboard's provider form. No API key is required.
+2. Open the provider's **Connect ChatGPT** dialog and click **Open ChatGPT Sign-In**. Complete authorization in the same browser.
+3. The browser redirects to `http://localhost:1455/auth/callback`. If nothing is listening there, copy the complete URL from the address bar and paste it into the dashboard dialog. OmniGo exchanges the code and stores the credentials encrypted; do not edit `auth.yaml` manually.
+4. Click **Refresh** to cache the current official Codex model catalog, then **Test**. Use a direct model such as `codex-main/gpt-6-astra` or add it to a combo.
+
+The loopback redirect targets the machine running the browser, so a dashboard on a remote server still uses the paste workflow. Run the browser locally and paste the callback into the remote dashboard over a trusted HTTPS connection. Browser-based device authorization is not supported. Datacenter IPs may also be rejected by OpenAI during token exchange; if that occurs, run OmniGo on a network OpenAI accepts. If a rotating refresh token is expired, revoked, or rejected, use **Connect ChatGPT** again; repeated use of an old refresh token cannot recover the session.
+
+Codex inference and model catalog endpoints are private upstream interfaces and may change without notice. OmniGo sanitizes upstream errors and keeps its bundled model fallback when catalog discovery fails or returns malformed data.
 
 ## How it works
 

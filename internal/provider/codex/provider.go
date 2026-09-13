@@ -19,6 +19,7 @@ import (
 
 const (
 	DefaultResponsesURL = "https://chatgpt.com/backend-api/codex/responses"
+	DefaultModelsURL    = "https://raw.githubusercontent.com/openai/codex/main/codex-rs/models-manager/models.json"
 	ClientVersion       = "0.154.0"
 	Originator          = "codex_cli_rs"
 	UserAgent           = Originator + "/" + ClientVersion + " (OmniGo)"
@@ -30,6 +31,7 @@ var DefaultModels = []string{"gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra", "gpt
 type Provider struct {
 	name         string
 	responsesURL string
+	modelsURL    string
 	client       *http.Client
 	tokens       *TokenManager
 }
@@ -80,6 +82,7 @@ func New(cfg provider.Config, store provider.CredStore) provider.Provider {
 	return &Provider{
 		name:         cfg.Name,
 		responsesURL: responsesURL,
+		modelsURL:    DefaultModelsURL,
 		client:       &http.Client{Timeout: timeout, Transport: cfg.Transport},
 		tokens:       NewTokenManager(store),
 	}
@@ -87,17 +90,65 @@ func New(cfg provider.Config, store provider.CredStore) provider.Provider {
 
 func (p *Provider) Name() string { return p.name }
 
-func (p *Provider) Models(context.Context) ([]provider.Model, error) {
-	models := make([]provider.Model, 0, len(DefaultModels))
-	for _, id := range DefaultModels {
-		models = append(models, provider.Model{ID: id, Name: id})
+func (p *Provider) Models(ctx context.Context) ([]provider.Model, error) {
+	fallback := fallbackModels()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, p.modelsURL, nil)
+	if err != nil {
+		return fallback, nil
+	}
+	req.Header.Set("Accept", "application/json")
+	resp, err := p.client.Do(req)
+	if err != nil {
+		return fallback, nil
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fallback, nil
+	}
+	var catalog struct {
+		Models []struct {
+			Slug           string `json:"slug"`
+			DisplayName    string `json:"display_name"`
+			Visibility     string `json:"visibility"`
+			SupportedInAPI bool   `json:"supported_in_api"`
+		} `json:"models"`
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 4<<20)).Decode(&catalog); err != nil {
+		return fallback, nil
+	}
+	models := make([]provider.Model, 0, len(catalog.Models))
+	seen := make(map[string]bool, len(catalog.Models))
+	for _, model := range catalog.Models {
+		if model.Slug == "" || model.Visibility != "list" || !model.SupportedInAPI || seen[model.Slug] {
+			continue
+		}
+		seen[model.Slug] = true
+		name := model.DisplayName
+		if name == "" {
+			name = model.Slug
+		}
+		models = append(models, provider.Model{ID: model.Slug, Name: name})
+	}
+	if len(models) == 0 {
+		return fallback, nil
 	}
 	return models, nil
 }
 
+func fallbackModels() []provider.Model {
+	models := make([]provider.Model, 0, len(DefaultModels))
+	for _, id := range DefaultModels {
+		models = append(models, provider.Model{ID: id, Name: id})
+	}
+	return models
+}
+
 func (p *Provider) Test(ctx context.Context) provider.TestResult {
 	start := time.Now()
-	_, err := p.tokens.EnsureFreshToken(ctx)
+	creds, err := p.tokens.EnsureFreshToken(ctx)
+	if err == nil && creds.AccountID == "" {
+		err = fmt.Errorf("codex: account ID is missing")
+	}
 	result := provider.TestResult{LatencyMS: time.Since(start).Milliseconds()}
 	if err != nil {
 		result.Error = err.Error()
