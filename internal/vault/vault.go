@@ -15,8 +15,10 @@ type ProviderSecret struct {
 	APIKey       string    `yaml:"api_key,omitempty"`
 	AccessToken  string    `yaml:"access_token,omitempty"`
 	RefreshToken string    `yaml:"refresh_token,omitempty"`
+	IDToken      string    `yaml:"id_token,omitempty"`
 	ExpiresAt    time.Time `yaml:"expires_at,omitempty"`
 	ProjectID    string    `yaml:"project_id,omitempty"`
+	AccountID    string    `yaml:"account_id,omitempty"`
 	Email        string    `yaml:"email,omitempty"`
 }
 

@@ -79,8 +79,11 @@ type Credentials struct {
 	APIKey       string
 	AccessToken  string
 	RefreshToken string
+	IDToken      string
 	ExpiresAt    time.Time
 	ProjectID    string
+	AccountID    string
+	Email        string
 }
 
 // CredStore reads and persists one provider's credentials.
