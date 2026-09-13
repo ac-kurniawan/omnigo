@@ -22,7 +22,7 @@ func handleRefreshModels(getCfg func() *config.Config, registry *providerRegistr
 			}
 			models, err := p.Models(r.Context())
 			if err != nil {
-				writeError(w, http.StatusBadGateway, err.Error())
+				writeError(w, http.StatusBadGateway, "model discovery failed for provider: "+name)
 				return
 			}
 			ids := make([]string, 0, len(models))

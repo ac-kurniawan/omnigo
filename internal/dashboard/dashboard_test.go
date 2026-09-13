@@ -40,6 +40,19 @@ func TestIndexRendersProvidersCombosAndKeys(t *testing.T) {
 	}
 }
 
+func TestIndexRendersCodexConnectionStateAndActions(t *testing.T) {
+	cfg := &config.Config{Providers: []config.Provider{{Name: "codex-main", Type: "codex", Models: []string{"gpt-6-astra"}}}}
+	v := &vault.Vault{ProviderSecrets: map[string]vault.ProviderSecret{"codex-main": {RefreshToken: "stored", AccountID: "workspace-test", Email: "user@example.com"}}}
+	rr := httptest.NewRecorder()
+	testHandler(t, cfg, v).ServeHTTP(rr, httptest.NewRequest("GET", "/", nil))
+	body := rr.Body.String()
+	for _, value := range []string{"Connect ChatGPT", "user@example.com", "Workspace: workspace-test", "/internal/test/codex-main", "/internal/refresh-models/codex-main"} {
+		if !strings.Contains(body, value) {
+			t.Fatalf("dashboard missing %q", value)
+		}
+	}
+}
+
 func TestServesStaticHtmx(t *testing.T) {
 	cfg := &config.Config{}
 	h := testHandler(t, cfg, &vault.Vault{})

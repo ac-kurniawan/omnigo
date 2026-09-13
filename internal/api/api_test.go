@@ -39,8 +39,11 @@ func TestModelsUnauthorized(t *testing.T) {
 
 func TestModelsAuthorizedListsComboAndProviders(t *testing.T) {
 	cfg := &config.Config{
-		Providers: []config.Provider{{Name: "openai", Type: "openai", BaseURL: "https://x", Models: []string{"gpt-4o"}}},
-		Combos:    []config.Combo{{Name: "auto", Strategy: "priority", Targets: []config.ComboTarget{{Provider: "openai", Model: "gpt-4o"}}}},
+		Providers: []config.Provider{
+			{Name: "openai", Type: "openai", BaseURL: "https://x", Models: []string{"gpt-4o"}},
+			{Name: "codex-main", Type: "codex", Models: []string{"gpt-6-astra"}},
+		},
+		Combos: []config.Combo{{Name: "auto", Strategy: "priority", Targets: []config.ComboTarget{{Provider: "openai", Model: "gpt-4o"}}}},
 	}
 	raw, hash, prefix, _ := auth.GenerateKey()
 	v := &vault.Vault{ClientKeys: []vault.ClientKey{{ID: "k1", KeyHash: hash, Prefix: prefix, Active: true}}}
@@ -52,7 +55,7 @@ func TestModelsAuthorizedListsComboAndProviders(t *testing.T) {
 		t.Fatalf("status = %d, body %s", rr.Code, rr.Body.String())
 	}
 	body := rr.Body.String()
-	if !containsStr(body, "auto") || !containsStr(body, "openai/gpt-4o") {
+	if !containsStr(body, "auto") || !containsStr(body, "openai/gpt-4o") || !containsStr(body, "codex-main/gpt-6-astra") {
 		t.Fatalf("body = %s", body)
 	}
 }
