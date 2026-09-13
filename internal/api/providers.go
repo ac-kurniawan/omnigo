@@ -22,8 +22,11 @@ func (s credStore) Get() provider.Credentials {
 		APIKey:       sec.APIKey,
 		AccessToken:  sec.AccessToken,
 		RefreshToken: sec.RefreshToken,
+		IDToken:      sec.IDToken,
 		ExpiresAt:    sec.ExpiresAt,
 		ProjectID:    sec.ProjectID,
+		AccountID:    sec.AccountID,
+		Email:        sec.Email,
 	}
 }
 
@@ -36,8 +39,11 @@ func (s credStore) Put(c provider.Credentials) error {
 		sec.APIKey = c.APIKey
 		sec.AccessToken = c.AccessToken
 		sec.RefreshToken = c.RefreshToken
+		sec.IDToken = c.IDToken
 		sec.ExpiresAt = c.ExpiresAt
 		sec.ProjectID = c.ProjectID
+		sec.AccountID = c.AccountID
+		sec.Email = c.Email
 		v.ProviderSecrets[s.name] = sec
 		return nil
 	})
