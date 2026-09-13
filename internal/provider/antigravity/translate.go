@@ -45,6 +45,9 @@ func ToEnvelope(projectID, model string, req provider.ChatRequest) (map[string]a
 				}
 			}
 		}
+		if len(parts) == 0 {
+			continue
+		}
 		contents = append(contents, map[string]any{
 			"role":  role(m.Role),
 			"parts": parts,

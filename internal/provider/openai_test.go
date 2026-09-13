@@ -41,6 +41,42 @@ func TestOpenAIChatRewritesModelInForwardedBody(t *testing.T) {
 	}
 }
 
+func TestOpenAIChatForwardsMultimodalPartsUnchanged(t *testing.T) {
+	var gotContent []any
+	p := newOpenAI(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Messages []struct {
+				Content []any `json:"content"`
+			} `json:"messages"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("decode upstream body: %v", err)
+		}
+		if len(body.Messages) > 0 {
+			gotContent = body.Messages[0].Content
+		}
+		w.Write([]byte(`{}`))
+	}))
+	req := ChatRequest{
+		Model: "gpt-4o",
+		Raw:   []byte(`{"model":"openai/gpt-4o","messages":[{"role":"user","content":[{"type":"text","text":"what is this?"},{"type":"image_url","image_url":{"url":"data:image/png;base64,AAAA"}}]}]}`),
+	}
+	if err := p.ChatCompletion(context.Background(), req, httptest.NewRecorder()); err != nil {
+		t.Fatalf("ChatCompletion: %v", err)
+	}
+	if len(gotContent) != 2 {
+		t.Fatalf("upstream content = %#v, want 2 parts", gotContent)
+	}
+	imagePart, ok := gotContent[1].(map[string]any)
+	if !ok {
+		t.Fatalf("upstream part = %#v, want object", gotContent[1])
+	}
+	imageURL, ok := imagePart["image_url"].(map[string]any)
+	if !ok || imageURL["url"] != "data:image/png;base64,AAAA" {
+		t.Fatalf("upstream image part = %#v, want original image_url", imagePart)
+	}
+}
+
 func TestOpenAIChatUpstreamErrorReturnsError(t *testing.T) {
 	p := newOpenAI(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":"model not found"}`, http.StatusNotFound)
