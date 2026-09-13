@@ -63,7 +63,7 @@ func TestValidateRejectsUnknownStrategy(t *testing.T) {
 
 func TestValidateAcceptsKnownValues(t *testing.T) {
 	cfg := &Config{
-		Providers: []Provider{{Name: "a", Type: "openai"}, {Name: "b", Type: "antigravity"}},
+		Providers: []Provider{{Name: "a", Type: "openai"}, {Name: "b", Type: "antigravity"}, {Name: "c", Type: "codex"}},
 		Combos: []Combo{
 			{Name: "auto", Strategy: "priority"},
 			{Name: "x", Strategy: "fill-first", DrainTTL: "30s"},

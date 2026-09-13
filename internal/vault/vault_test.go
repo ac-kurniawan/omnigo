@@ -15,6 +15,13 @@ func TestRoundTrip(t *testing.T) {
 	v := &Vault{
 		ProviderSecrets: map[string]ProviderSecret{
 			"openai-main": {APIKey: "sk-secret"},
+			"codex-main": {
+				AccessToken:  "access-secret",
+				RefreshToken: "refresh-secret",
+				IDToken:      "id-secret",
+				AccountID:    "workspace-1",
+				Email:        "user@example.com",
+			},
 		},
 		ClientKeys: []ClientKey{{ID: "k1", Name: "dev", KeyHash: "abc", Prefix: "ak-12345678"}},
 	}
@@ -27,6 +34,10 @@ func TestRoundTrip(t *testing.T) {
 	}
 	if got.ProviderSecrets["openai-main"].APIKey != "sk-secret" {
 		t.Fatalf("round-trip lost secret: %+v", got.ProviderSecrets)
+	}
+	codex := got.ProviderSecrets["codex-main"]
+	if codex.AccessToken != "access-secret" || codex.RefreshToken != "refresh-secret" || codex.IDToken != "id-secret" || codex.AccountID != "workspace-1" || codex.Email != "user@example.com" {
+		t.Fatalf("round-trip lost Codex credentials: %+v", codex)
 	}
 	if len(got.ClientKeys) != 1 || got.ClientKeys[0].Prefix != "ak-12345678" {
 		t.Fatalf("client keys = %+v", got.ClientKeys)
