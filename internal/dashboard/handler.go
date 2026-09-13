@@ -12,6 +12,7 @@ import (
 	"github.com/ac-kurniawan/omnigo/internal/combo"
 	"github.com/ac-kurniawan/omnigo/internal/config"
 	"github.com/ac-kurniawan/omnigo/internal/provider/antigravity"
+	"github.com/ac-kurniawan/omnigo/internal/provider/codex"
 	"github.com/ac-kurniawan/omnigo/internal/vault"
 )
 
@@ -41,6 +42,10 @@ type Server struct {
 	// antigravity package); tests override them with fakes.
 	exchange func(r *http.Request, code, redirectURI string) (*antigravity.Token, error)
 	discover func(r *http.Request, accessToken string) (string, error)
+
+	// codexExchange is the injectable token-exchange seam for the Codex
+	// provider (defaults to the codex package).
+	codexExchange func(r *http.Request, code, verifier, redirectURI string) (*codex.Token, error)
 }
 
 func NewHandler(getCfg func() *config.Config, store *vault.Store, mutate config.MutateFunc, tracker ...*combo.Tracker) http.Handler {
@@ -103,6 +108,9 @@ func newServer(getCfg func() *config.Config, store *vault.Store, mutate config.M
 	}
 	s.discover = func(r *http.Request, accessToken string) (string, error) {
 		return antigravity.DiscoverProject(r.Context(), accessToken)
+	}
+	s.codexExchange = func(r *http.Request, code, verifier, redirectURI string) (*codex.Token, error) {
+		return codex.ExchangeCode(r.Context(), code, verifier, redirectURI)
 	}
 	return s
 }

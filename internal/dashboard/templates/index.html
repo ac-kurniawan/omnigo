@@ -206,6 +206,7 @@
                     <select name="type" class="select select-bordered select-sm w-full font-mono text-xs px-3 h-auto min-h-[2.25rem] rounded-lg" required>
                       <option value="openai">openai (Bearer API Key)</option>
                       <option value="antigravity">antigravity (Google OAuth2 SSO)</option>
+                      <option value="codex">codex (ChatGPT OAuth + PKCE)</option>
                     </select>
                   </div>
                   <div>
@@ -706,6 +707,16 @@
                   <span class="size-2.5 rounded-full bg-error ring-4 ring-error/20 shrink-0"></span>
                 </div>
               {{end}}
+            {{else if eq .Type "codex"}}
+              {{if and $sec (or $sec.RefreshToken $sec.AccessToken)}}
+                <div class="tooltip tooltip-right inline-flex items-center" data-tip="Connected{{if $sec.Email}} ({{$sec.Email}}){{end}}{{if $sec.AccountID}} — Workspace: {{$sec.AccountID}}{{end}}">
+                  <span class="size-2.5 rounded-full bg-success ring-4 ring-success/20 shrink-0"></span>
+                </div>
+              {{else}}
+                <div class="tooltip tooltip-right inline-flex items-center" data-tip="Not Connected — Click Connect ChatGPT">
+                  <span class="size-2.5 rounded-full bg-error ring-4 ring-error/20 shrink-0"></span>
+                </div>
+              {{end}}
             {{else}}
               {{if $hasKey}}
                 <div class="tooltip tooltip-right inline-flex items-center" data-tip="API Key Configured">
@@ -728,6 +739,11 @@
             <span class="px-2.5 py-1 text-xs font-mono font-medium rounded-lg bg-secondary/15 text-secondary border border-secondary/20 inline-flex items-center gap-1.5 leading-none">
               <svg xmlns="http://www.w3.org/2000/svg" class="size-3" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/></svg>
               antigravity
+            </span>
+          {{else if eq .Type "codex"}}
+            <span class="px-2.5 py-1 text-xs font-mono font-medium rounded-lg bg-accent/15 text-accent border border-accent/20 inline-flex items-center gap-1.5 leading-none">
+              <svg xmlns="http://www.w3.org/2000/svg" class="size-3" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2a10 10 0 100 20 10 10 0 000-20zm0 4a6 6 0 110 12 6 6 0 010-12z"/></svg>
+              codex
             </span>
           {{else}}
             <span class="px-2.5 py-1 text-xs font-mono font-medium rounded-lg bg-info/15 text-info border border-info/20 inline-flex items-center gap-1.5 leading-none">
@@ -851,6 +867,59 @@
                       
                       <form action="/oauth/{{.Name}}/paste-callback" method="POST" hx-post="/oauth/{{.Name}}/paste-callback" hx-target="#result" hx-swap="innerHTML" hx-on::after-request="document.getElementById('modal-{{.Name}}').close(); htmx.ajax('GET', '/providers', {target:'#providers', swap:'innerHTML'})" class="space-y-3">
                         <textarea name="callback" rows="3" placeholder="http://127.0.0.1:20128/callback?state=...&code=4/0ATs..." class="textarea textarea-bordered textarea-sm w-full font-mono text-xs p-3 rounded-xl" required></textarea>
+                        <div class="flex justify-end gap-2">
+                          <button type="submit" class="btn btn-sm btn-primary px-5 h-auto min-h-[2.25rem] rounded-xl gap-1.5 shadow-sm font-medium">
+                            <svg xmlns="http://www.w3.org/2000/svg" class="size-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7" /></svg>
+                            Authenticate &amp; Link Account
+                          </button>
+                        </div>
+                      </form>
+                    </div>
+                  </div>
+
+                  <div class="modal-action border-t border-base-content/10 pt-3">
+                    <form method="dialog">
+                      <button class="btn btn-sm btn-ghost px-4 rounded-xl">Cancel</button>
+                    </form>
+                  </div>
+                </div>
+                <form method="dialog" class="modal-backdrop"><button>close</button></form>
+              </dialog>
+            {{end}}
+
+            {{if eq .Type "codex"}}
+              <button type="button" class="btn btn-xs btn-success text-white px-3 py-1 h-auto min-h-[1.75rem] rounded-lg gap-1.5 shadow-sm font-medium" onclick="document.getElementById('modal-{{.Name}}').showModal()">
+                <svg xmlns="http://www.w3.org/2000/svg" class="size-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1" /></svg>
+                Connect ChatGPT
+              </button>
+
+              <!-- Codex OAuth Modal -->
+              <dialog id="modal-{{.Name}}" class="modal modal-bottom sm:modal-middle">
+                <div class="modal-box max-w-xl text-left border border-base-content/10 shadow-2xl p-6 rounded-2xl">
+                  <h3 class="text-lg font-bold flex items-center gap-2 text-primary">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="size-5" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2a10 10 0 100 20 10 10 0 000-20zm0 4a6 6 0 110 12 6 6 0 010-12z"/></svg>
+                    Connect ChatGPT (Codex)
+                  </h3>
+                  <p class="text-xs text-base-content/70 mt-1">Authenticate with your ChatGPT account using the Codex PKCE login flow.</p>
+
+                  <div class="space-y-4 my-5">
+                    <!-- Step 1 -->
+                    <div class="bg-base-200/70 p-4 rounded-xl border border-base-content/10">
+                      <div class="text-xs font-bold text-base-content/80 uppercase tracking-wider mb-1">Step 1: Authorize ChatGPT Account</div>
+                      <p class="text-xs text-base-content/60 mb-3">Click below to open ChatGPT sign-in in a new tab. Log in and approve access.</p>
+                      <a href="/oauth/login/{{.Name}}" target="_blank" class="btn btn-sm btn-outline btn-success gap-2 w-full justify-between rounded-xl px-4 py-2 h-auto min-h-[2.25rem]">
+                        <span>1. Open ChatGPT Sign-In (New Tab)</span>
+                        <svg xmlns="http://www.w3.org/2000/svg" class="size-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" /></svg>
+                      </a>
+                    </div>
+
+                    <!-- Step 2 -->
+                    <div class="bg-base-200/70 p-4 rounded-xl border border-base-content/10">
+                      <div class="text-xs font-bold text-base-content/80 uppercase tracking-wider mb-1">Step 2: Paste Redirect Callback URL</div>
+                      <p class="text-xs text-base-content/60 mb-3">After approving, ChatGPT redirects your browser to <code class="text-primary text-xs px-1.5 py-0.5 bg-base-300/60 rounded">http://localhost:1455/auth/callback?...</code> (even if your browser says "Unable to connect", that's normal!). Copy that full address from your browser's address bar and paste it below:</p>
+
+                      <form action="/oauth/{{.Name}}/paste-callback" method="POST" hx-post="/oauth/{{.Name}}/paste-callback" hx-target="#result" hx-swap="innerHTML" hx-on::after-request="document.getElementById('modal-{{.Name}}').close(); htmx.ajax('GET', '/providers', {target:'#providers', swap:'innerHTML'})" class="space-y-3">
+                        <textarea name="callback" rows="3" placeholder="http://localhost:1455/auth/callback?code=...&state=..." class="textarea textarea-bordered textarea-sm w-full font-mono text-xs p-3 rounded-xl" required></textarea>
                         <div class="flex justify-end gap-2">
                           <button type="submit" class="btn btn-sm btn-primary px-5 h-auto min-h-[2.25rem] rounded-xl gap-1.5 shadow-sm font-medium">
                             <svg xmlns="http://www.w3.org/2000/svg" class="size-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7" /></svg>
