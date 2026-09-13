@@ -102,6 +102,13 @@ func TestChatAcceptsMultimodalContent(t *testing.T) {
 	if string(got.Raw) != body {
 		t.Fatalf("raw request changed: %s", got.Raw)
 	}
+	forwarded, err := got.Body()
+	if err != nil {
+		t.Fatalf("Body: %v", err)
+	}
+	if !strings.Contains(string(forwarded), `"image_url"`) || !strings.Contains(string(forwarded), "data:image/png;base64,abc") {
+		t.Fatalf("forwarded payload lost image part: %s", forwarded)
+	}
 }
 
 func TestChatUnknownModelNotFound(t *testing.T) {
