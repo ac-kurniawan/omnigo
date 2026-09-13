@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -138,6 +139,86 @@ func TestChatRejectsBodyLargerThan10MB(t *testing.T) {
 	}
 }
 
+func TestRouterCachesProviderInstances(t *testing.T) {
+	var builds atomic.Int32
+	provider.Register("cached", func(cfg provider.Config, store provider.CredStore) provider.Provider {
+		builds.Add(1)
+		return &fakeProvider{name: cfg.Name}
+	})
+	cfg := &config.Config{Providers: []config.Provider{{Name: "cached", Type: "cached", Models: []string{"model"}}}}
+	raw, hash, prefix, _ := auth.GenerateKey()
+	v := &vault.Vault{ClientKeys: []vault.ClientKey{{ID: "k1", KeyHash: hash, Prefix: prefix, Active: true}}}
+	router := testRouter(t, cfg, v)
+
+	for range 2 {
+		req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(`{"model":"cached/model","messages":[]}`))
+		req.Header.Set("Authorization", "Bearer "+raw)
+		rr := httptest.NewRecorder()
+		router.ServeHTTP(rr, req)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("status = %d body = %s", rr.Code, rr.Body.String())
+		}
+	}
+	if got := builds.Load(); got != 1 {
+		t.Fatalf("provider builds = %d, want 1", got)
+	}
+}
+
+func TestProviderReceivesConfiguredTransport(t *testing.T) {
+	var got http.RoundTripper
+	provider.Register("transport-test", func(cfg provider.Config, store provider.CredStore) provider.Provider {
+		got = cfg.Transport
+		return &fakeProvider{name: cfg.Name}
+	})
+	registry := newProviderRegistry(vault.NewMemoryStore(&vault.Vault{}))
+	cfg := &config.Config{Providers: []config.Provider{{Name: "transport", Type: "transport-test"}}}
+	registry.ensure(cfg)
+	if got != registry.transport {
+		t.Fatal("provider did not receive shared transport")
+	}
+}
+
+func TestProviderRegistryReloadsChangedProviders(t *testing.T) {
+	var builds atomic.Int32
+	provider.Register("reload-test", func(cfg provider.Config, store provider.CredStore) provider.Provider {
+		builds.Add(1)
+		return &fakeProvider{name: cfg.Name}
+	})
+	registry := newProviderRegistry(vault.NewMemoryStore(&vault.Vault{}))
+	cfg := &config.Config{Providers: []config.Provider{{Name: "provider", Type: "reload-test", BaseURL: "https://one"}}}
+	registry.ensure(cfg)
+	first, ok := registry.Get(cfg, "provider")
+	if !ok {
+		t.Fatal("provider missing after initial load")
+	}
+
+	cfg2 := &config.Config{Providers: []config.Provider{{Name: "provider", Type: "reload-test", BaseURL: "https://two"}}}
+	registry.ensure(cfg2)
+	second, ok := registry.Get(cfg2, "provider")
+	if !ok {
+		t.Fatal("provider missing after reload")
+	}
+	if first == second || builds.Load() != 2 {
+		t.Fatalf("reload did not rebuild provider: builds = %d", builds.Load())
+	}
+}
+
+func BenchmarkResolveDirectCachedProvider(b *testing.B) {
+	provider.Register("benchmark", func(cfg provider.Config, store provider.CredStore) provider.Provider {
+		return &fakeProvider{name: cfg.Name}
+	})
+	cfg := &config.Config{Providers: []config.Provider{{Name: "benchmark", Type: "benchmark", Models: []string{"model"}}}}
+	registry := newProviderRegistry(vault.NewMemoryStore(&vault.Vault{}))
+	registry.ensure(cfg)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for b.Loop() {
+		if _, _, ok := resolveDirect(cfg, registry, "benchmark/model"); !ok {
+			b.Fatal("provider not resolved")
+		}
+	}
+}
+
 func TestProviderReceivesConfiguredTimeout(t *testing.T) {
 	var gotTimeout time.Duration
 	provider.Register("openai", func(cfg provider.Config, store provider.CredStore) provider.Provider {
@@ -152,11 +233,11 @@ func TestProviderReceivesConfiguredTimeout(t *testing.T) {
 		},
 	}
 	v := &vault.Vault{}
-	_, _ = buildProvider(cfg.Providers[0], vault.NewMemoryStore(v), cfg.DefaultTimeout())
+	_, _ = buildProvider(cfg.Providers[0], vault.NewMemoryStore(v), nil, cfg.DefaultTimeout())
 	if gotTimeout != 12*time.Second {
 		t.Fatalf("custom provider timeout = %v, want 12s", gotTimeout)
 	}
-	_, _ = buildProvider(cfg.Providers[1], vault.NewMemoryStore(v), cfg.DefaultTimeout())
+	_, _ = buildProvider(cfg.Providers[1], vault.NewMemoryStore(v), nil, cfg.DefaultTimeout())
 	if gotTimeout != 40*time.Second {
 		t.Fatalf("default provider timeout = %v, want 40s (from server)", gotTimeout)
 	}
