@@ -45,6 +45,50 @@ func TestAddCombo(t *testing.T) {
 	}
 }
 
+func TestAddComboAcceptsReliableAndRoundRobin(t *testing.T) {
+	for _, strategy := range []string{"reliable", "round-robin"} {
+		t.Run(strategy, func(t *testing.T) {
+			cfg := &config.Config{Providers: []config.Provider{{Name: "openai", Type: "openai"}}}
+			store := vault.NewMemoryStore(&vault.Vault{})
+			mutate := func(fn func(*config.Config) error) error {
+				if err := fn(cfg); err != nil {
+					return err
+				}
+				return cfg.Validate()
+			}
+			s := newServer(func() *config.Config { return cfg }, store, mutate, nil)
+			req := httptest.NewRequest("POST", "/combos", strings.NewReader("name=smart&strategy="+strategy+"&targets=openai/gpt-4o"))
+			req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+			req.Header.Set("HX-Request", "true")
+			rr := httptest.NewRecorder()
+			s.routes().ServeHTTP(rr, req)
+			if rr.Code != http.StatusOK || len(cfg.Combos) != 1 || cfg.Combos[0].Strategy != strategy {
+				t.Fatalf("status = %d, combos = %+v", rr.Code, cfg.Combos)
+			}
+		})
+	}
+}
+
+func TestAddComboRejectsUnknownStrategy(t *testing.T) {
+	cfg := &config.Config{}
+	store := vault.NewMemoryStore(&vault.Vault{})
+	mutate := func(fn func(*config.Config) error) error {
+		if err := fn(cfg); err != nil {
+			return err
+		}
+		return cfg.Validate()
+	}
+	s := newServer(func() *config.Config { return cfg }, store, mutate, nil)
+	req := httptest.NewRequest("POST", "/combos", strings.NewReader("name=smart&strategy=random&targets=openai/gpt-4o"))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("HX-Request", "true")
+	rr := httptest.NewRecorder()
+	s.routes().ServeHTTP(rr, req)
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", rr.Code)
+	}
+}
+
 func TestAddComboMultipleTargetsOrdered(t *testing.T) {
 	cfg := &config.Config{
 		Providers: []config.Provider{
@@ -218,6 +262,29 @@ func TestCombosRenderLiveAlertWhenDrained(t *testing.T) {
 	}
 	if !strings.Contains(body2, "1 target in fallback cooldown") {
 		t.Fatalf("expected cooldown count in body, got: %s", body2)
+	}
+}
+
+func TestUpdateComboStrategy(t *testing.T) {
+	cfg := &config.Config{Combos: []config.Combo{{Name: "smart", Strategy: "priority"}}}
+	store := vault.NewMemoryStore(&vault.Vault{})
+	mutate := func(fn func(*config.Config) error) error {
+		if err := fn(cfg); err != nil {
+			return err
+		}
+		return cfg.Validate()
+	}
+	s := newServer(func() *config.Config { return cfg }, store, mutate, nil)
+
+	for _, strategy := range []string{"reliable", "round-robin"} {
+		req := httptest.NewRequest("POST", "/combos/smart", strings.NewReader("strategy="+strategy))
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		req.Header.Set("HX-Request", "true")
+		rr := httptest.NewRecorder()
+		s.routes().ServeHTTP(rr, req)
+		if rr.Code != http.StatusOK || cfg.Combos[0].Strategy != strategy {
+			t.Fatalf("strategy %q: status = %d, combo = %+v", strategy, rr.Code, cfg.Combos[0])
+		}
 	}
 }
 

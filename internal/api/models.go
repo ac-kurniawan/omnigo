@@ -27,16 +27,15 @@ func handleModels(getCfg func() *config.Config) http.HandlerFunc {
 
 func handleModel(getCfg func() *config.Config) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		id := r.PathValue("model")
+		modelID := r.PathValue("model")
 		for _, model := range modelEntries(getCfg()) {
-			if model.ID != id {
-				continue
+			if model.ID == modelID {
+				w.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(w).Encode(model)
+				return
 			}
-			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(model)
-			return
 		}
-		writeError(w, http.StatusNotFound, "model not found: "+id)
+		writeError(w, http.StatusNotFound, "model not found: "+modelID)
 	}
 }
 
@@ -50,7 +49,9 @@ func modelEntries(cfg *config.Config) []modelEntry {
 			continue
 		}
 		for _, m := range p.Models {
-			entries = append(entries, modelEntry{ID: p.Name + "/" + m, Object: "model", Created: 0, OwnedBy: p.Name})
+			if !p.IsModelDisabled(m) {
+				entries = append(entries, modelEntry{ID: p.Name + "/" + m, Object: "model", Created: 0, OwnedBy: p.Name})
+			}
 		}
 	}
 	return entries

@@ -5,10 +5,9 @@ import (
 	"net/http"
 
 	"github.com/ac-kurniawan/omnigo/internal/config"
-	"github.com/ac-kurniawan/omnigo/internal/vault"
 )
 
-func handleRefreshModels(getCfg func() *config.Config, store *vault.Store, mutate config.MutateFunc) http.HandlerFunc {
+func handleRefreshModels(getCfg func() *config.Config, registry *providerRegistry, mutate config.MutateFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		name := r.PathValue("provider")
 		cfg := getCfg()
@@ -16,9 +15,9 @@ func handleRefreshModels(getCfg func() *config.Config, store *vault.Store, mutat
 			if pc.Name != name {
 				continue
 			}
-			p, err := buildProvider(pc, store, cfg.DefaultTimeout())
-			if err != nil {
-				writeError(w, http.StatusInternalServerError, err.Error())
+			p, ok := registry.Get(cfg, pc.Name)
+			if !ok {
+				writeError(w, http.StatusInternalServerError, "provider unavailable: "+pc.Type)
 				return
 			}
 			models, err := p.Models(r.Context())
@@ -44,7 +43,7 @@ func handleRefreshModels(getCfg func() *config.Config, store *vault.Store, mutat
 	}
 }
 
-func handleTestProvider(getCfg func() *config.Config, store *vault.Store) http.HandlerFunc {
+func handleTestProvider(getCfg func() *config.Config, registry *providerRegistry) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		name := r.PathValue("provider")
 		cfg := getCfg()
@@ -52,9 +51,9 @@ func handleTestProvider(getCfg func() *config.Config, store *vault.Store) http.H
 			if pc.Name != name {
 				continue
 			}
-			p, err := buildProvider(pc, store, cfg.DefaultTimeout())
-			if err != nil {
-				writeError(w, http.StatusInternalServerError, err.Error())
+			p, ok := registry.Get(cfg, pc.Name)
+			if !ok {
+				writeError(w, http.StatusInternalServerError, "provider unavailable: "+pc.Type)
 				return
 			}
 			w.Header().Set("Content-Type", "application/json")

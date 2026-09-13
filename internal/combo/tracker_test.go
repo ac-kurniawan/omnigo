@@ -97,6 +97,7 @@ func TestTrackerPersistence(t *testing.T) {
 
 	tr1.MarkDrained(t1, 10*time.Second, "quota exceeded")
 	tr1.MarkDrained(t2, 20*time.Second, "timeout after 30s")
+	tr1.Flush()
 
 	// Verify file was written
 	info, err := os.Stat(path)
@@ -124,6 +125,7 @@ func TestTrackerPersistence(t *testing.T) {
 
 	// Clearing in tr2 removes it and updates file
 	tr2.Clear(t1)
+	tr2.Flush()
 	tr3 := NewTracker(path)
 	if tr3.IsDrained(t1) {
 		t.Fatalf("expected t1 to remain cleared after reload")
@@ -131,6 +133,24 @@ func TestTrackerPersistence(t *testing.T) {
 	if !tr3.IsDrained(t2) {
 		t.Fatalf("expected t2 to remain drained in tr3")
 	}
+}
+
+func TestTrackerMarkDrainedPersistsAsynchronously(t *testing.T) {
+	tr := NewTracker(filepath.Join(t.TempDir(), "drains.json"))
+	started := make(chan struct{})
+	release := make(chan struct{})
+	tr.writeFile = func(string, []byte, os.FileMode) error {
+		close(started)
+		<-release
+		return nil
+	}
+	tr.MarkDrained(Target{Provider: "p", Model: "m"}, time.Minute, "test")
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("background persistence did not start")
+	}
+	close(release)
 }
 
 func TestTrackerLogsDrainAndClear(t *testing.T) {
