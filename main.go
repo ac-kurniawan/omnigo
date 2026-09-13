@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"log"
@@ -102,10 +103,16 @@ func newApp(getCfg func() *config.Config, store *vault.Store, mutate config.Muta
 	apiHandler := api.NewRouter(getCfg, store, mutate, tracker)
 
 	root := http.NewServeMux()
+	root.HandleFunc("GET /health", health)
 	root.Handle("/v1/", apiHandler)
 	root.Handle("/internal/", apiHandler)
 	root.Handle("/", dashboard.NewHandler(getCfg, store, mutate, tracker))
 	return root
+}
+
+func health(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]string{"status": "ok", "version": version})
 }
 
 func main() {
