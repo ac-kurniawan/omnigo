@@ -27,6 +27,7 @@ type viewData struct {
 	Combos    []config.Combo
 	Keys      []vault.ClientKey
 	Secrets   map[string]vault.ProviderSecret
+	Accounts  map[string][]vault.ProviderSecret
 	NewKey    string
 	Tracker   *combo.Tracker
 }
@@ -40,8 +41,9 @@ type Server struct {
 
 	// exchange/discover are injectable OAuth seams (defaults to the
 	// antigravity package); tests override them with fakes.
-	exchange func(r *http.Request, code, redirectURI string) (*antigravity.Token, error)
-	discover func(r *http.Request, accessToken string) (string, error)
+	exchange         func(r *http.Request, code, redirectURI string) (*antigravity.Token, error)
+	discover         func(r *http.Request, accessToken string) (string, error)
+	discoverIdentity func(r *http.Request, accessToken string) (antigravity.Identity, error)
 
 	// codexExchange is the injectable token-exchange seam for the Codex
 	// provider (defaults to the codex package).
@@ -88,6 +90,30 @@ func newServer(getCfg func() *config.Config, store *vault.Store, mutate config.M
 			}
 			return tr.DrainReason(combo.Target{Provider: provider, Model: model})
 		},
+		"providerSecret": func(v viewData, name string) vault.ProviderSecret {
+			if secret, ok := v.Secrets[name]; ok {
+				return secret
+			}
+			if accounts := v.Accounts[name]; len(accounts) > 0 {
+				return accounts[0]
+			}
+			return vault.ProviderSecret{}
+		},
+		"accountHealthy": func(account vault.ProviderSecret) bool {
+			if account.AccessToken == "" && account.RefreshToken == "" {
+				return false
+			}
+			return account.ExpiresAt.IsZero() || account.RefreshToken != "" || time.Until(account.ExpiresAt) > 0
+		},
+		"accountStatus": func(account vault.ProviderSecret) string {
+			if account.AccessToken == "" && account.RefreshToken == "" {
+				return "reconnect required"
+			}
+			if !account.ExpiresAt.IsZero() && time.Until(account.ExpiresAt) <= 0 && account.RefreshToken == "" {
+				return "expired"
+			}
+			return "ready"
+		},
 		"drainedCount": func(tr *combo.Tracker) int {
 			if tr == nil {
 				return 0
@@ -109,6 +135,9 @@ func newServer(getCfg func() *config.Config, store *vault.Store, mutate config.M
 	s.discover = func(r *http.Request, accessToken string) (string, error) {
 		return antigravity.DiscoverProject(r.Context(), accessToken)
 	}
+	s.discoverIdentity = func(r *http.Request, accessToken string) (antigravity.Identity, error) {
+		return antigravity.DiscoverIdentity(r.Context(), accessToken)
+	}
 	s.codexExchange = func(r *http.Request, code, verifier, redirectURI string) (*codex.Token, error) {
 		return codex.ExchangeCode(r.Context(), code, verifier, redirectURI)
 	}
@@ -127,6 +156,7 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("POST /providers/{name}/key", s.setProviderKey)
 	mux.HandleFunc("POST /providers/{name}/toggle", s.toggleProvider)
 	mux.HandleFunc("POST /providers/{name}/delete", s.deleteProvider)
+	mux.HandleFunc("POST /providers/{name}/accounts/{identity}/delete", s.deleteProviderAccount)
 	mux.HandleFunc("POST /providers/{name}/models", s.addModel)
 	mux.HandleFunc("POST /providers/{name}/models/disable", s.disableModel)
 	mux.HandleFunc("POST /providers/{name}/models/enable", s.enableModel)
@@ -145,11 +175,13 @@ func (s *Server) routes() http.Handler {
 
 func (s *Server) index(w http.ResponseWriter, r *http.Request) {
 	cfg := s.getCfg()
+	snapshot := s.store.Get()
 	data := viewData{
 		Providers: cfg.Providers,
 		Combos:    cfg.Combos,
-		Keys:      activeKeys(s.store.Get().ClientKeys),
-		Secrets:   s.store.Get().ProviderSecrets,
+		Keys:      activeKeys(snapshot.ClientKeys),
+		Secrets:   snapshot.ProviderSecrets,
+		Accounts:  snapshot.ProviderAccounts,
 		Tracker:   s.tracker,
 	}
 	_ = s.tmpl.ExecuteTemplate(w, "index.html", data)

@@ -692,13 +692,15 @@
       </tr>
       {{end}}
       {{range .Providers}}
-      {{$sec := index $.Secrets .Name}}
+      {{$provName := .Name}}
+      {{$sec := providerSecret $ .Name}}
+      {{$accounts := index $.Accounts .Name}}
       {{$hasKey := or (and $sec $sec.APIKey) .APIKey}}
       <tr class="hover:bg-base-200/40 transition-colors{{if .Disabled}} opacity-50{{end}}">
         <td class="font-mono text-base-content py-3.5 px-4">
           <div class="flex items-center gap-3">
             {{if eq .Type "antigravity"}}
-              {{if and $sec (or $sec.RefreshToken $sec.AccessToken)}}
+              {{if or $accounts (and $sec (or $sec.RefreshToken $sec.AccessToken))}}
                 <div class="tooltip tooltip-right inline-flex items-center" data-tip="Connected{{if $sec.ProjectID}} (Project: {{$sec.ProjectID}}){{end}}">
                   <span class="size-2.5 rounded-full bg-success ring-4 ring-success/20 shrink-0"></span>
                 </div>
@@ -708,7 +710,7 @@
                 </div>
               {{end}}
             {{else if eq .Type "codex"}}
-              {{if and $sec (or $sec.RefreshToken $sec.AccessToken)}}
+              {{if or $accounts (and $sec (or $sec.RefreshToken $sec.AccessToken))}}
                 <div class="tooltip tooltip-right inline-flex items-center" data-tip="Connected{{if $sec.Email}} ({{$sec.Email}}){{end}}{{if $sec.AccountID}} — Workspace: {{$sec.AccountID}}{{end}}">
                   <span class="size-2.5 rounded-full bg-success ring-4 ring-success/20 shrink-0"></span>
                 </div>
@@ -955,6 +957,29 @@
           </div>
         </td>
       </tr>
+      {{if or (eq .Type "antigravity") (eq .Type "codex")}}
+      <tr class="bg-base-200/20">
+        <td colspan="4" class="px-4 py-3">
+          <div class="flex flex-wrap items-center gap-2">
+            {{if $accounts}}
+              {{range $accounts}}
+                <div class="flex flex-wrap items-center gap-2 rounded-lg border border-base-content/10 bg-base-100 px-3 py-2 text-xs max-w-full">
+                  <span class="size-2 rounded-full {{if accountHealthy .}}bg-success{{else}}bg-error{{end}}"></span>
+                  <span class="font-medium">{{if .Email}}{{.Email}}{{else}}{{.AccountID}}{{end}}</span>
+                  <span class="badge badge-ghost badge-xs">{{accountStatus .}}</span>
+                  {{if and .Email .AccountID}}<span class="font-mono text-base-content/50">{{.AccountID}}</span>{{end}}
+                  <a href="/oauth/login/{{$provName}}" target="_blank" class="btn btn-ghost btn-xs min-h-11 focus-visible:ring-2 focus-visible:ring-primary">Reconnect</a>
+                  <button type="button" hx-post="/providers/{{$provName}}/accounts/{{if .AccountID}}{{.AccountID}}{{else}}{{.Email}}{{end}}/delete" hx-target="#providers" hx-swap="innerHTML" hx-confirm="Remove account {{if .Email}}{{.Email}}{{else}}{{.AccountID}}{{end}}?" class="btn btn-error btn-outline btn-xs min-h-11 focus-visible:ring-2 focus-visible:ring-error">Remove</button>
+                </div>
+              {{end}}
+            {{else}}
+              <span class="text-xs text-base-content/50">No OAuth accounts registered.</span>
+            {{end}}
+            <button type="button" class="btn btn-success btn-outline btn-xs min-h-11 focus-visible:ring-2 focus-visible:ring-success" onclick="document.getElementById('modal-{{$provName}}').showModal()">Connect Another</button>
+          </div>
+        </td>
+      </tr>
+      {{end}}
       {{end}}
     </tbody>
   </table>

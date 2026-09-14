@@ -53,6 +53,24 @@ func TestIndexRendersCodexConnectionStateAndActions(t *testing.T) {
 	}
 }
 
+func TestIndexRendersOAuthAccountPoolActions(t *testing.T) {
+	cfg := &config.Config{Providers: []config.Provider{{Name: "codex-main", Type: "codex"}}}
+	v := &vault.Vault{ProviderAccounts: map[string][]vault.ProviderSecret{
+		"codex-main": {
+			{RefreshToken: "refresh-1", AccountID: "workspace-1", Email: "one@example.com"},
+			{RefreshToken: "refresh-2", AccountID: "workspace-2", Email: "two@example.com"},
+		},
+	}}
+	rr := httptest.NewRecorder()
+	testHandler(t, cfg, v).ServeHTTP(rr, httptest.NewRequest("GET", "/", nil))
+	body := rr.Body.String()
+	for _, value := range []string{"one@example.com", "two@example.com", "Connect Another", "/providers/codex-main/accounts/workspace-1/delete", "Reconnect"} {
+		if !strings.Contains(body, value) {
+			t.Fatalf("dashboard missing %q", value)
+		}
+	}
+}
+
 func TestServesStaticHtmx(t *testing.T) {
 	cfg := &config.Config{}
 	h := testHandler(t, cfg, &vault.Vault{})

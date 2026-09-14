@@ -96,14 +96,18 @@ func (s *Server) oauthCallback(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		projectID = ""
 	}
+	identity, err := s.discoverIdentity(r, tok.AccessToken)
+	if err != nil || identity.AccountID == "" {
+		http.Error(w, "failed to identify Google account", http.StatusBadGateway)
+		return
+	}
 
 	err = s.store.Update(func(v *vault.Vault) error {
-		sec := v.ProviderSecrets[name]
-		sec.AccessToken = tok.AccessToken
-		sec.RefreshToken = tok.RefreshToken
-		sec.ExpiresAt = tok.ExpiresAt
-		sec.ProjectID = projectID
-		v.ProviderSecrets[name] = sec
+		v.UpsertAccount(name, vault.ProviderSecret{
+			AccessToken: tok.AccessToken, RefreshToken: tok.RefreshToken,
+			ExpiresAt: tok.ExpiresAt, ProjectID: projectID,
+			AccountID: identity.AccountID, Email: identity.Email,
+		})
 		return nil
 	})
 	if err != nil {
@@ -129,15 +133,16 @@ func (s *Server) finishCodexLogin(w http.ResponseWriter, r *http.Request, name, 
 		return
 	}
 
+	if claims.AccountID == "" {
+		http.Error(w, "Codex account ID is missing", http.StatusBadGateway)
+		return
+	}
 	err = s.store.Update(func(v *vault.Vault) error {
-		sec := v.ProviderSecrets[name]
-		sec.AccessToken = tok.AccessToken
-		sec.RefreshToken = tok.RefreshToken
-		sec.IDToken = tok.IDToken
-		sec.ExpiresAt = tok.ExpiresAt
-		sec.Email = claims.Email
-		sec.AccountID = claims.AccountID
-		v.ProviderSecrets[name] = sec
+		v.UpsertAccount(name, vault.ProviderSecret{
+			AccessToken: tok.AccessToken, RefreshToken: tok.RefreshToken,
+			IDToken: tok.IDToken, ExpiresAt: tok.ExpiresAt,
+			Email: claims.Email, AccountID: claims.AccountID,
+		})
 		return nil
 	})
 	if err != nil {
@@ -214,14 +219,18 @@ func (s *Server) oauthPasteCallback(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		projectID = ""
 	}
+	identity, err := s.discoverIdentity(r, tok.AccessToken)
+	if err != nil || identity.AccountID == "" {
+		http.Error(w, "failed to identify Google account", http.StatusBadGateway)
+		return
+	}
 
 	err = s.store.Update(func(v *vault.Vault) error {
-		sec := v.ProviderSecrets[name]
-		sec.AccessToken = tok.AccessToken
-		sec.RefreshToken = tok.RefreshToken
-		sec.ExpiresAt = tok.ExpiresAt
-		sec.ProjectID = projectID
-		v.ProviderSecrets[name] = sec
+		v.UpsertAccount(name, vault.ProviderSecret{
+			AccessToken: tok.AccessToken, RefreshToken: tok.RefreshToken,
+			ExpiresAt: tok.ExpiresAt, ProjectID: projectID,
+			AccountID: identity.AccountID, Email: identity.Email,
+		})
 		return nil
 	})
 	if err != nil {

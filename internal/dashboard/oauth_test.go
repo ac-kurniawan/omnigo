@@ -86,6 +86,9 @@ func TestOAuthCallbackPersistsTokens(t *testing.T) {
 	s.discover = func(r *http.Request, accessToken string) (string, error) {
 		return "proj-42", nil
 	}
+	s.discoverIdentity = func(r *http.Request, accessToken string) (antigravity.Identity, error) {
+		return antigravity.Identity{AccountID: "google-1", Email: "user@example.com"}, nil
+	}
 
 	req := httptest.NewRequest("GET", "/oauth/callback?state=st&code=c", nil)
 	req.Host = "localhost:8080"
@@ -98,8 +101,8 @@ func TestOAuthCallbackPersistsTokens(t *testing.T) {
 		t.Fatalf("status = %d, body %s", rr.Code, rr.Body.String())
 	}
 
-	sec := store.Get().ProviderSecrets["agy"]
-	if sec.AccessToken != "at" || sec.RefreshToken != "rt" || sec.ProjectID != "proj-42" {
+	sec := store.Get().Accounts("agy")[0]
+	if sec.AccessToken != "at" || sec.RefreshToken != "rt" || sec.ProjectID != "proj-42" || sec.AccountID != "google-1" {
 		t.Fatalf("secret = %+v", sec)
 	}
 }
@@ -133,7 +136,7 @@ func TestCodexOAuthCallbackPersistsIdentity(t *testing.T) {
 	if gotCode != "c" || gotVerifier != "verifier" || gotRedirectURI != codex.DefaultRedirectURI {
 		t.Fatalf("exchange args = (%q, %q, %q)", gotCode, gotVerifier, gotRedirectURI)
 	}
-	sec := store.Get().ProviderSecrets["codex-main"]
+	sec := store.Get().Accounts("codex-main")[0]
 	if sec.AccessToken != "at" || sec.RefreshToken != "rt" || sec.IDToken != idToken || sec.Email != "user@example.com" || sec.AccountID != "workspace-1" {
 		t.Fatalf("secret = %+v", sec)
 	}
@@ -142,12 +145,100 @@ func TestCodexOAuthCallbackPersistsIdentity(t *testing.T) {
 	}
 }
 
+func TestCodexOAuthCallbacksAppendDistinctAccountsAndUpdateExisting(t *testing.T) {
+	store := vault.NewMemoryStore(&vault.Vault{ProviderSecrets: map[string]vault.ProviderSecret{}})
+	cfg := &config.Config{Providers: []config.Provider{{Name: "codex-main", Type: "codex"}}}
+	s := newServer(func() *config.Config { return cfg }, store, nil)
+	accounts := []struct {
+		id      string
+		email   string
+		access  string
+		refresh string
+	}{
+		{id: "workspace-1", email: "one@example.com", access: "access-1", refresh: "refresh-1"},
+		{id: "workspace-2", email: "two@example.com", access: "access-2", refresh: "refresh-2"},
+		{id: "workspace-1", email: "one-new@example.com", access: "access-1-new", refresh: "refresh-1-new"},
+	}
+	call := 0
+	s.codexExchange = func(r *http.Request, code, verifier, redirectURI string) (*codex.Token, error) {
+		account := accounts[call]
+		call++
+		return &codex.Token{
+			AccessToken:  account.access,
+			RefreshToken: account.refresh,
+			IDToken: dashboardTestJWT(t, map[string]any{
+				"email":                       account.email,
+				"https://api.openai.com/auth": map[string]any{"chatgpt_account_id": account.id},
+			}),
+			ExpiresAt: time.Now().Add(time.Hour),
+		}, nil
+	}
+
+	for range accounts {
+		req := httptest.NewRequest("GET", "/oauth/callback?state=st&code=c", nil)
+		req.AddCookie(&http.Cookie{Name: stateCookieName, Value: "st"})
+		req.AddCookie(&http.Cookie{Name: providerCookieName, Value: "codex-main"})
+		req.AddCookie(&http.Cookie{Name: verifierCookieName, Value: "verifier"})
+		rr := httptest.NewRecorder()
+		s.routes().ServeHTTP(rr, req)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("status = %d, body = %s", rr.Code, rr.Body.String())
+		}
+	}
+
+	got := store.Get().ProviderAccounts["codex-main"]
+	if len(got) != 2 {
+		t.Fatalf("accounts = %+v", got)
+	}
+	if got[0].AccountID != "workspace-1" || got[0].AccessToken != "access-1-new" || got[0].Email != "one-new@example.com" {
+		t.Fatalf("first account = %+v", got[0])
+	}
+	if got[1].AccountID != "workspace-2" || got[1].AccessToken != "access-2" {
+		t.Fatalf("second account = %+v", got[1])
+	}
+}
+
+func TestAntigravityOAuthCallbacksAppendAndUpdateByGoogleSubject(t *testing.T) {
+	store := vault.NewMemoryStore(&vault.Vault{ProviderSecrets: map[string]vault.ProviderSecret{}})
+	cfg := &config.Config{Providers: []config.Provider{{Name: "agy", Type: "antigravity"}}}
+	s := newServer(func() *config.Config { return cfg }, store, nil)
+	call := 0
+	s.exchange = func(r *http.Request, code, redirectURI string) (*antigravity.Token, error) {
+		call++
+		return &antigravity.Token{AccessToken: "access-" + code, RefreshToken: "refresh-" + code, ExpiresAt: time.Now().Add(time.Hour)}, nil
+	}
+	s.discover = func(r *http.Request, accessToken string) (string, error) { return "project", nil }
+	s.discoverIdentity = func(r *http.Request, accessToken string) (antigravity.Identity, error) {
+		if strings.Contains(accessToken, "second") {
+			return antigravity.Identity{AccountID: "google-2", Email: "two@example.com"}, nil
+		}
+		return antigravity.Identity{AccountID: "google-1", Email: "one@example.com"}, nil
+	}
+	for _, code := range []string{"first", "second", "first-new"} {
+		req := httptest.NewRequest("GET", "/oauth/callback?state=st&code="+code, nil)
+		req.AddCookie(&http.Cookie{Name: stateCookieName, Value: "st"})
+		req.AddCookie(&http.Cookie{Name: providerCookieName, Value: "agy"})
+		rr := httptest.NewRecorder()
+		s.routes().ServeHTTP(rr, req)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("status = %d, body = %s", rr.Code, rr.Body.String())
+		}
+	}
+	accounts := store.Get().ProviderAccounts["agy"]
+	if call != 3 || len(accounts) != 2 || accounts[0].AccountID != "google-1" || accounts[0].AccessToken != "access-first-new" || accounts[1].AccountID != "google-2" {
+		t.Fatalf("accounts = %+v", accounts)
+	}
+}
+
 func TestCodexOAuthCallbackEscapesProviderName(t *testing.T) {
 	store := vault.NewMemoryStore(&vault.Vault{ProviderSecrets: map[string]vault.ProviderSecret{}})
 	const name = `<img src=x onerror=alert(1)>`
 	cfg := &config.Config{Providers: []config.Provider{{Name: name, Type: "codex"}}}
 	s := newServer(func() *config.Config { return cfg }, store, nil)
-	idToken := dashboardTestJWT(t, map[string]any{"email": "user@example.com"})
+	idToken := dashboardTestJWT(t, map[string]any{
+		"email":                       "user@example.com",
+		"https://api.openai.com/auth": map[string]any{"chatgpt_account_id": "workspace-xss"},
+	})
 	s.codexExchange = func(r *http.Request, code, verifier, redirectURI string) (*codex.Token, error) {
 		return &codex.Token{AccessToken: "at", RefreshToken: "rt", IDToken: idToken}, nil
 	}
@@ -181,6 +272,9 @@ func TestOAuthCallbackEscapesProviderName(t *testing.T) {
 	}
 	s.discover = func(r *http.Request, accessToken string) (string, error) {
 		return "proj", nil
+	}
+	s.discoverIdentity = func(r *http.Request, accessToken string) (antigravity.Identity, error) {
+		return antigravity.Identity{AccountID: "google-xss", Email: "user@example.com"}, nil
 	}
 
 	req := httptest.NewRequest("GET", "/oauth/callback?state=st&code=c", nil)
@@ -229,6 +323,9 @@ func TestOAuthPasteCallbackFullURL(t *testing.T) {
 	s.discover = func(r *http.Request, accessToken string) (string, error) {
 		return "proj-pasted", nil
 	}
+	s.discoverIdentity = func(r *http.Request, accessToken string) (antigravity.Identity, error) {
+		return antigravity.Identity{AccountID: "google-pasted", Email: "pasted@example.com"}, nil
+	}
 
 	pastedURL := "http://127.0.0.1:20128/callback?state=W2KweerOVoDQ23npFQTpipygs2rV&code=4/0ATsMZqDo7Yd9QqJHmKML4Hp5NoI8ho&scope=email"
 	req := httptest.NewRequest("POST", "/oauth/agy/paste-callback", strings.NewReader("callback="+pastedURL))
@@ -248,7 +345,7 @@ func TestOAuthPasteCallbackFullURL(t *testing.T) {
 		t.Fatalf("gotRedirectURI = %q", gotRedirectURI)
 	}
 
-	sec := store.Get().ProviderSecrets["agy"]
+	sec := store.Get().Accounts("agy")[0]
 	if sec.AccessToken != "at-paste" || sec.RefreshToken != "rt-paste" || sec.ProjectID != "proj-pasted" {
 		t.Fatalf("stored secret = %+v", sec)
 	}
@@ -280,7 +377,7 @@ func TestCodexOAuthPasteCallbackValidatesStateAndPersistsIdentity(t *testing.T) 
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status = %d, body %s", rr.Code, rr.Body.String())
 	}
-	sec := store.Get().ProviderSecrets["codex-main"]
+	sec := store.Get().Accounts("codex-main")[0]
 	if sec.Email != "profile@example.com" || sec.AccountID != "workspace-2" || sec.IDToken != idToken {
 		t.Fatalf("secret = %+v", sec)
 	}
@@ -320,6 +417,9 @@ func TestOAuthPasteCallbackRawCode(t *testing.T) {
 	}
 	s.discover = func(r *http.Request, accessToken string) (string, error) {
 		return "proj-code", nil
+	}
+	s.discoverIdentity = func(r *http.Request, accessToken string) (antigravity.Identity, error) {
+		return antigravity.Identity{AccountID: "google-code", Email: "code@example.com"}, nil
 	}
 
 	rawCode := "4/0ATsMZqDo7Yd9QqJHmKML4Hp5NoI8ho"
