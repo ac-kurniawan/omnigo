@@ -250,6 +250,92 @@ func TestChatAccountPoolFallsBackWithoutLeakingFailedStream(t *testing.T) {
 	}
 }
 
+func TestChatAccountPoolFallsBackAfter429AndRespectsRetryAfter(t *testing.T) {
+	now := time.Unix(2_000_000_000, 0)
+	var calls []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+		calls = append(calls, token)
+		if token == "first" {
+			w.Header().Set("Retry-After", "120")
+			w.WriteHeader(http.StatusTooManyRequests)
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"success\"}]}}]}\n\n"))
+	}))
+	defer srv.Close()
+
+	store := &antigravityPoolStore{accounts: []provider.Credentials{
+		{AccessToken: "first", AccountID: "google-1", ProjectID: "p", ExpiresAt: time.Now().Add(time.Hour)},
+		{AccessToken: "second", AccountID: "google-2", ProjectID: "p", ExpiresAt: time.Now().Add(time.Hour)},
+	}}
+	p := New(provider.Config{Name: "agy", BaseURL: srv.URL}, store).(*Provider)
+	p.pool.SetClock(func() time.Time { return now })
+	req := provider.ChatRequest{Model: "gemini", Messages: []provider.Message{{Role: "user", Content: "hi"}}}
+	for range 2 {
+		rr := httptest.NewRecorder()
+		if err := p.ChatCompletion(context.Background(), req, rr); err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(rr.Body.String(), "success") {
+			t.Fatalf("body = %s", rr.Body.String())
+		}
+		now = now.Add(61 * time.Second)
+	}
+	if len(calls) != 3 || calls[0] != "first" || calls[1] != "second" || calls[2] != "second" {
+		t.Fatalf("calls = %v", calls)
+	}
+}
+
+func TestRateLimitCooldown(t *testing.T) {
+	tests := []struct {
+		name       string
+		retryAfter string
+		want       time.Duration
+	}{
+		{name: "missing", want: defaultRateLimitCooldown},
+		{name: "invalid", retryAfter: "later", want: defaultRateLimitCooldown},
+		{name: "below minimum", retryAfter: "1", want: minRateLimitCooldown},
+		{name: "valid", retryAfter: "120", want: 2 * time.Minute},
+		{name: "above maximum", retryAfter: "3600", want: maxRateLimitCooldown},
+		{name: "overflow safe", retryAfter: "9223372036854775807", want: maxRateLimitCooldown},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			headers := make(http.Header)
+			headers.Set("Retry-After", tt.retryAfter)
+			err := newRateLimitError(headers).(*rateLimitError)
+			if err.Cooldown() != tt.want {
+				t.Fatalf("cooldown = %s, want %s", err.Cooldown(), tt.want)
+			}
+		})
+	}
+}
+
+func TestChatAccountPoolExhaustsEachAccountOnceAfter429(t *testing.T) {
+	var calls []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls = append(calls, strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "))
+		w.WriteHeader(http.StatusTooManyRequests)
+	}))
+	defer srv.Close()
+
+	store := &antigravityPoolStore{accounts: []provider.Credentials{
+		{AccessToken: "first", AccountID: "google-1", ProjectID: "p", ExpiresAt: time.Now().Add(time.Hour)},
+		{AccessToken: "second", AccountID: "google-2", ProjectID: "p", ExpiresAt: time.Now().Add(time.Hour)},
+		{AccessToken: "third", AccountID: "google-3", ProjectID: "p", ExpiresAt: time.Now().Add(time.Hour)},
+	}}
+	p := New(provider.Config{Name: "agy", BaseURL: srv.URL}, store)
+	err := p.ChatCompletion(context.Background(), provider.ChatRequest{Model: "gemini", Messages: []provider.Message{{Role: "user", Content: "hi"}}}, httptest.NewRecorder())
+	if err == nil || err.Error() != "antigravity: rate limited" {
+		t.Fatalf("error = %v", err)
+	}
+	if len(calls) != 3 || calls[0] != "first" || calls[1] != "second" || calls[2] != "third" {
+		t.Fatalf("calls = %v", calls)
+	}
+}
+
 func TestChatNonStreamingReturnsOpenAIJSON(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
