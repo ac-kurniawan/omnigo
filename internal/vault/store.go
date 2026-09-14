@@ -17,7 +17,7 @@ type Store struct {
 
 func NewStore(path string, key []byte) (*Store, error) {
 	s := &Store{path: path, key: key}
-	v := &Vault{ProviderSecrets: map[string]ProviderSecret{}}
+	v := &Vault{ProviderSecrets: map[string]ProviderSecret{}, ProviderAccounts: map[string][]ProviderSecret{}}
 	if _, err := os.Stat(path); err == nil {
 		loaded, err := Load(path, key)
 		if err != nil {
@@ -76,15 +76,17 @@ func (s *Store) Reload() error {
 	return nil
 }
 
-// Clone returns a shallow-but-independent copy of the Vault (new map and
-// slice backing arrays; element structs are value types).
 func (v *Vault) Clone() *Vault {
 	c := &Vault{
-		ProviderSecrets: make(map[string]ProviderSecret, len(v.ProviderSecrets)),
-		ClientKeys:      make([]ClientKey, len(v.ClientKeys)),
+		ProviderSecrets:  make(map[string]ProviderSecret, len(v.ProviderSecrets)),
+		ProviderAccounts: make(map[string][]ProviderSecret, len(v.ProviderAccounts)),
+		ClientKeys:       make([]ClientKey, len(v.ClientKeys)),
 	}
 	for k, val := range v.ProviderSecrets {
 		c.ProviderSecrets[k] = val
+	}
+	for k, accounts := range v.ProviderAccounts {
+		c.ProviderAccounts[k] = append([]ProviderSecret(nil), accounts...)
 	}
 	copy(c.ClientKeys, v.ClientKeys)
 	return c

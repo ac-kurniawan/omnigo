@@ -86,10 +86,22 @@ type Credentials struct {
 	Email        string
 }
 
-// CredStore reads and persists one provider's credentials.
+func (c Credentials) Identity() string {
+	if c.AccountID != "" {
+		return c.AccountID
+	}
+	return c.Email
+}
+
 type CredStore interface {
 	Get() Credentials
 	Put(Credentials) error
+}
+
+type AccountStore interface {
+	CredStore
+	Accounts() []Credentials
+	PutAccount(identity string, credentials Credentials) error
 }
 
 type Provider interface {
