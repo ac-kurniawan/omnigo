@@ -18,6 +18,35 @@ type staticStore struct{ c provider.Credentials }
 func (s staticStore) Get() provider.Credentials      { return s.c }
 func (s staticStore) Put(provider.Credentials) error { return nil }
 
+type antigravityPoolStore struct {
+	accounts []provider.Credentials
+}
+
+func (s *antigravityPoolStore) Get() provider.Credentials {
+	if len(s.accounts) == 0 {
+		return provider.Credentials{}
+	}
+	return s.accounts[0]
+}
+
+func (s *antigravityPoolStore) Put(c provider.Credentials) error {
+	return s.PutAccount(c.Identity(), c)
+}
+
+func (s *antigravityPoolStore) Accounts() []provider.Credentials {
+	return append([]provider.Credentials(nil), s.accounts...)
+}
+
+func (s *antigravityPoolStore) PutAccount(identity string, c provider.Credentials) error {
+	for i := range s.accounts {
+		if s.accounts[i].Identity() == identity {
+			s.accounts[i] = c
+			return nil
+		}
+	}
+	return nil
+}
+
 type mutableStore struct {
 	c provider.Credentials
 }
@@ -185,6 +214,39 @@ func TestChatStreamsOpenAISSE(t *testing.T) {
 	}
 	if !strings.Contains(body, "data: [DONE]") {
 		t.Fatalf("missing [DONE]: %q", body)
+	}
+}
+
+func TestChatAccountPoolFallsBackWithoutLeakingFailedStream(t *testing.T) {
+	var calls []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+		calls = append(calls, token)
+		w.Header().Set("Content-Type", "text/event-stream")
+		if token == "first" {
+			_, _ = w.Write([]byte("data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"leaked\"}]}}]}\n\n"))
+			_, _ = w.Write([]byte(strings.Repeat("x", 1024*1024+1)))
+			return
+		}
+		_, _ = w.Write([]byte("data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"success\"}]}}]}\n\n"))
+	}))
+	defer srv.Close()
+
+	store := &antigravityPoolStore{accounts: []provider.Credentials{
+		{AccessToken: "first", AccountID: "google-1", ProjectID: "p", ExpiresAt: time.Now().Add(time.Hour)},
+		{AccessToken: "second", AccountID: "google-2", ProjectID: "p", ExpiresAt: time.Now().Add(time.Hour)},
+	}}
+	p := New(provider.Config{Name: "agy", BaseURL: srv.URL}, store)
+	rr := httptest.NewRecorder()
+	err := p.ChatCompletion(context.Background(), provider.ChatRequest{Model: "gemini", Stream: true, Messages: []provider.Message{{Role: "user", Content: "hi"}}}, rr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(rr.Body.String(), "leaked") || !strings.Contains(rr.Body.String(), "success") {
+		t.Fatalf("body = %s", rr.Body.String())
+	}
+	if len(calls) != 2 || calls[0] != "first" || calls[1] != "second" {
+		t.Fatalf("calls = %v", calls)
 	}
 }
 

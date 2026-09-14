@@ -32,8 +32,8 @@ func TestAddProvider(t *testing.T) {
 	if len(cfg.Providers) != 1 || cfg.Providers[0].Name != "groq" {
 		t.Fatalf("providers = %+v", cfg.Providers)
 	}
-	if store.Get().ProviderSecrets["groq"].APIKey != "gsk_123" {
-		t.Fatalf("secret = %+v", store.Get().ProviderSecrets["groq"])
+	if store.Get().Accounts("groq")[0].APIKey != "gsk_123" {
+		t.Fatalf("secret = %+v", store.Get().Accounts("groq")[0])
 	}
 	if !strings.Contains(rr.Body.String(), "groq") {
 		t.Fatalf("body missing groq: %s", rr.Body.String())
@@ -84,8 +84,8 @@ func TestDeleteProvider(t *testing.T) {
 	if len(cfg.Providers) != 0 {
 		t.Fatalf("expected empty providers, got %+v", cfg.Providers)
 	}
-	if _, ok := store.Get().ProviderSecrets["groq"]; ok {
-		t.Fatalf("expected secret deleted from vault")
+	if accounts := store.Get().Accounts("groq"); len(accounts) != 0 {
+		t.Fatalf("expected secret deleted from vault: %+v", accounts)
 	}
 }
 
@@ -113,8 +113,8 @@ func TestSetProviderKey(t *testing.T) {
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", rr.Code, rr.Body.String())
 	}
-	if store.Get().ProviderSecrets["groq"].APIKey != "new_secret_key" {
-		t.Fatalf("vault key = %q, want new_secret_key", store.Get().ProviderSecrets["groq"].APIKey)
+	if store.Get().Accounts("groq")[0].APIKey != "new_secret_key" {
+		t.Fatalf("vault key = %q, want new_secret_key", store.Get().Accounts("groq")[0].APIKey)
 	}
 	b, err := os.ReadFile(path)
 	if err != nil {
@@ -122,6 +122,28 @@ func TestSetProviderKey(t *testing.T) {
 	}
 	if strings.Contains(string(b), "new_secret_key") || strings.Contains(string(b), "api_key") {
 		t.Fatalf("plaintext provider key written to config.yaml: %s", b)
+	}
+}
+
+func TestRemoveOAuthAccountPreservesOtherAccounts(t *testing.T) {
+	cfg := &config.Config{Providers: []config.Provider{{Name: "codex-main", Type: "codex"}}}
+	store := vault.NewMemoryStore(&vault.Vault{ProviderAccounts: map[string][]vault.ProviderSecret{
+		"codex-main": {
+			{AccountID: "workspace-1", AccessToken: "access-1"},
+			{AccountID: "workspace-2", AccessToken: "access-2"},
+		},
+	}})
+	s := newServer(func() *config.Config { return cfg }, store, nil)
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest("POST", "/providers/codex-main/accounts/workspace-1/delete", nil)
+	req.Header.Set("HX-Request", "true")
+	s.routes().ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rr.Code, rr.Body.String())
+	}
+	got := store.Get().ProviderAccounts["codex-main"]
+	if len(got) != 1 || got[0].AccountID != "workspace-2" {
+		t.Fatalf("accounts = %+v", got)
 	}
 }
 

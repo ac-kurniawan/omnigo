@@ -5,6 +5,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"gopkg.in/yaml.v3"
 )
 
 func testKey() []byte { return bytes.Repeat([]byte{0xAB}, 32) }
@@ -32,15 +34,83 @@ func TestRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if got.ProviderSecrets["openai-main"].APIKey != "sk-secret" {
-		t.Fatalf("round-trip lost secret: %+v", got.ProviderSecrets)
+	if got.Accounts("openai-main")[0].APIKey != "sk-secret" {
+		t.Fatalf("round-trip lost secret: %+v", got.ProviderAccounts)
 	}
-	codex := got.ProviderSecrets["codex-main"]
+	codex := got.Accounts("codex-main")[0]
 	if codex.AccessToken != "access-secret" || codex.RefreshToken != "refresh-secret" || codex.IDToken != "id-secret" || codex.AccountID != "workspace-1" || codex.Email != "user@example.com" {
 		t.Fatalf("round-trip lost Codex credentials: %+v", codex)
 	}
 	if len(got.ClientKeys) != 1 || got.ClientKeys[0].Prefix != "ak-12345678" {
 		t.Fatalf("client keys = %+v", got.ClientKeys)
+	}
+}
+
+func TestLoadLegacySingleAccountVault(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "auth.yaml")
+	key := testKey()
+	legacyPlaintext, err := yaml.Marshal(struct {
+		ProviderSecrets map[string]ProviderSecret `yaml:"provider_secrets"`
+	}{ProviderSecrets: map[string]ProviderSecret{
+		"codex-main": {AccessToken: "access", RefreshToken: "refresh", AccountID: "workspace-1"},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	nonce, ciphertext, err := encrypt(key, legacyPlaintext)
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := yaml.Marshal(file{Version: 1, Nonce: nonce, Ciphertext: ciphertext})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, encoded, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := Load(path, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	accounts := got.ProviderAccounts["codex-main"]
+	if len(accounts) != 1 || accounts[0].AccountID != "workspace-1" || accounts[0].AccessToken != "access" {
+		t.Fatalf("vault = %+v", got)
+	}
+	migrated, err := Load(path, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(migrated.ProviderSecrets) != 0 || len(migrated.ProviderAccounts["codex-main"]) != 1 {
+		t.Fatalf("migrated vault = %+v", migrated)
+	}
+}
+
+func TestRoundTripProviderAccountsEncrypted(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "auth.yaml")
+	key := testKey()
+	v := &Vault{ProviderAccounts: map[string][]ProviderSecret{
+		"codex-main": {
+			{AccessToken: "access-1", RefreshToken: "refresh-1", AccountID: "account-1"},
+			{AccessToken: "access-2", RefreshToken: "refresh-2", AccountID: "account-2"},
+		},
+	}}
+	if err := Save(path, key, v); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(raw, []byte("access-1")) || bytes.Contains(raw, []byte("refresh-2")) {
+		t.Fatal("vault persisted plaintext credentials")
+	}
+	got, err := Load(path, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.ProviderAccounts["codex-main"]) != 2 || got.ProviderAccounts["codex-main"][1].AccountID != "account-2" {
+		t.Fatalf("accounts = %+v", got.ProviderAccounts)
 	}
 }
 

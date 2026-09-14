@@ -18,37 +18,64 @@ type credStore struct {
 }
 
 func (s credStore) Get() provider.Credentials {
-	v := s.store.Get()
-	sec := v.ProviderSecrets[s.name]
-	return provider.Credentials{
-		APIKey:       sec.APIKey,
-		AccessToken:  sec.AccessToken,
-		RefreshToken: sec.RefreshToken,
-		IDToken:      sec.IDToken,
-		ExpiresAt:    sec.ExpiresAt,
-		ProjectID:    sec.ProjectID,
-		AccountID:    sec.AccountID,
-		Email:        sec.Email,
+	accounts := s.Accounts()
+	if len(accounts) == 0 {
+		return provider.Credentials{}
 	}
+	return accounts[0]
+}
+
+func (s credStore) Accounts() []provider.Credentials {
+	secrets := s.store.Get().Accounts(s.name)
+	accounts := make([]provider.Credentials, 0, len(secrets))
+	for _, secret := range secrets {
+		accounts = append(accounts, credentialsFromSecret(secret))
+	}
+	return accounts
 }
 
 func (s credStore) Put(c provider.Credentials) error {
+	identity := c.Identity()
+	if identity == "" {
+		current := s.Get()
+		identity = current.Identity()
+	}
+	return s.PutAccount(identity, c)
+}
+
+func (s credStore) PutAccount(identity string, c provider.Credentials) error {
 	return s.store.Update(func(v *vault.Vault) error {
-		if v.ProviderSecrets == nil {
-			v.ProviderSecrets = make(map[string]vault.ProviderSecret)
+		accounts := v.Accounts(s.name)
+		for i := range accounts {
+			if (identity != "" && accounts[i].Identity() == identity) || (identity == "" && i == 0) {
+				accounts[i] = secretFromCredentials(c)
+				if v.ProviderAccounts == nil {
+					v.ProviderAccounts = make(map[string][]vault.ProviderSecret)
+				}
+				v.ProviderAccounts[s.name] = accounts
+				delete(v.ProviderSecrets, s.name)
+				return nil
+			}
 		}
-		sec := v.ProviderSecrets[s.name]
-		sec.APIKey = c.APIKey
-		sec.AccessToken = c.AccessToken
-		sec.RefreshToken = c.RefreshToken
-		sec.IDToken = c.IDToken
-		sec.ExpiresAt = c.ExpiresAt
-		sec.ProjectID = c.ProjectID
-		sec.AccountID = c.AccountID
-		sec.Email = c.Email
-		v.ProviderSecrets[s.name] = sec
+		v.UpsertAccount(s.name, secretFromCredentials(c))
 		return nil
 	})
+}
+
+func credentialsFromSecret(sec vault.ProviderSecret) provider.Credentials {
+	return provider.Credentials{
+		APIKey: sec.APIKey, AccessToken: sec.AccessToken, RefreshToken: sec.RefreshToken,
+		IDToken: sec.IDToken, ExpiresAt: sec.ExpiresAt, ProjectID: sec.ProjectID,
+		AccountID: sec.AccountID, Email: sec.Email,
+	}
+}
+
+func secretFromCredentials(c provider.Credentials) vault.ProviderSecret {
+	return vault.ProviderSecret{
+		APIKey: c.APIKey, AccessToken: c.AccessToken, RefreshToken: c.RefreshToken,
+		IDToken: c.IDToken, ExpiresAt: c.ExpiresAt, ProjectID: c.ProjectID,
+		AccountID: c.AccountID, Email: c.Email,
+	}
 }
 
 func buildProvider(cfg config.Provider, store *vault.Store, transport http.RoundTripper, defaultTimeout ...time.Duration) (provider.Provider, error) {
