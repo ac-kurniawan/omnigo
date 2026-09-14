@@ -16,6 +16,61 @@ import (
 	"github.com/ac-kurniawan/omnigo/internal/provider"
 )
 
+type failingTransport struct {
+	calls atomic.Int32
+}
+
+func (t *failingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	if t.calls.Add(1) == 1 {
+		return nil, errors.New("transport failure")
+	}
+	body := io.NopCloser(strings.NewReader(event("response.completed", map[string]any{"response": map[string]any{"status": "completed"}})))
+	return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: body, Request: req}, nil
+}
+
+type poolCredStore struct {
+	mu    sync.Mutex
+	creds []provider.Credentials
+}
+
+func (s *poolCredStore) Get() provider.Credentials {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.creds) == 0 {
+		return provider.Credentials{}
+	}
+	return s.creds[0]
+}
+
+func (s *poolCredStore) Put(creds provider.Credentials) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.creds) == 0 {
+		s.creds = append(s.creds, creds)
+	} else {
+		s.creds[0] = creds
+	}
+	return nil
+}
+
+func (s *poolCredStore) Accounts() []provider.Credentials {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]provider.Credentials(nil), s.creds...)
+}
+
+func (s *poolCredStore) PutAccount(identity string, creds provider.Credentials) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := range s.creds {
+		if s.creds[i].Identity() == identity {
+			s.creds[i] = creds
+			return nil
+		}
+	}
+	return errors.New("account not found")
+}
+
 func event(typ string, fields map[string]any) string {
 	fields["type"] = typ
 	b, _ := json.Marshal(fields)
@@ -86,6 +141,208 @@ func TestProviderHeadersBodyAndStreaming(t *testing.T) {
 		if !strings.Contains(rr.Body.String(), part) {
 			t.Errorf("stream missing %s: %s", part, rr.Body.String())
 		}
+	}
+}
+
+func TestProviderAccountPoolFallsBackAndBuffersFailedStream(t *testing.T) {
+	var calls []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		account := r.Header.Get("chatgpt-account-id")
+		calls = append(calls, account)
+		w.Header().Set("Content-Type", "text/event-stream")
+		if account == "account-1" {
+			_, _ = io.WriteString(w, event("response.output_text.delta", map[string]any{"delta": "leaked"}))
+			_, _ = io.WriteString(w, "data: {malformed}\n\n")
+			return
+		}
+		_, _ = io.WriteString(w, event("response.output_text.delta", map[string]any{"delta": "success"}))
+		_, _ = io.WriteString(w, event("response.completed", map[string]any{"response": map[string]any{"status": "completed"}}))
+	}))
+	defer server.Close()
+
+	store := &poolCredStore{creds: []provider.Credentials{
+		{AccessToken: "access-1", AccountID: "account-1", ExpiresAt: time.Now().Add(time.Hour)},
+		{AccessToken: "access-2", AccountID: "account-2", ExpiresAt: time.Now().Add(time.Hour)},
+	}}
+	p := New(provider.Config{Name: "codex", BaseURL: server.URL}, store)
+	rr := httptest.NewRecorder()
+	err := p.ChatCompletion(context.Background(), provider.ChatRequest{Model: "gpt", Stream: true, Raw: []byte(`{"messages":[{"role":"user","content":"hi"}]}`)}, rr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(rr.Body.String(), "leaked") || !strings.Contains(rr.Body.String(), "success") {
+		t.Fatalf("response = %s", rr.Body.String())
+	}
+	if len(calls) != 2 || calls[0] != "account-1" || calls[1] != "account-2" {
+		t.Fatalf("calls = %v", calls)
+	}
+}
+
+func TestProviderAccountPoolFallsBackOnTransportFailure(t *testing.T) {
+	transport := &failingTransport{}
+	store := &poolCredStore{creds: []provider.Credentials{
+		{AccessToken: "access-1", AccountID: "account-1", ExpiresAt: time.Now().Add(time.Hour)},
+		{AccessToken: "access-2", AccountID: "account-2", ExpiresAt: time.Now().Add(time.Hour)},
+	}}
+	p := New(provider.Config{Name: "codex", BaseURL: "https://example.test", Transport: transport}, store)
+	if err := p.ChatCompletion(context.Background(), provider.ChatRequest{Model: "gpt", Raw: []byte(`{"messages":[]}`)}, httptest.NewRecorder()); err != nil {
+		t.Fatal(err)
+	}
+	if transport.calls.Load() != 2 {
+		t.Fatalf("calls = %d", transport.calls.Load())
+	}
+}
+
+func TestProviderAccountPoolFallsBackForEveryFailureClass(t *testing.T) {
+	tests := []struct {
+		name    string
+		first   func(http.ResponseWriter, *http.Request)
+		refresh bool
+	}{
+		{name: "refresh", first: func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusUnauthorized) }, refresh: true},
+		{name: "authentication", first: func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusForbidden) }},
+		{name: "quota", first: func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusTooManyRequests) }},
+		{name: "upstream", first: func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusInternalServerError) }},
+		{name: "response processing", first: func(w http.ResponseWriter, r *http.Request) { _, _ = io.WriteString(w, "data: {malformed}\n\n") }},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			oldTokenURL := tokenURL
+			t.Cleanup(func() { tokenURL = oldTokenURL })
+			var calls []string
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == "/token" {
+					w.WriteHeader(http.StatusInternalServerError)
+					return
+				}
+				account := r.Header.Get("chatgpt-account-id")
+				calls = append(calls, account)
+				if account == "account-1" {
+					tt.first(w, r)
+					return
+				}
+				_, _ = io.WriteString(w, event("response.completed", map[string]any{"response": map[string]any{"status": "completed"}}))
+			}))
+			defer server.Close()
+			tokenURL = server.URL + "/token"
+			first := provider.Credentials{AccessToken: "access-1", AccountID: "account-1", ExpiresAt: time.Now().Add(time.Hour)}
+			if tt.refresh {
+				first.RefreshToken = "refresh-1"
+			}
+			store := &poolCredStore{creds: []provider.Credentials{
+				first,
+				{AccessToken: "access-2", AccountID: "account-2", ExpiresAt: time.Now().Add(time.Hour)},
+			}}
+			p := New(provider.Config{Name: "codex", BaseURL: server.URL + "/responses"}, store)
+			rr := httptest.NewRecorder()
+			if err := p.ChatCompletion(context.Background(), provider.ChatRequest{Model: "gpt", Raw: []byte(`{"messages":[]}`)}, rr); err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(rr.Body.String(), `"finish_reason":"stop"`) || calls[len(calls)-1] != "account-2" {
+				t.Fatalf("calls = %v, body = %s", calls, rr.Body.String())
+			}
+		})
+	}
+}
+
+func TestProviderAccountPoolRefreshUpdatesOnlySelectedAccountConcurrently(t *testing.T) {
+	oldURL := tokenURL
+	t.Cleanup(func() { tokenURL = oldURL })
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/token" {
+			var body map[string]string
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			refresh := body["refresh_token"]
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"access_token": "new-" + refresh,
+				"expires_in":   3600,
+			})
+			return
+		}
+		_, _ = io.WriteString(w, event("response.completed", map[string]any{"response": map[string]any{"status": "completed"}}))
+	}))
+	defer server.Close()
+	tokenURL = server.URL + "/token"
+	store := &poolCredStore{creds: []provider.Credentials{
+		{RefreshToken: "refresh-1", AccountID: "account-1", ExpiresAt: time.Now().Add(-time.Hour)},
+		{RefreshToken: "refresh-2", AccountID: "account-2", ExpiresAt: time.Now().Add(-time.Hour)},
+	}}
+	p := New(provider.Config{Name: "codex", BaseURL: server.URL + "/responses"}, store).(*Provider)
+	var wg sync.WaitGroup
+	for _, account := range store.Accounts() {
+		account := account
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			manager := p.tokenManager(account)
+			if _, err := manager.EnsureFreshToken(context.Background()); err != nil {
+				t.Errorf("refresh %s: %v", account.AccountID, err)
+			}
+		}()
+	}
+	wg.Wait()
+	accounts := store.Accounts()
+	if accounts[0].AccessToken != "new-refresh-1" || accounts[1].AccessToken != "new-refresh-2" {
+		t.Fatalf("accounts = %+v", accounts)
+	}
+}
+
+func TestProviderAccountPoolSkipsDrainedUntilCooldownExpires(t *testing.T) {
+	oldNow := timeNow
+	now := time.Unix(2_000_000_000, 0)
+	timeNow = func() time.Time { return now }
+	t.Cleanup(func() { timeNow = oldNow })
+	var firstCalls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("chatgpt-account-id") == "account-1" {
+			firstCalls.Add(1)
+			w.Header().Set("Retry-After", "120")
+			w.WriteHeader(http.StatusTooManyRequests)
+			return
+		}
+		_, _ = io.WriteString(w, event("response.completed", map[string]any{"response": map[string]any{"status": "completed"}}))
+	}))
+	defer server.Close()
+	store := &poolCredStore{creds: []provider.Credentials{
+		{AccessToken: "access-1", AccountID: "account-1", ExpiresAt: time.Now().Add(time.Hour)},
+		{AccessToken: "access-2", AccountID: "account-2", ExpiresAt: time.Now().Add(time.Hour)},
+	}}
+	p := New(provider.Config{Name: "codex", BaseURL: server.URL}, store).(*Provider)
+	p.pool.SetClock(func() time.Time { return now })
+	for range 2 {
+		if err := p.ChatCompletion(context.Background(), provider.ChatRequest{Model: "gpt", Raw: []byte(`{"messages":[]}`)}, httptest.NewRecorder()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if firstCalls.Load() != 1 {
+		t.Fatalf("first account calls = %d", firstCalls.Load())
+	}
+	now = now.Add(121 * time.Second)
+	if err := p.ChatCompletion(context.Background(), provider.ChatRequest{Model: "gpt", Raw: []byte(`{"messages":[]}`)}, httptest.NewRecorder()); err != nil {
+		t.Fatal(err)
+	}
+	if firstCalls.Load() != 2 {
+		t.Fatalf("first account calls after expiry = %d", firstCalls.Load())
+	}
+}
+
+func TestProviderAccountPoolFirstSuccessDoesNotCallSecond(t *testing.T) {
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		_, _ = io.WriteString(w, event("response.completed", map[string]any{"response": map[string]any{"status": "completed"}}))
+	}))
+	defer server.Close()
+	store := &poolCredStore{creds: []provider.Credentials{
+		{AccessToken: "access-1", AccountID: "account-1", ExpiresAt: time.Now().Add(time.Hour)},
+		{AccessToken: "access-2", AccountID: "account-2", ExpiresAt: time.Now().Add(time.Hour)},
+	}}
+	p := New(provider.Config{Name: "codex", BaseURL: server.URL}, store)
+	if err := p.ChatCompletion(context.Background(), provider.ChatRequest{Model: "gpt", Raw: []byte(`{"messages":[]}`)}, httptest.NewRecorder()); err != nil {
+		t.Fatal(err)
+	}
+	if calls.Load() != 1 {
+		t.Fatalf("calls = %d", calls.Load())
 	}
 }
 

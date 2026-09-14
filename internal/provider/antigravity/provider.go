@@ -16,9 +16,11 @@ import (
 )
 
 type Provider struct {
-	name   string
-	store  provider.CredStore
-	client *http.Client
+	name    string
+	store   provider.CredStore
+	client  *http.Client
+	pool    provider.AccountPool
+	refresh sync.Map
 }
 
 var sseBufferPool = sync.Pool{
@@ -42,26 +44,35 @@ func New(cfg provider.Config, store provider.CredStore) provider.Provider {
 func (p *Provider) Name() string { return p.name }
 
 func (p *Provider) Models(ctx context.Context) ([]provider.Model, error) {
-	c, err := p.ensureFreshToken(ctx)
-	if err != nil {
-		return nil, err
-	}
-	ids, err := fetchModels(ctx, c.AccessToken, c.ProjectID)
-	if err != nil && isAuthError(err) && c.RefreshToken != "" {
-		// 401 or auth error from upstream -> force refresh and retry once
-		if fresh, refErr := p.forceRefreshToken(ctx); refErr == nil {
-			c = fresh
+	accounts := p.pool.Available(p.store)
+	var lastErr error
+	for _, account := range accounts {
+		store := provider.ScopedStore(p.store, account)
+		c, err := p.ensureFreshTokenFrom(ctx, store)
+		if err == nil {
+			var ids []string
 			ids, err = fetchModels(ctx, c.AccessToken, c.ProjectID)
+			if err != nil && isAuthError(err) && c.RefreshToken != "" {
+				if fresh, refErr := p.forceRefreshTokenFrom(ctx, store); refErr == nil {
+					c = fresh
+					ids, err = fetchModels(ctx, c.AccessToken, c.ProjectID)
+				}
+			}
+			if err == nil {
+				models := make([]provider.Model, 0, len(ids))
+				for _, id := range ids {
+					models = append(models, provider.Model{ID: id, Name: id})
+				}
+				return models, nil
+			}
 		}
+		lastErr = err
+		p.pool.MarkFailed(account, err)
 	}
-	if err != nil {
-		return nil, err
+	if lastErr == nil {
+		lastErr = fmt.Errorf("antigravity: not authenticated")
 	}
-	models := make([]provider.Model, 0, len(ids))
-	for _, id := range ids {
-		models = append(models, provider.Model{ID: id, Name: id})
-	}
-	return models, nil
+	return nil, lastErr
 }
 
 func (p *Provider) Test(ctx context.Context) provider.TestResult {
@@ -77,17 +88,41 @@ func (p *Provider) Test(ctx context.Context) provider.TestResult {
 }
 
 func (p *Provider) ChatCompletion(ctx context.Context, req provider.ChatRequest, w http.ResponseWriter) error {
-	c, err := p.ensureFreshToken(ctx)
+	accounts := p.pool.Available(p.store)
+	if len(accounts) == 0 {
+		return fmt.Errorf("antigravity: not authenticated")
+	}
+	var lastErr error
+	for _, account := range accounts {
+		attempt := provider.NewAttemptWriter()
+		lastErr = p.chatWithAccount(ctx, req, account, attempt)
+		if lastErr == nil {
+			return attempt.Commit(w)
+		}
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		p.pool.MarkFailed(account, lastErr)
+	}
+	return lastErr
+}
+
+func (p *Provider) chatWithAccount(ctx context.Context, req provider.ChatRequest, account provider.Credentials, w http.ResponseWriter) error {
+	store := provider.ScopedStore(p.store, account)
+	c, err := p.ensureFreshTokenFrom(ctx, store)
 	if err != nil {
 		return err
 	}
-
 	resp, err := p.sendStreamRequest(ctx, c, req)
 	if err != nil && isAuthStatus(resp) && c.RefreshToken != "" {
-		// 401/403 from Google -> force refresh and retry once
-		if fresh, refErr := p.forceRefreshToken(ctx); refErr == nil {
+		if resp != nil {
+			resp.Body.Close()
+		}
+		if fresh, refErr := p.forceRefreshTokenFrom(ctx, store); refErr == nil {
 			c = fresh
 			resp, err = p.sendStreamRequest(ctx, c, req)
+		} else {
+			return refErr
 		}
 	}
 	if err != nil {
@@ -149,7 +184,15 @@ func isAuthStatus(resp *http.Response) bool {
 // ensureFreshToken refreshes the access token when it is missing or expiring
 // within 5 minutes, persisting the result through the store.
 func (p *Provider) ensureFreshToken(ctx context.Context) (provider.Credentials, error) {
-	c := p.store.Get()
+	accounts := p.pool.Available(p.store)
+	if len(accounts) == 0 {
+		return provider.Credentials{}, fmt.Errorf("antigravity: not authenticated")
+	}
+	return p.ensureFreshTokenFrom(ctx, provider.ScopedStore(p.store, accounts[0]))
+}
+
+func (p *Provider) ensureFreshTokenFrom(ctx context.Context, store provider.CredStore) (provider.Credentials, error) {
+	c := store.Get()
 	if c.AccessToken == "" && c.RefreshToken == "" {
 		return c, fmt.Errorf("antigravity: not authenticated")
 	}
@@ -159,11 +202,32 @@ func (p *Provider) ensureFreshToken(ctx context.Context) (provider.Credentials, 
 	if c.RefreshToken == "" {
 		return c, fmt.Errorf("antigravity: token expired and no refresh token")
 	}
-	return p.forceRefreshToken(ctx)
+	return p.forceRefreshTokenFrom(ctx, store)
 }
 
 func (p *Provider) forceRefreshToken(ctx context.Context) (provider.Credentials, error) {
-	c := p.store.Get()
+	accounts := p.pool.Available(p.store)
+	if len(accounts) == 0 {
+		return provider.Credentials{}, fmt.Errorf("antigravity: not authenticated")
+	}
+	return p.forceRefreshTokenFrom(ctx, provider.ScopedStore(p.store, accounts[0]))
+}
+
+func (p *Provider) forceRefreshTokenFrom(ctx context.Context, store provider.CredStore) (provider.Credentials, error) {
+	c := store.Get()
+	key := c.Identity()
+	if key == "" {
+		key = c.RefreshToken
+	}
+	lockValue, _ := p.refresh.LoadOrStore(key, &sync.Mutex{})
+	lock := lockValue.(*sync.Mutex)
+	lock.Lock()
+	defer lock.Unlock()
+	latest := store.Get()
+	if latest.AccessToken != c.AccessToken && latest.AccessToken != "" {
+		return latest, nil
+	}
+	c = latest
 	if c.RefreshToken == "" {
 		return c, fmt.Errorf("antigravity: no refresh token")
 	}
@@ -182,7 +246,7 @@ func (p *Provider) forceRefreshToken(ctx context.Context) (provider.Credentials,
 			c.ProjectID = pid
 		}
 	}
-	if err := p.store.Put(c); err != nil {
+	if err := store.Put(c); err != nil {
 		return c, err
 	}
 	return c, nil
@@ -246,6 +310,11 @@ func (p *Provider) streamToOpenAI(ctx context.Context, r io.Reader, w http.Respo
 	scanner.Buffer((*bufp)[:0], 1024*1024)
 	flusher, _ := w.(http.Flusher)
 	for scanner.Scan() {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
 		line := scanner.Text()
 		if !strings.HasPrefix(line, "data: ") {
 			continue
@@ -260,6 +329,9 @@ func (p *Provider) streamToOpenAI(ctx context.Context, r io.Reader, w http.Respo
 		if flusher != nil {
 			flusher.Flush()
 		}
+	}
+	if err := scanner.Err(); err != nil {
+		return err
 	}
 	if _, err := w.Write([]byte("data: [DONE]\n\n")); err != nil {
 		return err

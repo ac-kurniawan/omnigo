@@ -32,8 +32,53 @@ type ClientKey struct {
 }
 
 type Vault struct {
-	ProviderSecrets map[string]ProviderSecret `yaml:"provider_secrets"`
-	ClientKeys      []ClientKey               `yaml:"client_keys"`
+	ProviderSecrets  map[string]ProviderSecret   `yaml:"provider_secrets,omitempty"`
+	ProviderAccounts map[string][]ProviderSecret `yaml:"provider_accounts,omitempty"`
+	ClientKeys       []ClientKey                 `yaml:"client_keys"`
+}
+
+func (v *Vault) Accounts(name string) []ProviderSecret {
+	if accounts := v.ProviderAccounts[name]; len(accounts) > 0 {
+		return accounts
+	}
+	if secret, ok := v.ProviderSecrets[name]; ok && !secret.Empty() {
+		return []ProviderSecret{secret}
+	}
+	return nil
+}
+
+func (s ProviderSecret) Identity() string {
+	if s.AccountID != "" {
+		return s.AccountID
+	}
+	return s.Email
+}
+
+func (s ProviderSecret) Empty() bool {
+	return s.APIKey == "" && s.AccessToken == "" && s.RefreshToken == "" && s.IDToken == "" && s.ProjectID == "" && s.AccountID == "" && s.Email == ""
+}
+
+func (v *Vault) UpsertAccount(name string, secret ProviderSecret) {
+	if v.ProviderAccounts == nil {
+		v.ProviderAccounts = make(map[string][]ProviderSecret)
+	}
+	accounts := v.Accounts(name)
+	identity := secret.Identity()
+	if identity != "" && len(accounts) == 1 && accounts[0].Identity() == "" && accounts[0].APIKey == "" {
+		v.ProviderAccounts[name] = []ProviderSecret{secret}
+		delete(v.ProviderSecrets, name)
+		return
+	}
+	for i := range accounts {
+		if identity != "" && accounts[i].Identity() == identity {
+			accounts[i] = secret
+			v.ProviderAccounts[name] = accounts
+			delete(v.ProviderSecrets, name)
+			return
+		}
+	}
+	v.ProviderAccounts[name] = append(accounts, secret)
+	delete(v.ProviderSecrets, name)
 }
 
 type file struct {
@@ -105,6 +150,24 @@ func Load(path string, key []byte) (*Vault, error) {
 	var v Vault
 	if err := yaml.Unmarshal(plaintext, &v); err != nil {
 		return nil, fmt.Errorf("unmarshal vault: %w", err)
+	}
+	if v.ProviderSecrets == nil {
+		v.ProviderSecrets = make(map[string]ProviderSecret)
+	}
+	if v.ProviderAccounts == nil {
+		v.ProviderAccounts = make(map[string][]ProviderSecret)
+	}
+	legacy := len(v.ProviderSecrets) > 0
+	for name, secret := range v.ProviderSecrets {
+		if !secret.Empty() && len(v.ProviderAccounts[name]) == 0 {
+			v.ProviderAccounts[name] = []ProviderSecret{secret}
+		}
+	}
+	if legacy {
+		v.ProviderSecrets = make(map[string]ProviderSecret)
+		if err := Save(path, key, &v); err != nil {
+			return nil, fmt.Errorf("migrate vault: %w", err)
+		}
 	}
 	return &v, nil
 }

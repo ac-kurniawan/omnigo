@@ -12,6 +12,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/ac-kurniawan/omnigo/internal/provider"
@@ -33,7 +34,9 @@ type Provider struct {
 	responsesURL string
 	modelsURL    string
 	client       *http.Client
-	tokens       *TokenManager
+	store        provider.CredStore
+	pool         provider.AccountPool
+	tokens       sync.Map
 }
 
 type streamState struct {
@@ -84,7 +87,7 @@ func New(cfg provider.Config, store provider.CredStore) provider.Provider {
 		responsesURL: responsesURL,
 		modelsURL:    DefaultModelsURL,
 		client:       &http.Client{Timeout: timeout, Transport: cfg.Transport},
-		tokens:       NewTokenManager(store),
+		store:        store,
 	}
 }
 
@@ -145,17 +148,23 @@ func fallbackModels() []provider.Model {
 
 func (p *Provider) Test(ctx context.Context) provider.TestResult {
 	start := time.Now()
-	creds, err := p.tokens.EnsureFreshToken(ctx)
-	if err == nil && creds.AccountID == "" {
-		err = fmt.Errorf("codex: account ID is missing")
+	accounts := p.pool.Available(p.store)
+	var lastErr error
+	for _, account := range accounts {
+		creds, err := p.tokenManager(account).EnsureFreshToken(ctx)
+		if err == nil && creds.AccountID == "" {
+			err = fmt.Errorf("codex: account ID is missing")
+		}
+		if err == nil {
+			return provider.TestResult{OK: true, LatencyMS: time.Since(start).Milliseconds()}
+		}
+		lastErr = err
+		p.pool.MarkFailed(account, err)
 	}
-	result := provider.TestResult{LatencyMS: time.Since(start).Milliseconds()}
-	if err != nil {
-		result.Error = err.Error()
-		return result
+	if lastErr == nil {
+		lastErr = fmt.Errorf("codex: not authenticated")
 	}
-	result.OK = true
-	return result
+	return provider.TestResult{LatencyMS: time.Since(start).Milliseconds(), Error: lastErr.Error()}
 }
 
 func (p *Provider) ChatCompletion(ctx context.Context, req provider.ChatRequest, w http.ResponseWriter) error {
@@ -170,7 +179,28 @@ func (p *Provider) ChatCompletion(ctx context.Context, req provider.ChatRequest,
 	if err != nil {
 		return fmt.Errorf("codex: encode upstream request: %w", err)
 	}
-	creds, err := p.tokens.EnsureFreshToken(ctx)
+	accounts := p.pool.Available(p.store)
+	if len(accounts) == 0 {
+		return fmt.Errorf("codex: not authenticated")
+	}
+	var lastErr error
+	for _, account := range accounts {
+		attempt := provider.NewAttemptWriter()
+		lastErr = p.chatWithAccount(ctx, req, body, account, attempt)
+		if lastErr == nil {
+			return attempt.Commit(w)
+		}
+		if errors.Is(lastErr, context.Canceled) || errors.Is(lastErr, context.DeadlineExceeded) {
+			return lastErr
+		}
+		p.pool.MarkFailed(account, lastErr)
+	}
+	return lastErr
+}
+
+func (p *Provider) chatWithAccount(ctx context.Context, req provider.ChatRequest, body []byte, account provider.Credentials, w http.ResponseWriter) error {
+	tokens := p.tokenManager(account)
+	creds, err := tokens.EnsureFreshToken(ctx)
 	if err != nil {
 		return err
 	}
@@ -181,7 +211,7 @@ func (p *Provider) ChatCompletion(ctx context.Context, req provider.ChatRequest,
 	}
 	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
 		resp.Body.Close()
-		creds, err = p.tokens.ForceRefreshToken(ctx, creds.AccessToken)
+		creds, err = tokens.ForceRefreshToken(ctx, creds.AccessToken)
 		if err != nil {
 			return err
 		}
@@ -201,6 +231,15 @@ func (p *Provider) ChatCompletion(ctx context.Context, req provider.ChatRequest,
 		return p.streamResponse(ctx, resp.Body, req.Model, w)
 	}
 	return p.completeResponse(ctx, resp.Body, req.Model, w)
+}
+
+func (p *Provider) tokenManager(account provider.Credentials) *TokenManager {
+	key := account.Identity()
+	if key == "" {
+		key = account.AccessToken
+	}
+	manager, _ := p.tokens.LoadOrStore(key, NewTokenManager(provider.ScopedStore(p.store, account)))
+	return manager.(*TokenManager)
 }
 
 func (p *Provider) send(ctx context.Context, creds provider.Credentials, body []byte, sessionID string) (*http.Response, error) {

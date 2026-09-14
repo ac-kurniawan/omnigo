@@ -83,7 +83,7 @@ func TestRegistryReusesCodexProviderAndCredentialsAcrossReload(t *testing.T) {
 	if !ok || first != second || builds.Load() != 1 {
 		t.Fatalf("provider reuse = %v, builds = %d", first == second, builds.Load())
 	}
-	secret := store.Get().ProviderSecrets["codex-main"]
+	secret := store.Get().Accounts("codex-main")[0]
 	if secret.RefreshToken != "refresh" || secret.AccountID != "account" {
 		t.Fatalf("credentials changed across reload: %+v", secret)
 	}

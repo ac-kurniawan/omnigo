@@ -43,12 +43,17 @@ func (s *Server) createProvider(w http.ResponseWriter, r *http.Request) {
 
 	if apiKey != "" {
 		if err := s.store.Update(func(v *vault.Vault) error {
-			if v.ProviderSecrets == nil {
-				v.ProviderSecrets = make(map[string]vault.ProviderSecret)
+			accounts := v.Accounts(name)
+			if len(accounts) == 0 {
+				v.UpsertAccount(name, vault.ProviderSecret{APIKey: apiKey})
+			} else {
+				accounts[0].APIKey = apiKey
+				if v.ProviderAccounts == nil {
+					v.ProviderAccounts = make(map[string][]vault.ProviderSecret)
+				}
+				v.ProviderAccounts[name] = accounts
+				delete(v.ProviderSecrets, name)
 			}
-			sec := v.ProviderSecrets[name]
-			sec.APIKey = apiKey
-			v.ProviderSecrets[name] = sec
 			return nil
 		}); err != nil {
 			http.Error(w, "failed to save provider key", http.StatusInternalServerError)
@@ -68,12 +73,17 @@ func (s *Server) setProviderKey(w http.ResponseWriter, r *http.Request) {
 	apiKey := r.FormValue("api_key")
 
 	if err := s.store.Update(func(v *vault.Vault) error {
-		if v.ProviderSecrets == nil {
-			v.ProviderSecrets = make(map[string]vault.ProviderSecret)
+		accounts := v.Accounts(name)
+		if len(accounts) == 0 {
+			v.UpsertAccount(name, vault.ProviderSecret{APIKey: apiKey})
+		} else {
+			accounts[0].APIKey = apiKey
+			if v.ProviderAccounts == nil {
+				v.ProviderAccounts = make(map[string][]vault.ProviderSecret)
+			}
+			v.ProviderAccounts[name] = accounts
+			delete(v.ProviderSecrets, name)
 		}
-		sec := v.ProviderSecrets[name]
-		sec.APIKey = apiKey
-		v.ProviderSecrets[name] = sec
 		return nil
 	}); err != nil {
 		http.Error(w, "failed to save provider key", http.StatusInternalServerError)
@@ -109,9 +119,45 @@ func (s *Server) deleteProvider(w http.ResponseWriter, r *http.Request) {
 
 	_ = s.store.Update(func(v *vault.Vault) error {
 		delete(v.ProviderSecrets, name)
+		delete(v.ProviderAccounts, name)
 		return nil
 	})
 
+	if r.Header.Get("HX-Request") != "true" {
+		http.Redirect(w, r, "/", http.StatusSeeOther)
+		return
+	}
+	s.renderProviders(w)
+}
+
+func (s *Server) deleteProviderAccount(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	identity := r.PathValue("identity")
+	if s.findProvider(name) == nil || identity == "" {
+		http.NotFound(w, r)
+		return
+	}
+	if err := s.store.Update(func(v *vault.Vault) error {
+		accounts := v.Accounts(name)
+		kept := make([]vault.ProviderSecret, 0, len(accounts))
+		for _, account := range accounts {
+			if account.Identity() != identity {
+				kept = append(kept, account)
+			}
+		}
+		if len(kept) == len(accounts) {
+			return fmt.Errorf("account not found")
+		}
+		if v.ProviderAccounts == nil {
+			v.ProviderAccounts = make(map[string][]vault.ProviderSecret)
+		}
+		v.ProviderAccounts[name] = kept
+		delete(v.ProviderSecrets, name)
+		return nil
+	}); err != nil {
+		http.Error(w, "failed to remove account", http.StatusBadRequest)
+		return
+	}
 	if r.Header.Get("HX-Request") != "true" {
 		http.Redirect(w, r, "/", http.StatusSeeOther)
 		return
@@ -149,9 +195,11 @@ func (s *Server) getProviders(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) renderProviders(w http.ResponseWriter) {
+	snapshot := s.store.Get()
 	data := viewData{
 		Providers: s.getCfg().Providers,
-		Secrets:   s.store.Get().ProviderSecrets,
+		Secrets:   snapshot.ProviderSecrets,
+		Accounts:  snapshot.ProviderAccounts,
 	}
 	_ = s.tmpl.ExecuteTemplate(w, "providers", data)
 }
