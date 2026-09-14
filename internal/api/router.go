@@ -22,8 +22,8 @@ func NewRouter(getCfg func() *config.Config, store *vault.Store, mutate config.M
 	mux.Handle("GET /v1/models", authed(http.HandlerFunc(handleModels(getCfg))))
 	mux.Handle("GET /v1/models/{model...}", authed(http.HandlerFunc(handleModel(getCfg))))
 
-	mux.Handle("POST /internal/refresh-models/{provider}", authed(http.HandlerFunc(handleRefreshModels(getCfg, registry, mutate))))
-	mux.Handle("POST /internal/test/{provider}", authed(http.HandlerFunc(handleTestProvider(getCfg, registry))))
+	mux.Handle("POST /internal/refresh-models/{provider}", auth.DashboardMiddleware(http.HandlerFunc(handleRefreshModels(getCfg, registry, mutate))))
+	mux.Handle("POST /internal/test/{provider}", auth.DashboardMiddleware(http.HandlerFunc(handleTestProvider(getCfg, registry))))
 
 	return mux
 }
