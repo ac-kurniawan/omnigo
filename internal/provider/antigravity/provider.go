@@ -129,6 +129,9 @@ func (p *Provider) chatWithAccount(ctx context.Context, req provider.ChatRequest
 		return err
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusTooManyRequests {
+		return newRateLimitError(resp.Header)
+	}
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("antigravity: status %d", resp.StatusCode)
 	}
