@@ -1235,6 +1235,8 @@
               <span class="font-medium text-base-content/50 line-through truncate">{{.}}</span>
             </label>
             <div class="flex items-center gap-1.5 shrink-0">
+              <button type="button" class="btn btn-ghost btn-xs text-base-content/60 hover:text-base-content px-2 rounded-lg font-sans" onclick="copyToClipboard('{{.}}', this, 'Copied!')">Copy ID</button>
+
               <button type="button" hx-post="/providers/{{$provName}}/models/enable" hx-vals='{"model_id": "{{.}}"}' hx-target="#models-content-{{$provName}}" hx-swap="outerHTML" class="btn btn-ghost btn-xs text-success hover:bg-success/15 px-2.5 rounded-lg font-sans" title="Enable this model">Enable</button>
 
               <button type="button" hx-post="/providers/{{$provName}}/models/delete" hx-vals='{"model_id": "{{.}}"}' hx-target="#models-content-{{$provName}}" hx-swap="outerHTML" hx-confirm="Delete model {{.}} permanently?" class="btn btn-ghost btn-xs text-error hover:bg-error/15 px-2 rounded-lg font-sans" title="Delete model permanently">✕</button>
