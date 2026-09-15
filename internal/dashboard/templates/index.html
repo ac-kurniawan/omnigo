@@ -46,31 +46,33 @@
 
       if (navigator.clipboard && window.isSecureContext) {
         navigator.clipboard.writeText(text).then(showSuccess).catch(() => {
-          fallbackCopy(text, showSuccess);
+          fallbackCopy(text, btn, showSuccess);
         });
       } else {
-        fallbackCopy(text, showSuccess);
+        fallbackCopy(text, btn, showSuccess);
       }
     }
 
-    function fallbackCopy(text, onSuccess) {
+    function fallbackCopy(text, btn, onSuccess) {
       const textarea = document.createElement('textarea');
+      const container = btn.closest('dialog') || document.body;
       textarea.value = text;
       textarea.style.position = 'fixed';
       textarea.style.top = '-9999px';
       textarea.style.left = '-9999px';
       textarea.style.opacity = '0';
       textarea.setAttribute('readonly', '');
-      document.body.appendChild(textarea);
+      container.appendChild(textarea);
+      textarea.focus();
       textarea.select();
-      textarea.setSelectionRange(0, 99999);
+      textarea.setSelectionRange(0, textarea.value.length);
       try {
         const ok = document.execCommand('copy');
         if (ok && onSuccess) onSuccess();
       } catch (err) {
         console.error('Fallback copy failed:', err);
       } finally {
-        document.body.removeChild(textarea);
+        container.removeChild(textarea);
       }
     }
 
