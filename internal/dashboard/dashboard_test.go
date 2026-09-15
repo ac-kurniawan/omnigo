@@ -16,6 +16,26 @@ func testHandler(t *testing.T, cfg *config.Config, v *vault.Vault) http.Handler 
 	}, nil)
 }
 
+func TestFallbackCopyUsesDialogContainer(t *testing.T) {
+	h := testHandler(t, &config.Config{}, &vault.Vault{})
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/", nil))
+
+	body := rr.Body.String()
+	for _, want := range []string{
+		"fallbackCopy(text, btn, showSuccess)",
+		"const container = btn.closest('dialog') || document.body;",
+		"container.appendChild(textarea);",
+		"textarea.focus();",
+		"textarea.setSelectionRange(0, textarea.value.length);",
+		"container.removeChild(textarea);",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("body missing dialog-aware fallback copy code %q", want)
+		}
+	}
+}
+
 func TestIndexRendersProvidersCombosAndKeys(t *testing.T) {
 	cfg := &config.Config{
 		Providers: []config.Provider{{Name: "openai", Type: "openai", BaseURL: "https://x", Models: []string{"gpt-4o"}}},
