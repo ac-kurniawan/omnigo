@@ -29,6 +29,7 @@ type viewData struct {
 	Secrets   map[string]vault.ProviderSecret
 	Accounts  map[string][]vault.ProviderSecret
 	NewKey    string
+	CSRFToken string
 	Tracker   *combo.Tracker
 }
 
@@ -176,12 +177,15 @@ func (s *Server) routes() http.Handler {
 func (s *Server) index(w http.ResponseWriter, r *http.Request) {
 	cfg := s.getCfg()
 	snapshot := s.store.Get()
+	token := randomHex(32)
+	http.SetCookie(w, &http.Cookie{Name: "omnigo_csrf", Value: token, Path: "/", HttpOnly: true, SameSite: http.SameSiteStrictMode})
 	data := viewData{
 		Providers: cfg.Providers,
 		Combos:    cfg.Combos,
 		Keys:      activeKeys(snapshot.ClientKeys),
 		Secrets:   snapshot.ProviderSecrets,
 		Accounts:  snapshot.ProviderAccounts,
+		CSRFToken: token,
 		Tracker:   s.tracker,
 	}
 	_ = s.tmpl.ExecuteTemplate(w, "index.html", data)
