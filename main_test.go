@@ -43,6 +43,22 @@ func TestAppServesDashboardAndGateV1(t *testing.T) {
 	}
 }
 
+func TestAppKeepsV1ProtectedFromDashboardCredentials(t *testing.T) {
+	cfg := &config.Config{}
+	app := newApp(func() *config.Config { return cfg }, vault.NewMemoryStore(&vault.Vault{}), nil, nil)
+	req := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+	req.Host = "omnigo.test"
+	req.Header.Set("Origin", "http://omnigo.test")
+	req.Header.Set("HX-Request", "true")
+	req.Header.Set("X-Omnigo-CSRF", "dashboard-token")
+	req.AddCookie(&http.Cookie{Name: "omnigo_csrf", Value: "dashboard-token"})
+	rr := httptest.NewRecorder()
+	app.ServeHTTP(rr, req)
+	if rr.Code != http.StatusUnauthorized || !strings.Contains(rr.Body.String(), `"code":"invalid_api_key"`) {
+		t.Fatalf("status = %d, body %s", rr.Code, rr.Body.String())
+	}
+}
+
 func TestReloadSwapsConfig(t *testing.T) {
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "config.yaml")

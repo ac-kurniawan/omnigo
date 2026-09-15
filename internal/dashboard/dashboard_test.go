@@ -38,6 +38,13 @@ func TestIndexRendersProvidersCombosAndKeys(t *testing.T) {
 	if strings.Contains(body, "onclick=\"navigator.clipboard") {
 		t.Fatalf("body contains raw onclick navigator.clipboard which fails in insecure contexts")
 	}
+	if !strings.Contains(body, "X-Omnigo-CSRF") {
+		t.Fatal("body missing dashboard CSRF request header configuration")
+	}
+	cookies := rr.Result().Cookies()
+	if len(cookies) != 1 || cookies[0].Name != "omnigo_csrf" || !cookies[0].HttpOnly || cookies[0].SameSite != http.SameSiteStrictMode {
+		t.Fatalf("csrf cookies = %+v", cookies)
+	}
 }
 
 func TestIndexRendersCodexConnectionStateAndActions(t *testing.T) {
