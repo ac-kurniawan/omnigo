@@ -36,6 +36,26 @@ func TestDashboardManualAddModel(t *testing.T) {
 	}
 }
 
+func TestDisabledModelRowIncludesCopyIDAction(t *testing.T) {
+	cfg := &config.Config{
+		Providers: []config.Provider{
+			{Name: "openai", Type: "openai", DisabledModels: []string{"gpt-3.5-turbo"}},
+		},
+	}
+	h := testHandler(t, cfg, &vault.Vault{})
+	rr := httptest.NewRecorder()
+
+	h.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/", nil))
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rr.Code, rr.Body.String())
+	}
+	want := `onclick="copyToClipboard('gpt-3.5-turbo', this, 'Copied!')">Copy ID</button>`
+	if !strings.Contains(rr.Body.String(), want) {
+		t.Fatalf("disabled model row missing copy action %q, body = %s", want, rr.Body.String())
+	}
+}
+
 func TestDashboardDisableAndEnableModel(t *testing.T) {
 	cfg := &config.Config{
 		Providers: []config.Provider{
