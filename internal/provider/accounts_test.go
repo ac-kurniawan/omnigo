@@ -33,6 +33,7 @@ type accountCooldownError time.Duration
 
 func (e accountCooldownError) Error() string           { return "failed" }
 func (e accountCooldownError) Cooldown() time.Duration { return time.Duration(e) }
+func (e accountCooldownError) DrainReason() string     { return e.Error() }
 
 func TestAccountPoolPreservesOrderAndCooldown(t *testing.T) {
 	now := time.Unix(1_000, 0)
@@ -44,13 +45,26 @@ func TestAccountPoolPreservesOrderAndCooldown(t *testing.T) {
 		t.Fatalf("accounts = %+v", accounts)
 	}
 	pool.MarkFailed(accounts[0], accountCooldownError(2*time.Minute))
-	accounts = pool.Available(store)
+	accounts, reason := pool.AvailableWithError(store)
 	if len(accounts) != 1 || accounts[0].AccountID != "two" {
 		t.Fatalf("healthy accounts = %+v", accounts)
 	}
+	if reason == nil || reason.Error() != "failed" {
+		t.Fatalf("reason = %v, want failed", reason)
+	}
+	withCooldown, ok := reason.(interface{ Cooldown() time.Duration })
+	if !ok {
+		t.Fatalf("reason type = %T, want cooldown error", reason)
+	}
+	if withCooldown.Cooldown() != 2*time.Minute {
+		t.Fatalf("cooldown = %s, want 2m", withCooldown.Cooldown())
+	}
 	now = now.Add(2*time.Minute + time.Second)
-	accounts = pool.Available(store)
+	accounts, reason = pool.AvailableWithError(store)
 	if len(accounts) != 2 || accounts[0].AccountID != "one" {
 		t.Fatalf("accounts after cooldown = %+v", accounts)
+	}
+	if reason != nil {
+		t.Fatalf("reason after cooldown = %v, want nil", reason)
 	}
 }

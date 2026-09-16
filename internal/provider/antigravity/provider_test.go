@@ -288,6 +288,80 @@ func TestChatAccountPoolFallsBackAfter429AndRespectsRetryAfter(t *testing.T) {
 	}
 }
 
+func TestChatAllAccountsCoolingReturnsRateLimitUntilCooldownExpires(t *testing.T) {
+	start := time.Unix(2_000_000_000, 0)
+	now := start
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		if now.Equal(start) {
+			w.Header().Set("Retry-After", "60")
+			w.WriteHeader(http.StatusTooManyRequests)
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"success\"}]}}]}\n\n"))
+	}))
+	defer srv.Close()
+
+	store := &antigravityPoolStore{accounts: []provider.Credentials{
+		{AccessToken: "first", AccountID: "google-1", ProjectID: "p", ExpiresAt: time.Now().Add(time.Hour)},
+		{AccessToken: "second", AccountID: "google-2", ProjectID: "p", ExpiresAt: time.Now().Add(time.Hour)},
+	}}
+	p := New(provider.Config{Name: "agy", BaseURL: srv.URL}, store).(*Provider)
+	p.pool.SetClock(func() time.Time { return now })
+	req := provider.ChatRequest{Model: "gemini", Messages: []provider.Message{{Role: "user", Content: "hi"}}}
+
+	for range 2 {
+		err := p.ChatCompletion(context.Background(), req, httptest.NewRecorder())
+		if err == nil || err.Error() != "antigravity: rate limited" {
+			t.Fatalf("ChatCompletion error = %v", err)
+		}
+	}
+	if calls.Load() != 2 {
+		t.Fatalf("calls during cooldown = %d, want 2", calls.Load())
+	}
+
+	now = now.Add(time.Minute + time.Second)
+	rr := httptest.NewRecorder()
+	if err := p.ChatCompletion(context.Background(), req, rr); err != nil {
+		t.Fatalf("ChatCompletion after cooldown: %v", err)
+	}
+	if calls.Load() != 3 || !strings.Contains(rr.Body.String(), "success") {
+		t.Fatalf("calls = %d, body = %q", calls.Load(), rr.Body.String())
+	}
+}
+
+func TestChatSingleAccountCoolingReturnsRateLimit(t *testing.T) {
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		w.WriteHeader(http.StatusTooManyRequests)
+	}))
+	defer srv.Close()
+
+	store := staticStore{provider.Credentials{AccessToken: "token", ProjectID: "p", ExpiresAt: time.Now().Add(time.Hour)}}
+	p := New(provider.Config{Name: "agy", BaseURL: srv.URL}, store).(*Provider)
+	req := provider.ChatRequest{Model: "gemini", Messages: []provider.Message{{Role: "user", Content: "hi"}}}
+	for range 2 {
+		err := p.ChatCompletion(context.Background(), req, httptest.NewRecorder())
+		if err == nil || err.Error() != "antigravity: rate limited" {
+			t.Fatalf("ChatCompletion error = %v", err)
+		}
+	}
+	if calls.Load() != 1 {
+		t.Fatalf("calls = %d, want 1", calls.Load())
+	}
+}
+
+func TestChatWithoutCredentialsReturnsNotAuthenticated(t *testing.T) {
+	p := New(provider.Config{Name: "agy"}, staticStore{}).(*Provider)
+	err := p.ChatCompletion(context.Background(), provider.ChatRequest{}, httptest.NewRecorder())
+	if err == nil || err.Error() != "antigravity: not authenticated" {
+		t.Fatalf("ChatCompletion error = %v", err)
+	}
+}
+
 func TestRateLimitCooldown(t *testing.T) {
 	tests := []struct {
 		name       string

@@ -13,28 +13,52 @@ const DefaultAccountCooldown = 60 * time.Second
 
 type AccountPool struct {
 	mu     sync.Mutex
-	drains map[string]time.Time
+	drains map[string]accountDrain
 	now    func() time.Time
 }
 
+type accountDrain struct {
+	until  time.Time
+	reason string
+}
+
+type accountUnavailableError struct {
+	reason   string
+	cooldown time.Duration
+}
+
+func (e *accountUnavailableError) Error() string           { return e.reason }
+func (e *accountUnavailableError) Cooldown() time.Duration { return e.cooldown }
+func (e *accountUnavailableError) DrainReason() string     { return e.reason }
+
 func (p *AccountPool) Available(store CredStore) []Credentials {
+	accounts, _ := p.AvailableWithError(store)
+	return accounts
+}
+
+func (p *AccountPool) AvailableWithError(store CredStore) ([]Credentials, error) {
 	accounts := accountsFromStore(store)
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if p.drains == nil {
-		p.drains = make(map[string]time.Time)
+		p.drains = make(map[string]accountDrain)
 	}
 	now := p.currentTimeLocked()
 	healthy := make([]Credentials, 0, len(accounts))
+	var unavailable error
 	for i, account := range accounts {
 		key := accountKey(account, i)
-		until := p.drains[key]
-		if until.IsZero() || !now.Before(until) {
+		drain := p.drains[key]
+		if drain.until.IsZero() || !now.Before(drain.until) {
 			delete(p.drains, key)
 			healthy = append(healthy, account)
+			continue
+		}
+		if unavailable == nil && drain.reason != "" {
+			unavailable = &accountUnavailableError{reason: drain.reason, cooldown: drain.until.Sub(now)}
 		}
 	}
-	return healthy
+	return healthy, unavailable
 }
 
 func (p *AccountPool) MarkFailed(account Credentials, err error) {
@@ -43,11 +67,16 @@ func (p *AccountPool) MarkFailed(account Credentials, err error) {
 	if errors.As(err, &withCooldown) && withCooldown.Cooldown() > 0 {
 		cooldown = withCooldown.Cooldown()
 	}
+	var reason string
+	var withReason interface{ DrainReason() string }
+	if errors.As(err, &withReason) {
+		reason = withReason.DrainReason()
+	}
 	p.mu.Lock()
 	if p.drains == nil {
-		p.drains = make(map[string]time.Time)
+		p.drains = make(map[string]accountDrain)
 	}
-	p.drains[accountKey(account, 0)] = p.currentTimeLocked().Add(cooldown)
+	p.drains[accountKey(account, 0)] = accountDrain{until: p.currentTimeLocked().Add(cooldown), reason: reason}
 	p.mu.Unlock()
 }
 
