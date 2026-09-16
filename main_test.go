@@ -30,12 +30,21 @@ func TestAppServesDashboardAndGateV1(t *testing.T) {
 		t.Fatalf("health: status %d body %s", rr.Code, rr.Body.String())
 	}
 
+	// Unauthenticated request to dashboard is rejected by default (401)
 	rr = httptest.NewRecorder()
 	app.ServeHTTP(rr, httptest.NewRequest("GET", "/", nil))
-	if rr.Code != http.StatusOK || !strings.Contains(rr.Body.String(), "openai") {
-		t.Fatalf("dashboard: status %d body %s", rr.Code, rr.Body.String())
+	if rr.Code != http.StatusUnauthorized {
+		t.Fatalf("dashboard without auth: status %d, want 401", rr.Code)
 	}
 
+	// Authenticated request to dashboard with default credentials succeeds (200)
+	rr = httptest.NewRecorder()
+	dashReq := httptest.NewRequest("GET", "/", nil)
+	dashReq.SetBasicAuth("admin", "admin")
+	app.ServeHTTP(rr, dashReq)
+	if rr.Code != http.StatusOK || !strings.Contains(rr.Body.String(), "openai") {
+		t.Fatalf("dashboard with default auth: status %d body %s", rr.Code, rr.Body.String())
+	}
 	rr = httptest.NewRecorder()
 	app.ServeHTTP(rr, httptest.NewRequest("GET", "/v1/models", nil))
 	if rr.Code != http.StatusUnauthorized {

@@ -3,6 +3,9 @@ server:
   port: 8080
   timeout: 30s
 
+
+dashboard:
+  # auth: true  # HTTP basic auth for dashboard (default: true; env OMNIGO_DASH_USER / OMNIGO_DASH_PASS, fallback: admin/admin)
 providers:
   # Antigravity provider (Google Gemini Code Assist)
   - name: agy

@@ -82,8 +82,19 @@ func (c Combo) ParsedDrainTTL() time.Duration {
 	return d
 }
 
+type Dashboard struct {
+	Auth *bool `yaml:"auth,omitempty"`
+}
+
+// AuthEnabled returns whether dashboard basic auth is on.
+// Default: true (when Auth is nil or explicitly true).
+func (d Dashboard) AuthEnabled() bool {
+	return d.Auth == nil || *d.Auth
+}
+
 type Config struct {
 	Server    Server     `yaml:"server"`
+	Dashboard Dashboard  `yaml:"dashboard,omitempty"`
 	Providers []Provider `yaml:"providers"`
 	Combos    []Combo    `yaml:"combos"`
 	Timeout   string     `yaml:"timeout,omitempty"`
