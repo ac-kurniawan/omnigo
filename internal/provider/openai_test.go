@@ -230,6 +230,36 @@ func TestOpenAINonStreamingUsesDeadlineClient(t *testing.T) {
 	}
 }
 
+// The gateway is a proxy, not a transparent tunnel: forwarding upstream
+// headers verbatim would leak session cookies, upstream auth challenges, and
+// internal infrastructure metadata to API clients.
+func TestOpenAIStripsSensitiveUpstreamHeaders(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("Set-Cookie", "session=upstream-internal; Path=/")
+		w.Header().Set("WWW-Authenticate", "Basic realm=internal")
+		w.Header().Set("X-Internal-Debug", "upstream-node-7")
+		w.Header().Set("X-Request-Id", "req-123")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer srv.Close()
+
+	p := NewOpenAI(Config{Name: "openai", BaseURL: srv.URL, Timeout: 5 * time.Second}, staticStore{Credentials{APIKey: "sk-test"}})
+	rec := httptest.NewRecorder()
+	if err := p.ChatCompletion(context.Background(), ChatRequest{Model: "gpt-4o", Stream: true}, rec); err != nil {
+		t.Fatalf("chat completion: %v", err)
+	}
+	for _, h := range []string{"Set-Cookie", "WWW-Authenticate", "X-Internal-Debug"} {
+		if v := rec.Header().Get(h); v != "" {
+			t.Errorf("upstream header %s forwarded to client: %q", h, v)
+		}
+	}
+	if ct := rec.Header().Get("Content-Type"); ct == "" {
+		t.Error("Content-Type was stripped; clients need it to parse the stream")
+	}
+}
+
 type staticStore struct{ c Credentials }
 
 func (s staticStore) Get() Credentials      { return s.c }

@@ -1134,3 +1134,23 @@ func TestAllStrategiesBufferUntilCommit(t *testing.T) {
 		})
 	}
 }
+
+// Upstream errors frequently carry credentials inside a URL query string or a
+// JSON blob, where whitespace tokenization cannot isolate them. Redaction must
+// cover those shapes too, or a raw upstream error leaks a key to the client.
+func TestSanitizeFailureRedactsEmbeddedCredentials(t *testing.T) {
+	cases := []string{
+		`Post "https://api.example.com/v1?api_key=sk-embedded-fixture": dial tcp: timeout`,
+		`Get "https://api.example.com/v1?token=sk-embedded-fixture": EOF`,
+		`Get "https://api.example.com/v1?apikey=sk-embedded-fixture": EOF`,
+		`Get "https://api.example.com/v1?key=sk-embedded-fixture": EOF`,
+		`Get "https://api.example.com/v1?secret=sk-embedded-fixture": EOF`,
+		`Get "https://user:sk-embedded-fixture@api.example.com/v1": EOF`,
+		`{"error":"invalid","api_key":"sk-embedded-fixture"}`,
+	}
+	for _, in := range cases {
+		if out := sanitizeFailure(errors.New(in)); strings.Contains(out, "sk-embedded-fixture") {
+			t.Errorf("credential survived redaction:\n  in : %s\n  out: %s", in, out)
+		}
+	}
+}
