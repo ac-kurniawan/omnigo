@@ -2,13 +2,16 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"log"
 	"net/http"
 	"os"
+	"os/signal"
 	"strconv"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/ac-kurniawan/omnigo/internal/api"
@@ -143,6 +146,9 @@ func main() {
 
 	tracker := combo.NewTracker(paths.Drains)
 
+	sigCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	go state.watch(ctx, 2*time.Second)
@@ -155,7 +161,27 @@ func main() {
 		ReadHeaderTimeout: 10 * time.Second,
 		IdleTimeout:       state.getCfg().DefaultTimeout() * 2,
 	}
-	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-		log.Fatal(err)
+
+	serverErr := make(chan error, 1)
+	go func() {
+		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			serverErr <- err
+		}
+	}()
+
+	select {
+	case err := <-serverErr:
+		log.Fatalf("server: %v", err)
+	case <-sigCtx.Done():
+		log.Printf("shutting down OmniGo gracefully...")
+		drainTimeout := state.getCfg().DefaultTimeout()
+		if drainTimeout < 10*time.Second {
+			drainTimeout = 10 * time.Second
+		}
+		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), drainTimeout)
+		defer shutdownCancel()
+		if err := srv.Shutdown(shutdownCtx); err != nil {
+			log.Printf("shutdown error: %v", err)
+		}
 	}
 }

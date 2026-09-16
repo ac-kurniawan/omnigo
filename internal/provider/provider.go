@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"time"
 )
@@ -112,3 +113,34 @@ type Provider interface {
 }
 
 type Factory func(cfg Config, store CredStore) Provider
+
+type HTTPStatusError struct {
+	StatusCode int
+	Message    string
+}
+
+func (e *HTTPStatusError) Error() string {
+	if e.Message != "" {
+		return e.Message
+	}
+	return fmt.Sprintf("upstream status %d", e.StatusCode)
+}
+
+func (e *HTTPStatusError) HTTPStatus() int {
+	return e.StatusCode
+}
+
+func (e *HTTPStatusError) Drainable() bool {
+	if e.StatusCode == http.StatusBadRequest || e.StatusCode == http.StatusNotFound || e.StatusCode == http.StatusUnprocessableEntity {
+		return false
+	}
+	return true
+}
+
+func (e *HTTPStatusError) DrainReason() string {
+	return e.Error()
+}
+
+func NewHTTPStatusError(code int, msg string) *HTTPStatusError {
+	return &HTTPStatusError{StatusCode: code, Message: msg}
+}

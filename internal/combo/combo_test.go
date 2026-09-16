@@ -376,3 +376,55 @@ func TestPriorityDoesNotMarkDrainedOrSkip(t *testing.T) {
 		t.Fatalf("called = %v, want a", called)
 	}
 }
+
+func TestRunDoesNotDrainOnContextCanceled(t *testing.T) {
+	tr := NewTracker("")
+	t1 := Target{Provider: "a", Model: "m1"}
+	t2 := Target{Provider: "b", Model: "m2"}
+	c := Combo{Name: "safe", Strategy: "reliable", Targets: []Target{t1, t2}, Tracker: tr, DrainTTL: time.Minute}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	var called []Target
+	_, err := c.Run(ctx, func(_ context.Context, target Target) error {
+		called = append(called, target)
+		return ctx.Err()
+	})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected context.Canceled, got %v", err)
+	}
+	if tr.IsDrained(t1) {
+		t.Fatal("t1 should NOT be drained on context.Canceled")
+	}
+	if len(called) != 1 {
+		t.Fatalf("expected exactly 1 call (no failover on canceled context), got %d", len(called))
+	}
+}
+
+type mockClientError struct {
+	status int
+}
+
+func (e mockClientError) Error() string   { return fmt.Sprintf("upstream status %d", e.status) }
+func (e mockClientError) HTTPStatus() int { return e.status }
+
+func TestRunDoesNotDrainOnClientError(t *testing.T) {
+	tr := NewTracker("")
+	t1 := Target{Provider: "a", Model: "m1"}
+	t2 := Target{Provider: "b", Model: "m2"}
+	c := Combo{Name: "safe", Strategy: "reliable", Targets: []Target{t1, t2}, Tracker: tr, DrainTTL: time.Minute}
+
+	_, err := c.Run(context.Background(), func(_ context.Context, target Target) error {
+		if target == t1 {
+			return mockClientError{status: 400}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if tr.IsDrained(t1) {
+		t.Fatal("t1 should NOT be drained on 400 Bad Request")
+	}
+}

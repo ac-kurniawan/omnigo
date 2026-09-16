@@ -88,11 +88,15 @@ func buildProvider(cfg config.Provider, store *vault.Store, transport http.Round
 		def = defaultTimeout[0]
 	}
 	timeout := cfg.ParsedTimeout(def)
-	return factory(provider.Config{
+	p := factory(provider.Config{
 		Name:      cfg.Name,
 		BaseURL:   cfg.BaseURL,
 		Models:    cfg.Models,
 		Timeout:   timeout,
 		Transport: transport,
-	}, credStore{store: store, name: cfg.Name}), nil
+	}, credStore{store: store, name: cfg.Name})
+	if cfg.MaxConcurrency > 0 {
+		p = provider.WithConcurrencyLimit(p, cfg.MaxConcurrency)
+	}
+	return p, nil
 }

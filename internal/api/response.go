@@ -4,9 +4,10 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"net/http"
 	"strings"
+
+	"github.com/ac-kurniawan/omnigo/internal/provider"
 )
 
 var errResponseCommitted = errors.New("response already committed")
@@ -79,7 +80,7 @@ func (w *bufferedResponseWriter) finish(err error) error {
 		return err
 	}
 	if w.status < http.StatusOK || w.status >= http.StatusMultipleChoices {
-		return fmt.Errorf("upstream status %d", w.status)
+		return provider.NewHTTPStatusError(w.status, "")
 	}
 	if w.body.Len() == 0 {
 		return errors.New("upstream returned an empty response")

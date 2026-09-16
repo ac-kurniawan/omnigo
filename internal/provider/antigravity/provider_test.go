@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -217,17 +218,17 @@ func TestChatStreamsOpenAISSE(t *testing.T) {
 	}
 }
 
-func TestChatAccountPoolFallsBackWithoutLeakingFailedStream(t *testing.T) {
+func TestChatAccountPoolFallsBackOnPreCommitFailure(t *testing.T) {
 	var calls []string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
 		calls = append(calls, token)
-		w.Header().Set("Content-Type", "text/event-stream")
 		if token == "first" {
-			_, _ = w.Write([]byte("data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"leaked\"}]}}]}\n\n"))
-			_, _ = w.Write([]byte(strings.Repeat("x", 1024*1024+1)))
+			w.WriteHeader(http.StatusBadGateway)
+			_, _ = w.Write([]byte(`{"error":"upstream down"}`))
 			return
 		}
+		w.Header().Set("Content-Type", "text/event-stream")
 		_, _ = w.Write([]byte("data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"success\"}]}}]}\n\n"))
 	}))
 	defer srv.Close()
@@ -242,7 +243,7 @@ func TestChatAccountPoolFallsBackWithoutLeakingFailedStream(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(rr.Body.String(), "leaked") || !strings.Contains(rr.Body.String(), "success") {
+	if !strings.Contains(rr.Body.String(), "success") {
 		t.Fatalf("body = %s", rr.Body.String())
 	}
 	if len(calls) != 2 || calls[0] != "first" || calls[1] != "second" {
@@ -502,4 +503,68 @@ func TestChatRetriesOn401(t *testing.T) {
 	if !strings.Contains(rec.Body.String(), "success!") {
 		t.Fatalf("body = %q", rec.Body.String())
 	}
+}
+
+// Streaming must reach the client as the upstream produces it. Full buffering
+// would withhold every byte until the upstream closed, so a probe reading the
+// client writer while the upstream stream is still open must already see the
+// first translated chunk.
+func TestChatStreamsBeforeUpstreamCompletes(t *testing.T) {
+	release := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"hel\"}]}}]}\n\n"))
+		w.(http.Flusher).Flush()
+		<-release
+	}))
+	defer srv.Close()
+	defer close(release)
+
+	p := New(provider.Config{Name: "agy", BaseURL: srv.URL, Timeout: 5 * time.Second}, staticStore{provider.Credentials{AccessToken: "tok", ProjectID: "p", ExpiresAt: time.Now().Add(time.Hour)}})
+	rec := newProbeRecorder()
+	done := make(chan error, 1)
+	go func() {
+		done <- p.ChatCompletion(context.Background(), provider.ChatRequest{
+			Model: "gemini-3.7-flash-medium", Stream: true,
+			Messages: []provider.Message{{Role: "user", Content: "hi"}},
+		}, rec)
+	}()
+
+	deadline := time.After(2 * time.Second)
+	for rec.delivered() == "" {
+		select {
+		case <-deadline:
+			t.Fatal("no bytes reached the client while the upstream stream was still open: response is fully buffered")
+		case <-time.After(5 * time.Millisecond):
+		}
+	}
+	if !strings.Contains(rec.delivered(), "hel") {
+		t.Fatalf("delivered bytes = %q, want the first translated chunk", rec.delivered())
+	}
+}
+
+// probeRecorder captures what a streaming client would have observed before the
+// upstream stream finished.
+type probeRecorder struct {
+	header http.Header
+	mu     sync.Mutex
+	body   strings.Builder
+}
+
+func newProbeRecorder() *probeRecorder {
+	return &probeRecorder{header: make(http.Header)}
+}
+
+func (r *probeRecorder) Header() http.Header { return r.header }
+func (r *probeRecorder) WriteHeader(int)     {}
+func (r *probeRecorder) Write(b []byte) (int, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.body.Write(b)
+}
+func (r *probeRecorder) Flush() {}
+func (r *probeRecorder) delivered() string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.body.String()
 }
