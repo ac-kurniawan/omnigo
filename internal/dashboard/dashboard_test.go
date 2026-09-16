@@ -223,3 +223,55 @@ func TestDashboardAuthDynamicToggle(t *testing.T) {
 		t.Fatalf("re-enabled auth: status = %d, want 401", rr.Code)
 	}
 }
+
+func TestIndexRendersPlaygroundInspector(t *testing.T) {
+	cfg := &config.Config{
+		Providers: []config.Provider{{Name: "antigravity", Type: "antigravity", Models: []string{"gemini-2.5-pro"}}},
+		Combos:    []config.Combo{{Name: "auto", Strategy: "priority"}},
+	}
+	v := &vault.Vault{}
+	h := testHandler(t, cfg, v)
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, httptest.NewRequest("GET", "/", nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d", rr.Code)
+	}
+	body := rr.Body.String()
+	for _, want := range []string{
+		"Gateway Inspector &amp; Playground",
+		"id=\"playground-key\"",
+		"id=\"playground-model\"",
+		"id=\"playground-prompt\"",
+		"id=\"playground-send-btn\"",
+		"id=\"playground-abort-btn\"",
+		"id=\"telemetry-traceid\"",
+		"id=\"telemetry-ttft\"",
+		"50,000",
+		"200,000",
+		"sessionStorage.getItem('omnigo_playground_key')",
+		"fetch('/v1/chat/completions'",
+		"traceparent",
+		"antigravity/gemini-2.5-pro",
+		"auto (strategy: priority)",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("body missing expected playground element: %q", want)
+		}
+	}
+}
+
+func TestKeysRendersUseInPlaygroundAction(t *testing.T) {
+	cfg := &config.Config{}
+	v := &vault.Vault{}
+	s := newServer(func() *config.Config { return cfg }, vault.NewMemoryStore(v), nil)
+	rr := httptest.NewRecorder()
+	s.renderKeys(rr, "ak-test-plain-secret-key")
+
+	body := rr.Body.String()
+	if !strings.Contains(body, "useKeyInPlayground('ak-test-plain-secret-key')") {
+		t.Errorf("renderKeys missing useKeyInPlayground button call, got: %s", body)
+	}
+	if !strings.Contains(body, "Use in Playground") {
+		t.Errorf("renderKeys missing 'Use in Playground' text, got: %s", body)
+	}
+}

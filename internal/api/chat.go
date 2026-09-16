@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/ac-kurniawan/omnigo/internal/combo"
 	"github.com/ac-kurniawan/omnigo/internal/config"
@@ -16,6 +17,11 @@ import (
 
 func handleChat(getCfg func() *config.Config, registry *providerRegistry, tracker *combo.Tracker) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		startTime := time.Now()
+		tc := NewTraceContext(r.Header.Get("traceparent"))
+		r = r.WithContext(WithTraceContext(r.Context(), tc))
+		w.Header().Set("traceparent", tc.Traceparent())
+
 		r.Body = http.MaxBytesReader(w, r.Body, 10<<20)
 		raw, err := io.ReadAll(r.Body)
 		if err != nil {
@@ -48,16 +54,17 @@ func handleChat(getCfg func() *config.Config, registry *providerRegistry, tracke
 		req := provider.ChatRequest{Model: body.Model, Stream: body.Stream, Messages: msgs, Raw: raw}
 
 		if cb, ok := findCombo(cfg, body.Model); ok {
-			runCombo(w, r, cfg, registry, cb, req, tracker)
+			runCombo(w, r, cfg, registry, cb, req, tracker, tc, startTime)
 			return
 		}
 
-		p, model, ok := resolveDirect(cfg, registry, body.Model)
+		p, provName, model, ok := resolveDirect(cfg, registry, body.Model)
 		if !ok {
 			writeError(w, http.StatusNotFound, "model not found: "+body.Model)
 			return
 		}
 		req.Model = model
+		SetTelemetryHeaders(w, tc, provName, model, startTime)
 		if err := p.ChatCompletion(r.Context(), req, w); err != nil {
 			writeError(w, http.StatusBadGateway, err.Error())
 		}
@@ -73,20 +80,20 @@ func findCombo(cfg *config.Config, name string) (config.Combo, bool) {
 	return config.Combo{}, false
 }
 
-func resolveDirect(cfg *config.Config, registry *providerRegistry, model string) (provider.Provider, string, bool) {
+func resolveDirect(cfg *config.Config, registry *providerRegistry, model string) (provider.Provider, string, string, bool) {
 	if i := strings.Index(model, "/"); i > 0 {
 		provName := model[:i]
 		modelID := model[i+1:]
 		for _, pc := range cfg.Providers {
 			if pc.Name == provName {
 				if pc.Disabled || pc.IsModelDisabled(modelID) {
-					return nil, "", false
+					return nil, "", "", false
 				}
 				p, ok := registry.Get(cfg, pc.Name)
 				if !ok {
-					return nil, "", false
+					return nil, "", "", false
 				}
-				return p, modelID, true
+				return p, pc.Name, modelID, true
 			}
 		}
 	}
@@ -97,20 +104,20 @@ func resolveDirect(cfg *config.Config, registry *providerRegistry, model string)
 		for _, m := range pc.Models {
 			if m == model {
 				if pc.IsModelDisabled(model) {
-					return nil, "", false
+					return nil, "", "", false
 				}
 				p, ok := registry.Get(cfg, pc.Name)
 				if !ok {
-					return nil, "", false
+					return nil, "", "", false
 				}
-				return p, model, true
+				return p, pc.Name, model, true
 			}
 		}
 	}
-	return nil, "", false
+	return nil, "", "", false
 }
 
-func runCombo(w http.ResponseWriter, r *http.Request, cfg *config.Config, registry *providerRegistry, cb config.Combo, req provider.ChatRequest, tracker *combo.Tracker) {
+func runCombo(w http.ResponseWriter, r *http.Request, cfg *config.Config, registry *providerRegistry, cb config.Combo, req provider.ChatRequest, tracker *combo.Tracker, tc *TraceContext, startTime time.Time) {
 	c := combo.Combo{
 		Name:     cb.Name,
 		Strategy: cb.Strategy,
@@ -132,12 +139,13 @@ func runCombo(w http.ResponseWriter, r *http.Request, cfg *config.Config, regist
 			}
 		}
 		req.Model = t.Model
+		SetTelemetryHeaders(w, tc, t.Provider, t.Model, startTime)
 		if cb.Strategy != "reliable" && cb.Strategy != "round-robin" {
 			return p.ChatCompletion(ctx, req, w)
 		}
 		attempt := newBufferedResponseWriter(w, req.Stream)
+		SetTelemetryHeaders(attempt, tc, t.Provider, t.Model, startTime)
 		providerErr := p.ChatCompletion(ctx, req, attempt)
-		responseCommitted = responseCommitted || attempt.committed
 		err := attempt.finish(providerErr)
 		if errors.Is(err, errResponseCommitted) {
 			responseCommitted = true

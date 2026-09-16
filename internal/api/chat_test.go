@@ -213,7 +213,7 @@ func BenchmarkResolveDirectCachedProvider(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for b.Loop() {
-		if _, _, ok := resolveDirect(cfg, registry, "benchmark/model"); !ok {
+		if _, _, _, ok := resolveDirect(cfg, registry, "benchmark/model"); !ok {
 			b.Fatal("provider not resolved")
 		}
 	}
