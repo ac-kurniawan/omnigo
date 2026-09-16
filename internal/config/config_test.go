@@ -177,3 +177,50 @@ func TestValidateRejectsInvalidTimeout(t *testing.T) {
 		})
 	}
 }
+
+func TestDashboardAuthEnabledDefault(t *testing.T) {
+	cfg := &Config{}
+	if !cfg.Dashboard.AuthEnabled() {
+		t.Fatal("expected dashboard auth enabled by default (nil)")
+	}
+}
+
+func TestDashboardAuthExplicitlyDisabled(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "config.yaml")
+	yamlContent := `dashboard:
+  auth: false
+providers: []
+combos: []
+`
+	if err := os.WriteFile(p, []byte(yamlContent), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(p)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Dashboard.AuthEnabled() {
+		t.Fatal("expected dashboard auth disabled when explicitly false")
+	}
+}
+
+func TestDashboardAuthExplicitlyEnabled(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "config.yaml")
+	yamlContent := `dashboard:
+  auth: true
+providers: []
+combos: []
+`
+	if err := os.WriteFile(p, []byte(yamlContent), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(p)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !cfg.Dashboard.AuthEnabled() {
+		t.Fatal("expected dashboard auth enabled when explicitly true")
+	}
+}
