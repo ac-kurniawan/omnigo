@@ -102,7 +102,7 @@ func (p *openAIProvider) ChatCompletion(ctx context.Context, req ChatRequest, w 
 	}
 	up.Header.Set("Content-Type", "application/json")
 	p.authorize(up)
-	resp, err := p.stream.Do(up)
+	resp, err := ClientFor(p.stream, p.client, req.Stream).Do(up)
 	if err != nil {
 		return guard.Err(err)
 	}

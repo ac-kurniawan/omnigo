@@ -66,7 +66,11 @@ func handleChat(getCfg func() *config.Config, registry *providerRegistry, tracke
 		}
 		req.Model = model
 		SetTelemetryHeaders(w, tc, provName, model, startTime)
-		if err := p.ChatCompletion(r.Context(), req, w); err != nil {
+		// Providers stream straight to the client on this path, so a late failure
+		// must not be answered with a fresh JSON error envelope: the SSE body is
+		// already on the wire and the object would be parsed as a bad frame.
+		tracked := &commitTracker{ResponseWriter: w}
+		if err := p.ChatCompletion(r.Context(), req, tracked); err != nil && !tracked.committed {
 			writeProviderError(w, err)
 		}
 	}

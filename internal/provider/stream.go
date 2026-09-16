@@ -25,6 +25,17 @@ func StreamClient(client *http.Client) *http.Client {
 	return &http.Client{Transport: client.Transport, CheckRedirect: client.CheckRedirect, Jar: client.Jar}
 }
 
+// ClientFor selects the transport client for a request. Only a stream may run
+// without a wall-clock deadline: a non-streaming response is bounded by its
+// configured timeout, and a trickling upstream must not hold the request (and
+// a concurrency slot) open indefinitely.
+func ClientFor(stream, buffered *http.Client, streaming bool) *http.Client {
+	if streaming {
+		return stream
+	}
+	return buffered
+}
+
 // IdleGuard cancels a generation when the upstream goes silent for longer than
 // idle. Wrap the response body with Wrap, then Stop the guard once the body is
 // closed. A non-positive idle or nil cancel disables the guard.

@@ -189,6 +189,47 @@ func TestOpenAITimeoutConfigured(t *testing.T) {
 	}
 }
 
+// A non-streaming request must keep its configured wall-clock deadline: a
+// trickling upstream cannot be bounded by inter-byte silence alone, or it
+// holds the request (and a concurrency slot) open indefinitely. A stream is
+// the opposite: its total duration is unbounded by design.
+func TestOpenAINonStreamingUsesDeadlineClient(t *testing.T) {
+	release := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		flusher, _ := w.(http.Flusher)
+		// Dribble bytes forever, never completing the JSON response.
+		for i := 0; i < 50; i++ {
+			_, _ = w.Write([]byte(" "))
+			if flusher != nil {
+				flusher.Flush()
+			}
+			select {
+			case <-release:
+				return
+			case <-time.After(20 * time.Millisecond):
+			}
+		}
+	}))
+	defer srv.Close()
+	defer close(release)
+
+	p := NewOpenAI(Config{
+		Name:    "openai",
+		BaseURL: srv.URL,
+		Timeout: 100 * time.Millisecond,
+	}, staticStore{Credentials{APIKey: "sk-test"}})
+
+	start := time.Now()
+	rec := httptest.NewRecorder()
+	err := p.ChatCompletion(context.Background(), ChatRequest{Model: "gpt-4o", Stream: false}, rec)
+	if err == nil {
+		t.Fatal("non-streaming request against a dribbling upstream succeeded; its deadline was dropped")
+	}
+	if elapsed := time.Since(start); elapsed > 3*time.Second {
+		t.Fatalf("non-streaming request ran %s before failing, want the 100ms configured deadline", elapsed)
+	}
+}
+
 type staticStore struct{ c Credentials }
 
 func (s staticStore) Get() Credentials      { return s.c }
