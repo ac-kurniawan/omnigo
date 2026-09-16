@@ -44,8 +44,8 @@ func New(cfg provider.Config, store provider.CredStore) provider.Provider {
 func (p *Provider) Name() string { return p.name }
 
 func (p *Provider) Models(ctx context.Context) ([]provider.Model, error) {
-	accounts := p.pool.Available(p.store)
-	var lastErr error
+	accounts, drainErr := p.pool.AvailableWithError(p.store)
+	lastErr := drainErr
 	for _, account := range accounts {
 		store := provider.ScopedStore(p.store, account)
 		c, err := p.ensureFreshTokenFrom(ctx, store)
@@ -88,8 +88,11 @@ func (p *Provider) Test(ctx context.Context) provider.TestResult {
 }
 
 func (p *Provider) ChatCompletion(ctx context.Context, req provider.ChatRequest, w http.ResponseWriter) error {
-	accounts := p.pool.Available(p.store)
+	accounts, drainErr := p.pool.AvailableWithError(p.store)
 	if len(accounts) == 0 {
+		if drainErr != nil {
+			return drainErr
+		}
 		return fmt.Errorf("antigravity: not authenticated")
 	}
 	var lastErr error
