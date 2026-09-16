@@ -11,12 +11,12 @@ OmniGo is the deliberately smaller version:
 | ------------- | ------------------------------------------------------ |
 | **Lightweight** | One binary, stdlib only (`yaml.v3` is the sole dep)   |
 | **Fast**        | In-memory routing, no database, SSE passthrough        |
-| **Modular**     | Providers are a pluggable `Provider` interface         |
+| **Pluggable**   | Providers implement a unified `Provider` interface     |
 | **Configurable**| Everything lives in two YAML files, hot-reloaded       |
 
 ## Features
 
-- **Multi-provider, modular**
+- **Multi-provider**
   - `openai` — any OpenAI-compatible endpoint (OpenAI, OpenRouter, Groq,
     Ollama, …) with a Bearer API key.
   - `antigravity` — Google *Gemini Code Assist* via OAuth2 (auth-code flow,
