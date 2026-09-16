@@ -29,6 +29,9 @@
       if (id === 'combos' && window.htmx) {
         htmx.trigger('#combos', 'refreshCombos');
       }
+      if (id === 'quickstart') {
+        initPlayground();
+      }
     }
 
     function copyToClipboard(text, btn, successText = 'Copied!') {
@@ -432,6 +435,179 @@
 
       <!-- Panel 4: Quickstart & Docs -->
       <div id="panel-quickstart" class="tab-panel hidden space-y-6">
+        <!-- Gateway Inspector & Playground Card -->
+        <div class="card bg-base-100 border border-base-content/10 rounded-2xl shadow-sm p-6 space-y-6">
+          <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-base-content/10 pb-4">
+            <div>
+              <div class="flex items-center gap-2 flex-wrap">
+                <h2 class="text-xl font-bold">Gateway Inspector &amp; Playground</h2>
+                <span class="badge badge-primary badge-outline badge-xs font-mono">W3C TraceContext</span>
+                <span class="badge badge-secondary badge-outline badge-xs font-mono">OpenTelemetry</span>
+              </div>
+              <p class="text-xs text-base-content/60 mt-1">Test model combos, stream SSE completions, and inspect real-time routing telemetry.</p>
+            </div>
+            <div class="flex items-center gap-2">
+              <span class="badge badge-neutral text-xs font-mono">POST /v1/chat/completions</span>
+            </div>
+          </div>
+
+          <!-- Inspector Controls Grid -->
+          <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div>
+              <label class="label py-1">
+                <span class="label-text text-xs font-semibold">Client API Key (ak-...)</span>
+                <span class="label-text-alt text-xs text-base-content/50">Stored in sessionStorage</span>
+              </label>
+              <div class="join w-full">
+                <input type="password" id="playground-key" placeholder="ak-..." class="input input-bordered input-sm join-item font-mono w-full text-xs" oninput="savePlaygroundKey(this.value)" autocomplete="off" />
+                <button type="button" id="playground-key-toggle" class="btn btn-sm join-item btn-ghost text-xs border border-l-0 border-base-content/20" onclick="toggleKeyVisibility()">Show</button>
+              </div>
+            </div>
+
+            <div>
+              <label class="label py-1">
+                <span class="label-text text-xs font-semibold">Model / Combo Target</span>
+                <span class="label-text-alt text-xs text-base-content/50">Resolved by gateway</span>
+              </label>
+              <select id="playground-model" class="select select-bordered select-sm w-full font-mono text-xs">
+                {{if .Combos}}
+                <optgroup label="Combos (Fallback &amp; Routing)">
+                  {{range .Combos}}
+                  <option value="{{.Name}}">{{.Name}} (strategy: {{.Strategy}})</option>
+                  {{end}}
+                </optgroup>
+                {{end}}
+                {{if .Providers}}
+                <optgroup label="Direct Provider Models">
+                  {{range $p := .Providers}}
+                    {{range .Models}}
+                    <option value="{{$p.Name}}/{{.}}">{{$p.Name}}/{{.}}</option>
+                    {{end}}
+                  {{end}}
+                </optgroup>
+                {{end}}
+              </select>
+            </div>
+          </div>
+
+          <!-- Prompt Textarea & Context Limit -->
+          <div class="space-y-2">
+            <div class="flex items-center justify-between">
+              <label class="label-text text-xs font-semibold">Prompt Message</label>
+              <div class="flex items-center gap-2">
+                <span id="playground-limit-info" class="text-xs font-mono text-base-content/60">
+                  Est. Tokens: <strong id="playground-token-count">0</strong> / 50,000 | Chars: <span id="playground-char-count">0</span> / 200,000
+                </span>
+                <span id="playground-limit-badge" class="badge badge-success badge-xs font-mono">OK</span>
+              </div>
+            </div>
+            <textarea id="playground-prompt" class="textarea textarea-bordered font-mono text-xs w-full h-32 leading-relaxed" placeholder="Type a prompt to test your gateway model/combo routing..." oninput="updatePromptLimit()"></textarea>
+            
+            <div class="flex items-center justify-between pt-1">
+              <div class="flex items-center gap-2">
+                <button type="button" id="playground-send-btn" class="btn btn-primary btn-sm px-6 gap-2" onclick="sendPlaygroundRequest()">
+                  <svg xmlns="http://www.w3.org/2000/svg" class="size-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14 5l7 7m0 0l-7 7m7-7H3" /></svg>
+                  Send Stream
+                </button>
+                <button type="button" id="playground-abort-btn" class="btn btn-outline btn-error btn-sm hidden gap-1" onclick="abortPlaygroundRequest()">
+                  <svg xmlns="http://www.w3.org/2000/svg" class="size-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" /></svg>
+                  Abort
+                </button>
+                <button type="button" class="btn btn-ghost btn-xs text-base-content/60" onclick="clearPlaygroundPrompt()">Clear</button>
+              </div>
+              <div class="text-[11px] text-base-content/50 italic">
+                *50k context limit applied exclusively to this test feature.
+              </div>
+            </div>
+          </div>
+
+          <!-- Telemetry & Diagnostic Metrics Bar -->
+          <div class="bg-base-200/60 border border-base-content/10 rounded-xl p-3.5 space-y-2">
+            <div class="text-[11px] font-bold uppercase tracking-wider text-base-content/50 flex items-center justify-between">
+              <span>W3C &amp; OpenTelemetry Diagnostics</span>
+              <span id="telemetry-timer" class="font-mono text-primary font-bold"></span>
+            </div>
+            <div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-6 gap-3 text-xs">
+              <div class="space-y-0.5">
+                <div class="text-base-content/60 text-[10px]">HTTP Status</div>
+                <div id="telemetry-status" class="font-mono font-bold">-</div>
+              </div>
+              <div class="space-y-0.5">
+                <div class="text-base-content/60 text-[10px]">Provider (gen_ai.system)</div>
+                <div id="telemetry-provider" class="font-mono font-semibold text-primary truncate">-</div>
+              </div>
+              <div class="space-y-0.5">
+                <div class="text-base-content/60 text-[10px]">Model (gen_ai.model)</div>
+                <div id="telemetry-model" class="font-mono font-semibold truncate">-</div>
+              </div>
+              <div class="space-y-0.5">
+                <div class="text-base-content/60 text-[10px]">TTFT (First Token)</div>
+                <div id="telemetry-ttft" class="font-mono text-secondary font-bold">-</div>
+              </div>
+              <div class="space-y-0.5">
+                <div class="text-base-content/60 text-[10px]">Total Latency</div>
+                <div id="telemetry-duration" class="font-mono font-bold">-</div>
+              </div>
+              <div class="space-y-0.5">
+                <div class="text-base-content/60 text-[10px]">W3C Trace ID</div>
+                <div id="telemetry-traceid" class="font-mono text-[11px] truncate cursor-pointer text-accent hover:underline" title="Click to copy Trace ID" onclick="copyTraceID()">-</div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Error Alert Banner -->
+          <div id="playground-error-banner" class="alert alert-error text-xs shadow-md hidden flex items-start gap-2.5 p-3 rounded-xl border border-error/30">
+            <svg xmlns="http://www.w3.org/2000/svg" class="size-5 shrink-0 text-error-content" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" /></svg>
+            <div class="flex-1 overflow-hidden">
+              <div class="font-bold">Upstream Error / Rejection</div>
+              <div id="playground-error-text" class="font-mono text-[11px] mt-0.5 whitespace-pre-wrap break-words"></div>
+            </div>
+          </div>
+
+          <!-- Inspector Output Tabs -->
+          <div class="space-y-2">
+            <div class="tabs tabs-bordered">
+              <button type="button" class="tab tab-bordered tab-active font-semibold text-xs inspector-tab-btn" onclick="switchInspectorTab('stream', this)">Stream Output</button>
+              <button type="button" class="tab tab-bordered font-semibold text-xs inspector-tab-btn" onclick="switchInspectorTab('raw', this)">Raw SSE Events</button>
+              <button type="button" class="tab tab-bordered font-semibold text-xs inspector-tab-btn" onclick="switchInspectorTab('request', this)">Request JSON</button>
+            </div>
+
+            <!-- Tab 1: Stream Output -->
+            <div id="inspector-tab-stream" class="inspector-tab-content block">
+              <div class="bg-base-200/50 border border-base-content/10 rounded-xl p-4 font-mono text-xs space-y-2">
+                <div class="flex items-center justify-between border-b border-base-content/10 pb-2 text-[11px] text-base-content/60">
+                  <span>Stream Chunks: <strong id="playground-chunk-count" class="text-base-content">0</strong></span>
+                  <button type="button" class="btn btn-ghost btn-xs" onclick="copyStreamOutput(this)">Copy Output</button>
+                </div>
+                <div id="playground-output-container" class="whitespace-pre-wrap break-words min-h-[120px] max-h-96 overflow-y-auto font-mono text-xs leading-relaxed select-text text-base-content/90">
+                  <span class="text-base-content/40 italic">Response stream will appear here in real-time...</span>
+                </div>
+              </div>
+            </div>
+
+            <!-- Tab 2: Raw SSE Events -->
+            <div id="inspector-tab-raw" class="inspector-tab-content hidden">
+              <div class="bg-base-200/50 border border-base-content/10 rounded-xl p-4 font-mono text-xs space-y-2">
+                <div class="flex items-center justify-between border-b border-base-content/10 pb-2 text-[11px] text-base-content/60">
+                  <span>Raw Event Stream (text/event-stream)</span>
+                  <button type="button" class="btn btn-ghost btn-xs" onclick="copyRawSSE(this)">Copy Raw</button>
+                </div>
+                <pre id="playground-raw-sse" class="whitespace-pre-wrap break-words min-h-[120px] max-h-96 overflow-y-auto font-mono text-[11px] leading-relaxed text-base-content/70 select-text"></pre>
+              </div>
+            </div>
+
+            <!-- Tab 3: Request JSON -->
+            <div id="inspector-tab-request" class="inspector-tab-content hidden">
+              <div class="bg-base-200/50 border border-base-content/10 rounded-xl p-4 font-mono text-xs space-y-2">
+                <div class="flex items-center justify-between border-b border-base-content/10 pb-2 text-[11px] text-base-content/60">
+                  <span>POST /v1/chat/completions</span>
+                  <button type="button" class="btn btn-ghost btn-xs" onclick="copyRequestJSON(this)">Copy JSON</button>
+                </div>
+                <pre id="playground-request-json" class="whitespace-pre-wrap break-words min-h-[120px] max-h-96 overflow-y-auto font-mono text-[11px] leading-relaxed text-base-content/70 select-text"></pre>
+              </div>
+            </div>
+          </div>
+        </div>
         <div class="card bg-base-100 border border-base-content/10 rounded-2xl shadow-sm p-6 space-y-6">
           <div>
             <h2 class="text-xl font-bold">API Quickstart &amp; Code Examples</h2>
@@ -674,6 +850,339 @@
         evt.detail.elt.reset();
       }
     });
+    // --- Gateway Inspector & Playground ---
+    let playgroundAbortController = null;
+
+    function initPlayground() {
+      const savedKey = sessionStorage.getItem('omnigo_playground_key');
+      if (savedKey) {
+        const keyInput = document.getElementById('playground-key');
+        if (keyInput) keyInput.value = savedKey;
+      }
+      updatePromptLimit();
+    }
+
+    function savePlaygroundKey(val) {
+      if (val) {
+        sessionStorage.setItem('omnigo_playground_key', val.trim());
+      } else {
+        sessionStorage.removeItem('omnigo_playground_key');
+      }
+    }
+
+    function toggleKeyVisibility() {
+      const input = document.getElementById('playground-key');
+      const btn = document.getElementById('playground-key-toggle');
+      if (!input || !btn) return;
+      if (input.type === 'password') {
+        input.type = 'text';
+        btn.innerText = 'Hide';
+      } else {
+        input.type = 'password';
+        btn.innerText = 'Show';
+      }
+    }
+
+    function useKeyInPlayground(key) {
+      sessionStorage.setItem('omnigo_playground_key', key);
+      const input = document.getElementById('playground-key');
+      if (input) input.value = key;
+      const tabBtn = document.querySelector("button[onclick*='quickstart']");
+      if (tabBtn) showTab('quickstart', tabBtn);
+      const promptEl = document.getElementById('playground-prompt');
+      if (promptEl) {
+        promptEl.focus();
+        promptEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      }
+    }
+
+    function updatePromptLimit() {
+      const promptEl = document.getElementById('playground-prompt');
+      const tokenCountEl = document.getElementById('playground-token-count');
+      const charCountEl = document.getElementById('playground-char-count');
+      const badgeEl = document.getElementById('playground-limit-badge');
+      const sendBtn = document.getElementById('playground-send-btn');
+      if (!promptEl || !tokenCountEl || !charCountEl || !badgeEl || !sendBtn) return;
+
+      const chars = promptEl.value.length;
+      const tokens = Math.ceil(chars / 4);
+      charCountEl.innerText = chars.toLocaleString();
+      tokenCountEl.innerText = tokens.toLocaleString();
+
+      const maxChars = 200000; // ~50k tokens
+      if (chars > maxChars) {
+        badgeEl.className = 'badge badge-error badge-xs font-mono font-bold';
+        badgeEl.innerText = 'EXCEEDED 50K LIMIT';
+        sendBtn.disabled = true;
+      } else {
+        badgeEl.className = 'badge badge-success badge-xs font-mono';
+        badgeEl.innerText = 'OK';
+        sendBtn.disabled = false;
+      }
+    }
+
+    function clearPlaygroundPrompt() {
+      const promptEl = document.getElementById('playground-prompt');
+      if (promptEl) {
+        promptEl.value = '';
+        updatePromptLimit();
+        promptEl.focus();
+      }
+    }
+
+    function switchInspectorTab(tabId, btn) {
+      document.querySelectorAll('.inspector-tab-content').forEach(el => el.classList.add('hidden'));
+      const target = document.getElementById('inspector-tab-' + tabId);
+      if (target) target.classList.remove('hidden');
+      document.querySelectorAll('.inspector-tab-btn').forEach(b => b.classList.remove('tab-active'));
+      if (btn) btn.classList.add('tab-active');
+    }
+
+    function copyTraceID() {
+      const el = document.getElementById('telemetry-traceid');
+      if (!el || !el.dataset.fullTrace) return;
+      copyToClipboard(el.dataset.fullTrace, null);
+      const orig = el.innerText;
+      el.innerText = 'Copied!';
+      setTimeout(() => { el.innerText = orig; }, 1500);
+    }
+
+    function copyStreamOutput(btn) {
+      const el = document.getElementById('playground-output-container');
+      if (el) copyToClipboard(el.innerText, btn);
+    }
+
+    function copyRawSSE(btn) {
+      const el = document.getElementById('playground-raw-sse');
+      if (el) copyToClipboard(el.innerText, btn);
+    }
+
+    function copyRequestJSON(btn) {
+      const el = document.getElementById('playground-request-json');
+      if (el) copyToClipboard(el.innerText, btn);
+    }
+
+    function randomHexStr(bytesCount) {
+      const b = new Uint8Array(bytesCount);
+      crypto.getRandomValues(b);
+      return Array.from(b, byte => byte.toString(16).padStart(2, '0')).join('');
+    }
+
+    async function sendPlaygroundRequest() {
+      const keyInput = document.getElementById('playground-key');
+      const modelSelect = document.getElementById('playground-model');
+      const promptEl = document.getElementById('playground-prompt');
+      const sendBtn = document.getElementById('playground-send-btn');
+      const abortBtn = document.getElementById('playground-abort-btn');
+      const errorBanner = document.getElementById('playground-error-banner');
+      const errorText = document.getElementById('playground-error-text');
+      const outputContainer = document.getElementById('playground-output-container');
+      const rawSSE = document.getElementById('playground-raw-sse');
+      const requestJSON = document.getElementById('playground-request-json');
+      const chunkCountEl = document.getElementById('playground-chunk-count');
+
+      const statusEl = document.getElementById('telemetry-status');
+      const providerEl = document.getElementById('telemetry-provider');
+      const modelEl = document.getElementById('telemetry-model');
+      const ttftEl = document.getElementById('telemetry-ttft');
+      const durationEl = document.getElementById('telemetry-duration');
+      const traceidEl = document.getElementById('telemetry-traceid');
+
+      const key = keyInput ? keyInput.value.trim() : '';
+      if (!key) {
+        alert('Please enter or generate a Client API Key (ak-...) to test.');
+        keyInput?.focus();
+        return;
+      }
+      const model = modelSelect ? modelSelect.value : '';
+      if (!model) {
+        alert('Please select a Model or Combo target.');
+        return;
+      }
+      const prompt = promptEl ? promptEl.value.trim() : '';
+      if (!prompt) {
+        promptEl?.focus();
+        return;
+      }
+
+      // Payload
+      const payload = {
+        model: model,
+        messages: [{ role: 'user', content: prompt }],
+        stream: true
+      };
+      if (requestJSON) requestJSON.innerText = JSON.stringify(payload, null, 2);
+
+      // Reset state
+      errorBanner?.classList.add('hidden');
+      if (errorText) errorText.innerText = '';
+      if (outputContainer) outputContainer.innerHTML = '';
+      if (rawSSE) rawSSE.innerText = '';
+      if (chunkCountEl) chunkCountEl.innerText = '0';
+
+      statusEl.innerText = 'Streaming...';
+      statusEl.className = 'font-mono font-bold text-warning';
+      providerEl.innerText = '-';
+      modelEl.innerText = '-';
+      ttftEl.innerText = '-';
+      durationEl.innerText = '-';
+
+      // W3C TraceContext
+      const traceId = randomHexStr(16);
+      const spanId = randomHexStr(8);
+      const traceparent = `00-${traceId}-${spanId}-01`;
+      traceidEl.innerText = traceId;
+      traceidEl.dataset.fullTrace = traceparent;
+
+      sendBtn?.classList.add('hidden');
+      abortBtn?.classList.remove('hidden');
+
+      playgroundAbortController = new AbortController();
+      const t0 = performance.now();
+
+      try {
+        const resp = await fetch('/v1/chat/completions', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': 'Bearer ' + key,
+            'traceparent': traceparent
+          },
+          body: JSON.stringify(payload),
+          signal: playgroundAbortController.signal
+        });
+
+        // Parse W3C / OpenTelemetry response headers
+        const respTraceparent = resp.headers.get('traceparent');
+        if (respTraceparent) {
+          const parts = respTraceparent.split('-');
+          if (parts.length >= 2) {
+            traceidEl.innerText = parts[1];
+            traceidEl.dataset.fullTrace = respTraceparent;
+          }
+        }
+        const provHeader = resp.headers.get('X-OmniGo-Provider');
+        const modelHeader = resp.headers.get('X-OmniGo-Model');
+        const serverTiming = resp.headers.get('Server-Timing');
+
+        let resolvedProvider = provHeader || '-';
+        let resolvedModel = modelHeader || '-';
+
+        if (serverTiming) {
+          const sysMatch = serverTiming.match(/gen_ai\.system;desc="([^"]+)"/);
+          if (sysMatch) resolvedProvider = sysMatch[1];
+          const modMatch = serverTiming.match(/gen_ai\.response\.model;desc="([^"]+)"/);
+          if (modMatch) resolvedModel = modMatch[1];
+        }
+        providerEl.innerText = resolvedProvider;
+        modelEl.innerText = resolvedModel;
+
+        if (!resp.ok) {
+          statusEl.innerText = `${resp.status} ${resp.statusText || 'Error'}`;
+          statusEl.className = 'font-mono font-bold text-error';
+          const errBody = await resp.text();
+          let displayErr = errBody;
+          try {
+            const errObj = JSON.parse(errBody);
+            if (errObj.error?.message) {
+              displayErr = errObj.error.message;
+            }
+          } catch (_) {}
+          if (errorBanner && errorText) {
+            errorText.innerText = `[${resp.status}] ${displayErr}`;
+            errorBanner.classList.remove('hidden');
+          }
+          if (outputContainer) {
+            outputContainer.innerText = `[HTTP Error ${resp.status}]\n${displayErr}`;
+          }
+          const dur = ((performance.now() - t0) / 1000).toFixed(2);
+          durationEl.innerText = `${dur}s`;
+          return;
+        }
+
+        statusEl.innerText = `${resp.status} OK`;
+        statusEl.className = 'font-mono font-bold text-success';
+
+        // SSE Streaming Reader
+        const reader = resp.body.getReader();
+        const decoder = new TextDecoder('utf-8');
+        let buffer = '';
+        let firstChunk = true;
+        let receivedChunks = 0;
+        let accumulatedText = '';
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+
+          const text = decoder.decode(value, { stream: true });
+          buffer += text;
+          if (rawSSE) rawSSE.innerText += text;
+
+          const lines = buffer.split('\n');
+          buffer = lines.pop(); // keep trailing incomplete segment
+
+          for (const line of lines) {
+            const trimmed = line.trim();
+            if (!trimmed.startsWith('data:')) continue;
+            const dataContent = trimmed.slice(5).trim();
+            if (dataContent === '[DONE]') continue;
+
+            try {
+              const parsed = JSON.parse(dataContent);
+              const delta = parsed.choices?.[0]?.delta?.content;
+              if (delta) {
+                if (firstChunk) {
+                  firstChunk = false;
+                  const ttft = Math.round(performance.now() - t0);
+                  ttftEl.innerText = `${ttft}ms`;
+                }
+                accumulatedText += delta;
+                receivedChunks++;
+                if (chunkCountEl) chunkCountEl.innerText = receivedChunks;
+                if (outputContainer) {
+                  outputContainer.innerText = accumulatedText;
+                  outputContainer.scrollTop = outputContainer.scrollHeight;
+                }
+              }
+            } catch (_) {}
+          }
+        }
+
+        const dur = ((performance.now() - t0) / 1000).toFixed(2);
+        durationEl.innerText = `${dur}s`;
+
+      } catch (err) {
+        if (err.name === 'AbortError') {
+          statusEl.innerText = 'Aborted';
+          statusEl.className = 'font-mono font-bold text-warning';
+          if (outputContainer && outputContainer.innerText) {
+            outputContainer.innerText += '\n\n[Stream aborted by user]';
+          }
+        } else {
+          statusEl.innerText = 'Failed';
+          statusEl.className = 'font-mono font-bold text-error';
+          if (errorBanner && errorText) {
+            errorText.innerText = `Network/Fetch Error: ${err.message}`;
+            errorBanner.classList.remove('hidden');
+          }
+        }
+        const dur = ((performance.now() - t0) / 1000).toFixed(2);
+        durationEl.innerText = `${dur}s`;
+      } finally {
+        sendBtn?.classList.remove('hidden');
+        abortBtn?.classList.add('hidden');
+        playgroundAbortController = null;
+      }
+    }
+
+    function abortPlaygroundRequest() {
+      if (playgroundAbortController) {
+        playgroundAbortController.abort();
+      }
+    }
+
+    document.addEventListener('DOMContentLoaded', initPlayground);
   </script>
 </body>
 </html>
@@ -1097,7 +1606,10 @@
       <div class="mt-2 font-mono text-xs bg-base-100/40 text-success-content px-3 py-1.5 rounded-lg border border-success-content/30 select-all inline-block">{{.NewKey}}</div>
     </div>
   </div>
-  <button type="button" class="btn btn-sm btn-ghost text-success-content px-3 rounded-lg" onclick="copyToClipboard('{{.NewKey}}', this)">Copy</button>
+  <div class="flex items-center gap-1.5">
+    <button type="button" class="btn btn-sm btn-ghost text-success-content px-3 rounded-lg" onclick="copyToClipboard('{{.NewKey}}', this)">Copy</button>
+    <button type="button" class="btn btn-sm btn-outline text-success-content px-3 rounded-lg text-xs" onclick="useKeyInPlayground('{{.NewKey}}')">Use in Playground</button>
+  </div>
 </div>
 {{end}}
 
