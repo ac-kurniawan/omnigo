@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/ac-kurniawan/omnigo/internal/auth"
 	"github.com/ac-kurniawan/omnigo/internal/combo"
 	"github.com/ac-kurniawan/omnigo/internal/config"
 	"github.com/ac-kurniawan/omnigo/internal/provider/antigravity"
@@ -56,7 +57,12 @@ func NewHandler(getCfg func() *config.Config, store *vault.Store, mutate config.
 	if len(tracker) > 0 {
 		tr = tracker[0]
 	}
-	return newServer(getCfg, store, mutate, tr).routes()
+	s := newServer(getCfg, store, mutate, tr)
+	mw := auth.DashboardBasicAuth(func() bool {
+		cfg := getCfg()
+		return cfg == nil || cfg.Dashboard.AuthEnabled()
+	})
+	return mw(s.routes())
 }
 
 func newServer(getCfg func() *config.Config, store *vault.Store, mutate config.MutateFunc, tracker ...*combo.Tracker) *Server {

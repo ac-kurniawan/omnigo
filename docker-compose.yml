@@ -12,3 +12,5 @@ services:
       - ~/.config/omnigo:/home/omnigo/.config/omnigo
     environment:
       - OMNIGO_SECRET_KEY=${OMNIGO_SECRET_KEY:-}
+      - OMNIGO_DASH_USER=${OMNIGO_DASH_USER:-admin}
+      - OMNIGO_DASH_PASS=${OMNIGO_DASH_PASS:-admin}

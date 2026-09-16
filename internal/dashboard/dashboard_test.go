@@ -11,6 +11,10 @@ import (
 )
 
 func testHandler(t *testing.T, cfg *config.Config, v *vault.Vault) http.Handler {
+	disabled := false
+	if cfg.Dashboard.Auth == nil {
+		cfg.Dashboard.Auth = &disabled
+	}
 	return NewHandler(func() *config.Config { return cfg }, vault.NewMemoryStore(v), func(fn func(*config.Config) error) error {
 		return fn(cfg)
 	}, nil)
@@ -108,5 +112,114 @@ func TestServesStaticHtmx(t *testing.T) {
 	}
 	if !strings.Contains(rr.Body.String(), "htmx") {
 		t.Fatalf("body does not contain htmx: %s", rr.Body.String()[:100])
+	}
+}
+
+func TestDashboardAuthEnabledByDefaultRejectsUnauthenticated(t *testing.T) {
+	cfg := &config.Config{}
+	h := NewHandler(func() *config.Config { return cfg }, vault.NewMemoryStore(&vault.Vault{}), nil)
+
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	h.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401", rr.Code)
+	}
+	if authHeader := rr.Header().Get("WWW-Authenticate"); authHeader != `Basic realm="OmniGo Dashboard"` {
+		t.Fatalf("WWW-Authenticate = %q, want Basic realm=\"OmniGo Dashboard\"", authHeader)
+	}
+}
+
+func TestDashboardAuthAllowsDefaultAdminAdmin(t *testing.T) {
+	t.Setenv("OMNIGO_DASH_USER", "")
+	t.Setenv("OMNIGO_DASH_PASS", "")
+
+	cfg := &config.Config{}
+	h := NewHandler(func() *config.Config { return cfg }, vault.NewMemoryStore(&vault.Vault{}), nil)
+
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.SetBasicAuth("admin", "admin")
+	h.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rr.Code)
+	}
+}
+
+func TestDashboardAuthCustomCredentials(t *testing.T) {
+	t.Setenv("OMNIGO_DASH_USER", "operator")
+	t.Setenv("OMNIGO_DASH_PASS", "supersecret")
+
+	cfg := &config.Config{}
+	h := NewHandler(func() *config.Config { return cfg }, vault.NewMemoryStore(&vault.Vault{}), nil)
+
+	// admin/admin should be rejected
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.SetBasicAuth("admin", "admin")
+	h.ServeHTTP(rr, req)
+	if rr.Code != http.StatusUnauthorized {
+		t.Fatalf("admin/admin status = %d, want 401", rr.Code)
+	}
+
+	// custom credentials should succeed
+	rr = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodGet, "/", nil)
+	req.SetBasicAuth("operator", "supersecret")
+	h.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("custom credentials status = %d, want 200", rr.Code)
+	}
+}
+
+func TestDashboardAuthDisabledInConfig(t *testing.T) {
+	disabled := false
+	cfg := &config.Config{
+		Dashboard: config.Dashboard{Auth: &disabled},
+	}
+	h := NewHandler(func() *config.Config { return cfg }, vault.NewMemoryStore(&vault.Vault{}), nil)
+
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	h.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rr.Code)
+	}
+}
+
+func TestDashboardAuthDynamicToggle(t *testing.T) {
+	authVal := true
+	cfg := &config.Config{
+		Dashboard: config.Dashboard{Auth: &authVal},
+	}
+	h := NewHandler(func() *config.Config { return cfg }, vault.NewMemoryStore(&vault.Vault{}), nil)
+
+	// 1. Auth is enabled: unauthenticated request is 401
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	h.ServeHTTP(rr, req)
+	if rr.Code != http.StatusUnauthorized {
+		t.Fatalf("enabled auth: status = %d, want 401", rr.Code)
+	}
+
+	// 2. Auth is toggled to disabled: unauthenticated request is 200
+	authVal = false
+	rr = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodGet, "/", nil)
+	h.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("disabled auth: status = %d, want 200", rr.Code)
+	}
+
+	// 3. Auth is toggled back to enabled: unauthenticated request is 401
+	authVal = true
+	rr = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodGet, "/", nil)
+	h.ServeHTTP(rr, req)
+	if rr.Code != http.StatusUnauthorized {
+		t.Fatalf("re-enabled auth: status = %d, want 401", rr.Code)
 	}
 }

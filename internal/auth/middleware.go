@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"sync"
 
@@ -94,4 +95,61 @@ func unauthorized(w http.ResponseWriter) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusUnauthorized)
 	_, _ = w.Write([]byte(`{"error":{"message":"invalid API key","type":"invalid_request_error","code":"invalid_api_key"}}`))
+}
+
+// DashboardBasicAuth returns a middleware enforcing HTTP Basic Authentication
+// when enabled() returns true. It bypasses auth for static assets under /static/.
+// Username and password are read from environment variables (OMNIGO_DASH_USER,
+// OMNIGO_DASH_PASS), falling back to "admin"/"admin" if unset or empty.
+func DashboardBasicAuth(enabled func() bool) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if enabled != nil && !enabled() {
+				next.ServeHTTP(w, r)
+				return
+			}
+			if strings.HasPrefix(r.URL.Path, "/static/") {
+				next.ServeHTTP(w, r)
+				return
+			}
+
+			user := getDashUser()
+			pass := getDashPass()
+
+			u, p, ok := r.BasicAuth()
+			if !ok || subtle.ConstantTimeCompare([]byte(u), []byte(user)) != 1 || subtle.ConstantTimeCompare([]byte(p), []byte(pass)) != 1 {
+				w.Header().Set("WWW-Authenticate", `Basic realm="OmniGo Dashboard"`)
+				http.Error(w, "Unauthorized", http.StatusUnauthorized)
+				return
+			}
+
+			next.ServeHTTP(w, r)
+		})
+	}
+}
+
+func getDashUser() string {
+	if v := os.Getenv("OMNIGO_DASH_USER"); v != "" {
+		return v
+	}
+	if v := os.Getenv("OMNIGO_DASHBOARD_USER"); v != "" {
+		return v
+	}
+	return "admin"
+}
+
+func getDashPass() string {
+	if v := os.Getenv("OMNIGO_DASH_PASS"); v != "" {
+		return v
+	}
+	if v := os.Getenv("OMNIGO_DASHBOARD_PASS"); v != "" {
+		return v
+	}
+	if v := os.Getenv("OMNIGO_DASH_PASSWORD"); v != "" {
+		return v
+	}
+	if v := os.Getenv("OMNIGO_DASHBOARD_PASSWORD"); v != "" {
+		return v
+	}
+	return "admin"
 }

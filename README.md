@@ -58,7 +58,7 @@ docker run -d \
   ghcr.io/ac-kurniawan/omnigo:latest
 ```
 
-Dashboard: `http://localhost:8080` · API: `http://localhost:8080/v1`
+Dashboard: `http://localhost:8080` (HTTP Basic Auth: `admin`/`admin` by default, or set via `OMNIGO_DASH_USER` / `OMNIGO_DASH_PASS`; toggle with `dashboard.auth` in `config.yaml`) · API: `http://localhost:8080/v1`
 
 ```bash
 curl http://localhost:8080/v1/chat/completions \
