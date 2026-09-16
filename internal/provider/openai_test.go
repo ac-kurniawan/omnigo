@@ -3,6 +3,7 @@ package provider
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -92,6 +93,83 @@ func TestOpenAIChatUpstreamErrorReturnsError(t *testing.T) {
 	}
 	if rec.Body.Len() != 0 {
 		t.Fatalf("recorder body = %q, expected empty", rec.Body.String())
+	}
+}
+
+func TestOpenAIChatStreamExceedsClientTimeout(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		flusher, _ := w.(http.Flusher)
+		_, _ = w.Write([]byte("data: chunk1\n\n"))
+		if flusher != nil {
+			flusher.Flush()
+		}
+		// The total stream outlives Timeout; only silence is bounded, so a gap
+		// shorter than the idle window must not abort the generation.
+		for i := 0; i < 3; i++ {
+			time.Sleep(20 * time.Millisecond)
+			_, _ = w.Write([]byte("data: chunk\n\n"))
+			if flusher != nil {
+				flusher.Flush()
+			}
+		}
+		time.Sleep(20 * time.Millisecond)
+		_, _ = w.Write([]byte("data: chunk2\n\n"))
+		if flusher != nil {
+			flusher.Flush()
+		}
+	}))
+	defer srv.Close()
+
+	p := NewOpenAI(Config{
+		Name:    "openai",
+		BaseURL: srv.URL,
+		Timeout: 50 * time.Millisecond,
+	}, staticStore{Credentials{APIKey: "sk-test"}})
+
+	rec := httptest.NewRecorder()
+	err := p.ChatCompletion(context.Background(), ChatRequest{Model: "gpt-4o", Stream: true}, rec)
+	if err != nil {
+		t.Fatalf("ChatCompletion failed unexpectedly: %v", err)
+	}
+	if !strings.Contains(rec.Body.String(), "chunk2") {
+		t.Fatalf("expected chunk2 in stream, got %q", rec.Body.String())
+	}
+}
+
+func TestOpenAIChatStreamStallAborts(t *testing.T) {
+	release := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		flusher, _ := w.(http.Flusher)
+		_, _ = w.Write([]byte("data: chunk1\n\n"))
+		if flusher != nil {
+			flusher.Flush()
+		}
+		<-release
+	}))
+	defer srv.Close()
+	defer close(release)
+
+	p := NewOpenAI(Config{
+		Name:    "openai",
+		BaseURL: srv.URL,
+		Timeout: 50 * time.Millisecond,
+	}, staticStore{Credentials{APIKey: "sk-test"}})
+
+	rec := httptest.NewRecorder()
+	done := make(chan error, 1)
+	go func() {
+		done <- p.ChatCompletion(context.Background(), ChatRequest{Model: "gpt-4o", Stream: true}, rec)
+	}()
+
+	select {
+	case err := <-done:
+		if !errors.Is(err, ErrUpstreamStall) {
+			t.Fatalf("err = %v, want ErrUpstreamStall", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("silent upstream did not abort the stream")
 	}
 }
 

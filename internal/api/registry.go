@@ -22,10 +22,11 @@ type providerRegistry struct {
 }
 
 type registryEntry struct {
-	typ     string
-	baseURL string
-	timeout time.Duration
-	p       provider.Provider
+	typ            string
+	baseURL        string
+	timeout        time.Duration
+	maxConcurrency int
+	p              provider.Provider
 }
 
 func newProviderRegistry(store *vault.Store) *providerRegistry {
@@ -39,8 +40,10 @@ func newProviderRegistry(store *vault.Store) *providerRegistry {
 func newSharedTransport() *http.Transport {
 	t := http.DefaultTransport.(*http.Transport).Clone()
 	t.MaxIdleConns = 100
-	t.MaxIdleConnsPerHost = 20
+	t.MaxIdleConnsPerHost = 100
 	t.IdleConnTimeout = 90 * time.Second
+	t.ResponseHeaderTimeout = 30 * time.Second
+	t.ForceAttemptHTTP2 = true
 	return t
 }
 
@@ -73,7 +76,7 @@ func (r *providerRegistry) ensure(cfg *config.Config) {
 	entries := make(map[string]registryEntry, len(cfg.Providers))
 	for _, pc := range cfg.Providers {
 		timeout := pc.ParsedTimeout(cfg.DefaultTimeout())
-		if prev, ok := r.providers[pc.Name]; ok && prev.typ == pc.Type && prev.baseURL == pc.BaseURL && prev.timeout == timeout {
+		if prev, ok := r.providers[pc.Name]; ok && prev.typ == pc.Type && prev.baseURL == pc.BaseURL && prev.timeout == timeout && prev.maxConcurrency == pc.MaxConcurrency {
 			entries[pc.Name] = prev
 			continue
 		}
@@ -81,7 +84,7 @@ func (r *providerRegistry) ensure(cfg *config.Config) {
 		if err != nil {
 			continue
 		}
-		entries[pc.Name] = registryEntry{typ: pc.Type, baseURL: pc.BaseURL, timeout: timeout, p: p}
+		entries[pc.Name] = registryEntry{typ: pc.Type, baseURL: pc.BaseURL, timeout: timeout, maxConcurrency: pc.MaxConcurrency, p: p}
 	}
 	r.providers = entries
 	r.cfg = cfg

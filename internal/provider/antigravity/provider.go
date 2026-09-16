@@ -19,6 +19,8 @@ type Provider struct {
 	name    string
 	store   provider.CredStore
 	client  *http.Client
+	stream  *http.Client
+	idle    time.Duration
 	pool    provider.AccountPool
 	refresh sync.Map
 }
@@ -38,7 +40,14 @@ func New(cfg provider.Config, store provider.CredStore) provider.Provider {
 	if timeout <= 0 {
 		timeout = 30 * time.Second
 	}
-	return &Provider{name: cfg.Name, store: store, client: &http.Client{Timeout: timeout, Transport: cfg.Transport}}
+	client := &http.Client{Timeout: timeout, Transport: cfg.Transport}
+	return &Provider{
+		name:   cfg.Name,
+		store:  store,
+		client: client,
+		stream: provider.StreamClient(client),
+		idle:   timeout,
+	}
 }
 
 func (p *Provider) Name() string { return p.name }
@@ -97,10 +106,13 @@ func (p *Provider) ChatCompletion(ctx context.Context, req provider.ChatRequest,
 	}
 	var lastErr error
 	for _, account := range accounts {
-		attempt := provider.NewAttemptWriter()
+		attempt := provider.NewStreamingAttemptWriter(w, req.Stream)
 		lastErr = p.chatWithAccount(ctx, req, account, attempt)
 		if lastErr == nil {
 			return attempt.Commit(w)
+		}
+		if attempt.Committed() {
+			return lastErr
 		}
 		if ctx.Err() != nil {
 			return ctx.Err()
@@ -111,11 +123,17 @@ func (p *Provider) ChatCompletion(ctx context.Context, req provider.ChatRequest,
 }
 
 func (p *Provider) chatWithAccount(ctx context.Context, req provider.ChatRequest, account provider.Credentials, w http.ResponseWriter) error {
+	ctx, cancel := context.WithCancelCause(ctx)
+	defer cancel(nil)
 	store := provider.ScopedStore(p.store, account)
 	c, err := p.ensureFreshTokenFrom(ctx, store)
 	if err != nil {
 		return err
 	}
+	// Armed after token refresh so the idle window covers the generation
+	// exchange only, not credential work.
+	guard := provider.NewIdleGuard(p.idle, func() { cancel(provider.ErrUpstreamStall) })
+	defer guard.Stop()
 	resp, err := p.sendStreamRequest(ctx, c, req)
 	if err != nil && isAuthStatus(resp) && c.RefreshToken != "" {
 		if resp != nil {
@@ -129,19 +147,20 @@ func (p *Provider) chatWithAccount(ctx context.Context, req provider.ChatRequest
 		}
 	}
 	if err != nil {
-		return err
+		return guard.Err(err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode == http.StatusTooManyRequests {
 		return newRateLimitError(resp.Header)
 	}
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("antigravity: status %d", resp.StatusCode)
+		return provider.NewHTTPStatusError(resp.StatusCode, fmt.Sprintf("antigravity: status %d", resp.StatusCode))
 	}
+	body := guard.Wrap(resp.Body)
 	if !req.Stream {
-		return p.completeToOpenAI(resp.Body, req.Model, w)
+		return p.completeToOpenAI(body, req.Model, w)
 	}
-	return p.streamToOpenAI(ctx, resp.Body, w)
+	return p.streamToOpenAI(ctx, body, w)
 }
 
 func (p *Provider) sendStreamRequest(ctx context.Context, c provider.Credentials, req provider.ChatRequest) (*http.Response, error) {
@@ -162,12 +181,12 @@ func (p *Provider) sendStreamRequest(ctx context.Context, c provider.Credentials
 	up.Header.Set("User-Agent", antigravityUserAgent)
 	up.Header.Set("X-Goog-Api-Client", antigravityGoogAPI)
 	up.Header.Set("Authorization", "Bearer "+c.AccessToken)
-	resp, err := p.client.Do(up)
+	resp, err := p.stream.Do(up)
 	if err != nil {
 		return nil, err
 	}
 	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
-		return resp, fmt.Errorf("antigravity: status %d", resp.StatusCode)
+		return resp, provider.NewHTTPStatusError(resp.StatusCode, fmt.Sprintf("antigravity: status %d", resp.StatusCode))
 	}
 	return resp, nil
 }

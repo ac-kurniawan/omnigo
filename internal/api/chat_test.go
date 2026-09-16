@@ -36,7 +36,9 @@ func (f *fakeProvider) Test(ctx context.Context) provider.TestResult {
 }
 func (f *fakeProvider) ChatCompletion(ctx context.Context, req provider.ChatRequest, w http.ResponseWriter) error {
 	if f.chat != nil {
-		return f.chat(req)
+		if err := f.chat(req); err != nil {
+			return err
+		}
 	}
 	w.WriteHeader(http.StatusOK)
 	w.Write([]byte(`{"choices":[{"message":{"content":"ok"}}]}`))
@@ -828,5 +830,307 @@ func TestChatComboWithModelWithSlash(t *testing.T) {
 	}
 	if gotModel != "routers9/deepseek-v4-flash-0731" {
 		t.Fatalf("model = %q, want routers9/deepseek-v4-flash-0731", gotModel)
+	}
+}
+
+func TestProviderConcurrencyLimitInCombo(t *testing.T) {
+	inFlight := make(chan struct{})
+	done := make(chan struct{})
+	provider.Register("openai", func(cfg provider.Config, store provider.CredStore) provider.Provider {
+		return &responseProvider{name: cfg.Name, chat: func(_ context.Context, req provider.ChatRequest, w http.ResponseWriter) error {
+			if cfg.Name == "slow" {
+				inFlight <- struct{}{}
+				<-done
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write([]byte(`{"provider":"slow"}`))
+				return nil
+			}
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"provider":"fast"}`))
+			return nil
+		}}
+	})
+
+	cfg := &config.Config{
+		Providers: []config.Provider{
+			{Name: "slow", Type: "openai", BaseURL: "https://slow", Models: []string{"m1"}, MaxConcurrency: 1},
+			{Name: "fast", Type: "openai", BaseURL: "https://fast", Models: []string{"m2"}},
+		},
+		Combos: []config.Combo{
+			{
+				Name:     "auto",
+				Strategy: "priority",
+				Targets: []config.ComboTarget{
+					{Provider: "slow", Model: "m1"},
+					{Provider: "fast", Model: "m2"},
+				},
+			},
+		},
+	}
+	raw, hash, prefix, _ := auth.GenerateKey()
+	v := &vault.Vault{
+		ClientKeys: []vault.ClientKey{{ID: "k1", KeyHash: hash, Prefix: prefix, Active: true}},
+	}
+	router := testRouter(t, cfg, v)
+
+	// Start request 1 which occupies the single slot on "slow"
+	go func() {
+		req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(`{"model":"auto","messages":[]}`))
+		req.Header.Set("Authorization", "Bearer "+raw)
+		rr := httptest.NewRecorder()
+		router.ServeHTTP(rr, req)
+	}()
+
+	<-inFlight // Wait for request 1 to be inside "slow"
+
+	// Request 2 hits combo "auto": "slow" has max_concurrency 1 reached -> falls back to "fast"!
+	req2 := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(`{"model":"auto","messages":[]}`))
+	req2.Header.Set("Authorization", "Bearer "+raw)
+	rr2 := httptest.NewRecorder()
+	router.ServeHTTP(rr2, req2)
+
+	close(done)
+
+	if rr2.Code != http.StatusOK || rr2.Body.String() != `{"provider":"fast"}` {
+		t.Fatalf("expected fallback to fast when slow concurrency limit reached, got status %d body %s", rr2.Code, rr2.Body.String())
+	}
+}
+
+// Direct (non-combo) dispatch has no failover, so gateway backpressure must
+// reach the client as 429 with Retry-After, not as a 502 upstream error.
+func TestDirectProviderSaturationReturns429(t *testing.T) {
+	inFlight := make(chan struct{})
+	done := make(chan struct{})
+	provider.Register("openai", func(cfg provider.Config, store provider.CredStore) provider.Provider {
+		return &responseProvider{name: cfg.Name, chat: func(_ context.Context, req provider.ChatRequest, w http.ResponseWriter) error {
+			inFlight <- struct{}{}
+			<-done
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"ok":true}`))
+			return nil
+		}}
+	})
+
+	cfg := &config.Config{
+		Providers: []config.Provider{
+			{Name: "solo", Type: "openai", BaseURL: "https://solo", Models: []string{"m1"}, MaxConcurrency: 1},
+		},
+	}
+	raw, hash, prefix, _ := auth.GenerateKey()
+	v := &vault.Vault{ClientKeys: []vault.ClientKey{{ID: "k1", KeyHash: hash, Prefix: prefix, Active: true}}}
+	router := testRouter(t, cfg, v)
+
+	go func() {
+		req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"m1","messages":[]}`))
+		req.Header.Set("Authorization", "Bearer "+raw)
+		router.ServeHTTP(httptest.NewRecorder(), req)
+	}()
+	<-inFlight
+
+	req2 := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"m1","messages":[]}`))
+	req2.Header.Set("Authorization", "Bearer "+raw)
+	rr := httptest.NewRecorder()
+	router.ServeHTTP(rr, req2)
+	close(done)
+
+	if rr.Code != http.StatusTooManyRequests {
+		t.Fatalf("status = %d, want 429; body = %q", rr.Code, rr.Body.String())
+	}
+	if got := rr.Header().Get("Retry-After"); got == "" {
+		t.Fatal("expected Retry-After header on saturation")
+	}
+	if !strings.Contains(rr.Body.String(), "rate_limit_exceeded") {
+		t.Fatalf("body = %q, want rate_limit_exceeded code", rr.Body.String())
+	}
+}
+
+// When every target in a combo is locally saturated there is no failover left,
+// so the client must get 429 + Retry-After rather than a misleading 502.
+func TestComboFullySaturatedReturns429(t *testing.T) {
+	inFlight := make(chan struct{})
+	done := make(chan struct{})
+	provider.Register("openai", func(cfg provider.Config, store provider.CredStore) provider.Provider {
+		return &responseProvider{name: cfg.Name, chat: func(_ context.Context, req provider.ChatRequest, w http.ResponseWriter) error {
+			inFlight <- struct{}{}
+			<-done
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"ok":true}`))
+			return nil
+		}}
+	})
+
+	cfg := &config.Config{
+		Providers: []config.Provider{
+			{Name: "a", Type: "openai", Models: []string{"m1"}, MaxConcurrency: 1},
+			{Name: "b", Type: "openai", Models: []string{"m2"}, MaxConcurrency: 1},
+		},
+		Combos: []config.Combo{{
+			Name: "safe", Strategy: "reliable",
+			Targets: []config.ComboTarget{{Provider: "a", Model: "m1"}, {Provider: "b", Model: "m2"}},
+		}},
+	}
+	raw, hash, prefix, _ := auth.GenerateKey()
+	v := &vault.Vault{ClientKeys: []vault.ClientKey{{ID: "k1", KeyHash: hash, Prefix: prefix, Active: true}}}
+	router := testRouter(t, cfg, v)
+
+	// Occupy the single slot on both targets.
+	for range 2 {
+		go func() {
+			req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"safe","messages":[]}`))
+			req.Header.Set("Authorization", "Bearer "+raw)
+			router.ServeHTTP(httptest.NewRecorder(), req)
+		}()
+	}
+	<-inFlight
+	<-inFlight
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"safe","messages":[]}`))
+	req.Header.Set("Authorization", "Bearer "+raw)
+	rr := httptest.NewRecorder()
+	router.ServeHTTP(rr, req)
+	close(done)
+
+	if rr.Code != http.StatusTooManyRequests {
+		t.Fatalf("status = %d, want 429; body = %q", rr.Code, rr.Body.String())
+	}
+	if got := rr.Header().Get("Retry-After"); got == "" {
+		t.Fatal("expected Retry-After header when every target is saturated")
+	}
+}
+
+// A client that disconnects mid-stream cancels the request context. That is not
+// an upstream fault, so the target must not be drained: otherwise a few aborts
+// knock a healthy model out of the combo for the whole drain TTL.
+func TestComboClientAbortMidStreamDoesNotDrain(t *testing.T) {
+	started := make(chan struct{})
+	provider.Register("openai", func(cfg provider.Config, store provider.CredStore) provider.Provider {
+		return &responseProvider{name: cfg.Name, chat: func(ctx context.Context, _ provider.ChatRequest, w http.ResponseWriter) error {
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("data: {\"chunk\":1}\n\n"))
+			w.(http.Flusher).Flush() // commit: the client is now mid-stream
+			close(started)
+			<-ctx.Done() // client abort surfaces here
+			return ctx.Err()
+		}}
+	})
+	cfg := &config.Config{
+		Providers: []config.Provider{{Name: "a", Type: "openai", Models: []string{"m1"}}},
+		Combos: []config.Combo{{
+			Name: "safe", Strategy: "reliable", DrainTTL: "1m",
+			Targets: []config.ComboTarget{{Provider: "a", Model: "m1"}},
+		}},
+	}
+	tr := combo.NewTracker("")
+	raw, hash, prefix, _ := auth.GenerateKey()
+	v := &vault.Vault{ClientKeys: []vault.ClientKey{{ID: "k1", KeyHash: hash, Prefix: prefix, Active: true}}}
+	router := NewRouter(func() *config.Config { return cfg }, vault.NewMemoryStore(v), nil, tr, "test-version")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"safe","messages":[],"stream":true}`)).WithContext(ctx)
+	req.Header.Set("Authorization", "Bearer "+raw)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		router.ServeHTTP(httptest.NewRecorder(), req)
+	}()
+	<-started
+	cancel()
+	<-done
+
+	if tr.IsDrained(combo.Target{Provider: "a", Model: "m1"}) {
+		t.Fatalf("target drained after client abort: %q", tr.DrainReason(combo.Target{Provider: "a", Model: "m1"}))
+	}
+}
+
+// The counterpart to the abort test: a genuinely stalled upstream leaves the
+// request context alive, so it must still be drained and failed over.
+func TestComboUpstreamStallAfterCommitStillDrains(t *testing.T) {
+	provider.Register("openai", func(cfg provider.Config, store provider.CredStore) provider.Provider {
+		return &responseProvider{name: cfg.Name, chat: func(_ context.Context, _ provider.ChatRequest, w http.ResponseWriter) error {
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("data: {\"chunk\":1}\n\n"))
+			w.(http.Flusher).Flush() // commit
+			return provider.ErrUpstreamStall
+		}}
+	})
+	cfg := &config.Config{
+		Providers: []config.Provider{{Name: "a", Type: "openai", Models: []string{"m1"}}},
+		Combos: []config.Combo{{
+			Name: "safe", Strategy: "reliable", DrainTTL: "1m",
+			Targets: []config.ComboTarget{{Provider: "a", Model: "m1"}},
+		}},
+	}
+	tr := combo.NewTracker("")
+	performChat(t, cfg, tr, `{"model":"safe","messages":[],"stream":true}`)
+
+	target := combo.Target{Provider: "a", Model: "m1"}
+	if !tr.IsDrained(target) {
+		t.Fatal("stalled upstream must still be drained after commit")
+	}
+}
+
+// A direct (non-combo) dispatch failure must not echo upstream error text that
+// embeds a credential.
+func TestDirectProviderErrorIsSanitized(t *testing.T) {
+	provider.Register("openai", func(cfg provider.Config, store provider.CredStore) provider.Provider {
+		return &responseProvider{name: cfg.Name, chat: func(context.Context, provider.ChatRequest, http.ResponseWriter) error {
+			return errors.New("upstream rejected Authorization: Bearer sk-example-redaction-fixture")
+		}}
+	})
+	cfg := &config.Config{
+		Providers: []config.Provider{{Name: "openai", Type: "openai", Models: []string{"gpt-4o"}}},
+	}
+	rr := performChat(t, cfg, combo.NewTracker(""), `{"model":"gpt-4o","messages":[]}`)
+	if rr.Code != http.StatusBadGateway {
+		t.Fatalf("status = %d, want 502", rr.Code)
+	}
+	if strings.Contains(rr.Body.String(), "sk-example-redaction-fixture") {
+		t.Fatalf("direct path leaked credential: %q", rr.Body.String())
+	}
+}
+
+// Every combo strategy routes through the same buffered writer, so a target
+// that fails before committing must leave no partial bytes in the response and
+// the next target must still deliver a clean stream.
+func TestAllStrategiesBufferUntilCommit(t *testing.T) {
+	for _, strategy := range []string{"priority", "fill-first", "reliable", "round-robin"} {
+		t.Run(strategy, func(t *testing.T) {
+			var calls []string
+			provider.Register("openai", func(cfg provider.Config, store provider.CredStore) provider.Provider {
+				return &responseProvider{name: cfg.Name, chat: func(_ context.Context, req provider.ChatRequest, w http.ResponseWriter) error {
+					calls = append(calls, cfg.Name)
+					if cfg.Name == "bad" {
+						// Partial SSE bytes then a failure: nothing may reach the client.
+						w.Header().Set("Content-Type", "text/event-stream")
+						_, _ = w.Write([]byte("data: {\"model\":\"bad\"}\n\n"))
+						return io.ErrUnexpectedEOF
+					}
+					w.Header().Set("Content-Type", "text/event-stream")
+					_, _ = w.Write([]byte("data: {\"model\":\"good\"}\n\n"))
+					w.(http.Flusher).Flush()
+					_, _ = w.Write([]byte("data: [DONE]\n\n"))
+					return nil
+				}}
+			})
+			cfg := reliableTestConfig()
+			cfg.Combos[0].Strategy = strategy
+			tr := combo.NewTracker("")
+			rr := performChat(t, cfg, tr, `{"model":"safe","stream":true,"messages":[]}`)
+
+			if rr.Code != http.StatusOK {
+				t.Fatalf("status = %d, want 200; body = %q", rr.Code, rr.Body.String())
+			}
+			if strings.Contains(rr.Body.String(), `"model":"bad"`) {
+				t.Fatalf("partial bytes from the failed target leaked: %q", rr.Body.String())
+			}
+			if !strings.Contains(rr.Body.String(), `"model":"good"`) || !strings.Contains(rr.Body.String(), "[DONE]") {
+				t.Fatalf("fallback target did not deliver a clean stream: %q", rr.Body.String())
+			}
+			if len(calls) != 2 {
+				t.Fatalf("target calls = %v, want both targets tried", calls)
+			}
+		})
 	}
 }

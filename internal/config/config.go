@@ -34,6 +34,7 @@ type Provider struct {
 	DisabledModels []string `yaml:"disabled_models,omitempty"`
 	Disabled       bool     `yaml:"disabled,omitempty"`
 	Timeout        string   `yaml:"timeout,omitempty"`
+	MaxConcurrency int      `yaml:"max_concurrency,omitempty"`
 }
 
 func (p Provider) ParsedTimeout(defaultTimeout time.Duration) time.Duration {
@@ -153,6 +154,9 @@ func (c *Config) Validate() error {
 			if err != nil || d <= 0 {
 				return fmt.Errorf("provider %q: invalid timeout %q", p.Name, p.Timeout)
 			}
+		}
+		if p.MaxConcurrency < 0 {
+			return fmt.Errorf("provider %q: invalid max_concurrency %d", p.Name, p.MaxConcurrency)
 		}
 	}
 	for _, cb := range c.Combos {

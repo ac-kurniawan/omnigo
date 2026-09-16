@@ -24,6 +24,8 @@ type openAIProvider struct {
 	baseURL string
 	store   CredStore
 	client  *http.Client
+	stream  *http.Client
+	idle    time.Duration
 }
 
 func NewOpenAI(cfg Config, store CredStore) Provider {
@@ -31,7 +33,15 @@ func NewOpenAI(cfg Config, store CredStore) Provider {
 	if timeout <= 0 {
 		timeout = 30 * time.Second
 	}
-	return &openAIProvider{name: cfg.Name, baseURL: strings.TrimRight(cfg.BaseURL, "/"), store: store, client: &http.Client{Timeout: timeout, Transport: cfg.Transport}}
+	client := &http.Client{Timeout: timeout, Transport: cfg.Transport}
+	return &openAIProvider{
+		name:    cfg.Name,
+		baseURL: strings.TrimRight(cfg.BaseURL, "/"),
+		store:   store,
+		client:  client,
+		stream:  StreamClient(client),
+		idle:    timeout,
+	}
 }
 
 func (p *openAIProvider) Name() string { return p.name }
@@ -82,19 +92,23 @@ func (p *openAIProvider) ChatCompletion(ctx context.Context, req ChatRequest, w 
 	if err != nil {
 		return err
 	}
+	ctx, cancel := context.WithCancelCause(ctx)
+	defer cancel(nil)
+	guard := NewIdleGuard(p.idle, func() { cancel(ErrUpstreamStall) })
+	defer guard.Stop()
 	up, err := http.NewRequestWithContext(ctx, http.MethodPost, p.baseURL+"/chat/completions", bytes.NewReader(body))
 	if err != nil {
 		return err
 	}
 	up.Header.Set("Content-Type", "application/json")
 	p.authorize(up)
-	resp, err := p.client.Do(up)
+	resp, err := p.stream.Do(up)
 	if err != nil {
-		return err
+		return guard.Err(err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("upstream status %d", resp.StatusCode)
+		return NewHTTPStatusError(resp.StatusCode, fmt.Sprintf("upstream status %d", resp.StatusCode))
 	}
 	for k, vv := range resp.Header {
 		for _, v := range vv {
@@ -106,8 +120,9 @@ func (p *openAIProvider) ChatCompletion(ctx context.Context, req ChatRequest, w 
 	bufp := streamBufferPool.Get().(*[]byte)
 	defer streamBufferPool.Put(bufp)
 	buf := *bufp
+	reader := guard.Wrap(resp.Body)
 	for {
-		n, rErr := resp.Body.Read(buf)
+		n, rErr := reader.Read(buf)
 		if n > 0 {
 			if _, wErr := w.Write(buf[:n]); wErr != nil {
 				return wErr

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -66,7 +67,7 @@ func handleChat(getCfg func() *config.Config, registry *providerRegistry, tracke
 		req.Model = model
 		SetTelemetryHeaders(w, tc, provName, model, startTime)
 		if err := p.ChatCompletion(r.Context(), req, w); err != nil {
-			writeError(w, http.StatusBadGateway, err.Error())
+			writeProviderError(w, err)
 		}
 	}
 }
@@ -139,17 +140,16 @@ func runCombo(w http.ResponseWriter, r *http.Request, cfg *config.Config, regist
 			}
 		}
 		req.Model = t.Model
-		SetTelemetryHeaders(w, tc, t.Provider, t.Model, startTime)
-		if cb.Strategy != "reliable" && cb.Strategy != "round-robin" {
-			return p.ChatCompletion(ctx, req, w)
-		}
 		attempt := newBufferedResponseWriter(w, req.Stream)
 		SetTelemetryHeaders(attempt, tc, t.Provider, t.Model, startTime)
 		providerErr := p.ChatCompletion(ctx, req, attempt)
 		err := attempt.finish(providerErr)
 		if errors.Is(err, errResponseCommitted) {
 			responseCommitted = true
-			if tracker != nil {
+			// A client abort mid-stream cancels the request context; that is not an
+			// upstream fault, so the target stays healthy. A stalled upstream leaves
+			// the request context alive and is still drained.
+			if tracker != nil && cb.Strategy != "priority" && r.Context().Err() == nil {
 				tracker.MarkDrained(t, cb.ParsedDrainTTL(), sanitizeFailure(err))
 			}
 			return nil
@@ -160,7 +160,7 @@ func runCombo(w http.ResponseWriter, r *http.Request, cfg *config.Config, regist
 		return nil
 	})
 	if err != nil && !responseCommitted {
-		writeError(w, http.StatusBadGateway, sanitizeFailure(err))
+		writeProviderError(w, err)
 	}
 }
 
@@ -212,6 +212,23 @@ func providerForName(cfg *config.Config, registry *providerRegistry, name string
 	return nil, false
 }
 
+// writeProviderError maps a provider failure to a client response. Gateway-side
+// saturation is a 429 with Retry-After; everything else is a 502. Messages are
+// sanitized because upstream errors can embed credentials.
+func writeProviderError(w http.ResponseWriter, err error) {
+	msg := sanitizeFailure(err)
+	var busy interface {
+		HTTPStatus() int
+		RetryAfter() time.Duration
+	}
+	if errors.As(err, &busy) && busy.HTTPStatus() == http.StatusTooManyRequests {
+		w.Header().Set("Retry-After", strconv.Itoa(int(busy.RetryAfter().Seconds())))
+		writeError(w, http.StatusTooManyRequests, msg)
+		return
+	}
+	writeError(w, http.StatusBadGateway, msg)
+}
+
 func writeError(w http.ResponseWriter, status int, msg string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
@@ -228,6 +245,8 @@ func statusToCode(status int) string {
 		return "model_not_found"
 	case http.StatusBadGateway:
 		return "upstream_error"
+	case http.StatusTooManyRequests:
+		return "rate_limit_exceeded"
 	default:
 		return "invalid_request_error"
 	}
