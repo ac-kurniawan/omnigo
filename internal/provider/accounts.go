@@ -18,18 +18,24 @@ type AccountPool struct {
 }
 
 type accountDrain struct {
-	until  time.Time
-	reason string
+	until       time.Time
+	reason      string
+	clientError bool
 }
 
 type accountUnavailableError struct {
 	reason   string
 	cooldown time.Duration
+	// clientError records that the failure which cooled this account was a
+	// client-side 4xx. A bad prompt must not drain the combo target, so the
+	// classification has to survive the cooldown.
+	clientError bool
 }
 
 func (e *accountUnavailableError) Error() string           { return e.reason }
 func (e *accountUnavailableError) Cooldown() time.Duration { return e.cooldown }
 func (e *accountUnavailableError) DrainReason() string     { return e.reason }
+func (e *accountUnavailableError) Drainable() bool         { return !e.clientError }
 
 func (p *AccountPool) Available(store CredStore) []Credentials {
 	accounts, _ := p.AvailableWithError(store)
@@ -55,7 +61,7 @@ func (p *AccountPool) AvailableWithError(store CredStore) ([]Credentials, error)
 			continue
 		}
 		if unavailable == nil && drain.reason != "" {
-			unavailable = &accountUnavailableError{reason: drain.reason, cooldown: drain.until.Sub(now)}
+			unavailable = &accountUnavailableError{reason: drain.reason, cooldown: drain.until.Sub(now), clientError: drain.clientError}
 		}
 	}
 	return healthy, unavailable
@@ -72,12 +78,28 @@ func (p *AccountPool) MarkFailed(account Credentials, err error) {
 	if errors.As(err, &withReason) {
 		reason = withReason.DrainReason()
 	}
+	clientErr := isClientError(err)
 	p.mu.Lock()
 	if p.drains == nil {
 		p.drains = make(map[string]accountDrain)
 	}
-	p.drains[accountKey(account, 0)] = accountDrain{until: p.currentTimeLocked().Add(cooldown), reason: reason}
+	p.drains[accountKey(account, 0)] = accountDrain{until: p.currentTimeLocked().Add(cooldown), reason: reason, clientError: clientErr}
 	p.mu.Unlock()
+}
+
+// isClientError reports whether an upstream failure is the caller's fault (a
+// malformed or unsupported request) rather than the provider's. Such failures
+// must not drain a combo target.
+func isClientError(err error) bool {
+	var status interface{ HTTPStatus() int }
+	if !errors.As(err, &status) {
+		return false
+	}
+	switch status.HTTPStatus() {
+	case http.StatusBadRequest, http.StatusNotFound, http.StatusUnprocessableEntity:
+		return true
+	}
+	return false
 }
 
 func (p *AccountPool) currentTimeLocked() time.Time {

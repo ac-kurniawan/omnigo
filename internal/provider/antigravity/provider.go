@@ -181,7 +181,7 @@ func (p *Provider) sendStreamRequest(ctx context.Context, c provider.Credentials
 	up.Header.Set("User-Agent", antigravityUserAgent)
 	up.Header.Set("X-Goog-Api-Client", antigravityGoogAPI)
 	up.Header.Set("Authorization", "Bearer "+c.AccessToken)
-	resp, err := p.stream.Do(up)
+	resp, err := provider.ClientFor(p.stream, p.client, req.Stream).Do(up)
 	if err != nil {
 		return nil, err
 	}

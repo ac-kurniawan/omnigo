@@ -72,6 +72,52 @@ func TestAccountPoolPreservesOrderAndCooldown(t *testing.T) {
 	}
 }
 
+// A client-side 4xx must not drain the combo target, and that classification
+// has to survive the account cooldown: the error the pool hands back while the
+// account is cooling reports the original cause, so routing must still see it
+// as non-drainable.
+func TestAccountPoolKeepsClientErrorClassificationAcrossCooldown(t *testing.T) {
+	pool := AccountPool{}
+	store := &accountTestStore{accounts: []Credentials{{AccountID: "one"}}}
+	accounts, _ := pool.AvailableWithError(store)
+	pool.MarkFailed(accounts[0], NewHTTPStatusError(http.StatusBadRequest, "antigravity: status 400"))
+
+	healthy, err := pool.AvailableWithError(store)
+	if len(healthy) != 0 || err == nil {
+		t.Fatalf("healthy = %+v, err = %v; want the account cooled", healthy, err)
+	}
+	var drainable interface{ Drainable() bool }
+	if !errors.As(err, &drainable) {
+		t.Fatalf("cooldown error %T does not classify drainability", err)
+	}
+	if drainable.Drainable() {
+		t.Fatalf("4xx cooldown error is drainable: a bad prompt would remove the target for %v", err)
+	}
+	if err.Error() != "antigravity: status 400" {
+		t.Fatalf("reason = %q, want the original cause", err.Error())
+	}
+}
+
+// The mirror case: an upstream fault must stay drainable so routing fails over.
+func TestAccountPoolKeepsUpstreamFaultDrainable(t *testing.T) {
+	pool := AccountPool{}
+	store := &accountTestStore{accounts: []Credentials{{AccountID: "one"}}}
+	accounts, _ := pool.AvailableWithError(store)
+	pool.MarkFailed(accounts[0], NewHTTPStatusError(http.StatusBadGateway, "antigravity: status 502"))
+
+	_, err := pool.AvailableWithError(store)
+	if err == nil {
+		t.Fatal("account was not cooled")
+	}
+	var drainable interface{ Drainable() bool }
+	if !errors.As(err, &drainable) {
+		t.Fatalf("cooldown error %T does not classify drainability", err)
+	}
+	if !drainable.Drainable() {
+		t.Fatal("upstream fault cooldown error is not drainable: routing would keep a broken target")
+	}
+}
+
 func TestAttemptWriterStreamingFlushesImmediatelyOn200(t *testing.T) {
 	rec := httptest.NewRecorder()
 	w := NewStreamingAttemptWriter(rec, true)

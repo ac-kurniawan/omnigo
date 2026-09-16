@@ -219,7 +219,7 @@ func (p *Provider) chatWithAccount(ctx context.Context, req provider.ChatRequest
 	guard := provider.NewIdleGuard(p.idle, func() { cancel(provider.ErrUpstreamStall) })
 	defer guard.Stop()
 	sessionID := randomID()
-	resp, err := p.send(ctx, creds, body, sessionID)
+	resp, err := p.send(ctx, creds, body, sessionID, req.Stream)
 	if err != nil {
 		return guard.Err(err)
 	}
@@ -229,7 +229,7 @@ func (p *Provider) chatWithAccount(ctx context.Context, req provider.ChatRequest
 		if err != nil {
 			return err
 		}
-		resp, err = p.send(ctx, creds, body, sessionID)
+		resp, err = p.send(ctx, creds, body, sessionID, req.Stream)
 		if err != nil {
 			return guard.Err(err)
 		}
@@ -257,7 +257,7 @@ func (p *Provider) tokenManager(account provider.Credentials) *TokenManager {
 	return manager.(*TokenManager)
 }
 
-func (p *Provider) send(ctx context.Context, creds provider.Credentials, body []byte, sessionID string) (*http.Response, error) {
+func (p *Provider) send(ctx context.Context, creds provider.Credentials, body []byte, sessionID string, streaming bool) (*http.Response, error) {
 	if creds.AccessToken == "" {
 		return nil, fmt.Errorf("codex: not authenticated")
 	}
@@ -278,7 +278,7 @@ func (p *Provider) send(ctx context.Context, creds provider.Credentials, body []
 	req.Header.Set("Accept", "text/event-stream")
 	req.Header.Set("session-id", sessionID)
 	req.Header.Set("x-client-request-id", sessionID)
-	resp, err := p.stream.Do(req)
+	resp, err := provider.ClientFor(p.stream, p.client, streaming).Do(req)
 	if err != nil {
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 			return nil, err

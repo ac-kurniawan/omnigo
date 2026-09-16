@@ -15,15 +15,105 @@ import (
 	"github.com/ac-kurniawan/omnigo/internal/vault"
 )
 
-// The gateway must deliver the first SSE chunk to the client while the upstream
-// stream is still open. If the combo's buffered writer stops flushing mid-stream
-// (or the handler buffers the whole upstream response), the client waits for
-// upstream EOF and this test fails by timeout.
-func TestComboStreamsFirstChunkBeforeUpstreamEOF(t *testing.T) {
-	// Register the real provider: sibling tests replace the global "openai"
-	// factory with fakes, so this test must not depend on registration order.
+// A stream must reach the client chunk by chunk, not at upstream EOF. The
+// gateway commits the response on the first flushed chunk and then forwards
+// every later write, so the second chunk has to arrive while the upstream
+// stream is still open. A buffered writer that stops flushing after the first
+// commit, or a handler that buffers the whole response, fails here by timeout.
+func TestStreamsEveryChunkBeforeUpstreamEOF(t *testing.T) {
+	for _, strategy := range []string{"priority", "reliable", "fill-first"} {
+		t.Run(strategy, func(t *testing.T) {
+			// Register the real provider: sibling tests replace the global
+			// "openai" factory with fakes, so this test must not depend on
+			// registration order.
+			provider.Register("openai", provider.NewOpenAI)
+			secondTokenSent := make(chan struct{})
+			release := make(chan struct{})
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "text/event-stream")
+				w.WriteHeader(http.StatusOK)
+				flusher, _ := w.(http.Flusher)
+				_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"one\"}}]}\n\n"))
+				flusher.Flush()
+				_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"two\"}}]}\n\n"))
+				flusher.Flush()
+				close(secondTokenSent)
+				<-release // hold the stream open: no further bytes yet
+				_, _ = w.Write([]byte("data: [DONE]\n\n"))
+				flusher.Flush()
+			}))
+			defer upstream.Close()
+			defer close(release)
+
+			cfg := &config.Config{
+				Providers: []config.Provider{{Name: "openai", Type: "openai", BaseURL: upstream.URL, Models: []string{"gpt-4o"}}},
+				Combos: []config.Combo{{
+					Name: "safe", Strategy: strategy,
+					Targets: []config.ComboTarget{{Provider: "openai", Model: "gpt-4o"}},
+				}},
+			}
+			raw, hash, prefix, _ := auth.GenerateKey()
+			v := &vault.Vault{ClientKeys: []vault.ClientKey{{ID: "k1", KeyHash: hash, Prefix: prefix, Active: true}}}
+			router := NewRouter(func() *config.Config { return cfg }, vault.NewMemoryStore(v), nil, nil, "test-version")
+			// Real server so writes are actually flushed over a connection.
+			gw := httptest.NewServer(router)
+			defer gw.Close()
+
+			req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, gw.URL+"/v1/chat/completions",
+				strings.NewReader(`{"model":"safe","stream":true,"messages":[{"role":"user","content":"hi"}]}`))
+			if err != nil {
+				t.Fatal(err)
+			}
+			req.Header.Set("Authorization", "Bearer "+raw)
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer resp.Body.Close()
+
+			select {
+			case <-secondTokenSent:
+			case <-time.After(5 * time.Second):
+				t.Fatal("upstream never received the request")
+			}
+
+			reader := bufio.NewReader(resp.Body)
+			readUntil := func(want string, timeout time.Duration) {
+				t.Helper()
+				lines := make(chan string, 1)
+				go func() {
+					for {
+						line, err := reader.ReadString('\n')
+						if line != "" && strings.Contains(line, want) {
+							lines <- line
+							return
+						}
+						if err != nil {
+							lines <- ""
+							return
+						}
+					}
+				}()
+				select {
+				case line := <-lines:
+					if line == "" {
+						t.Fatalf("stream ended before %q arrived", want)
+					}
+				case <-time.After(timeout):
+					t.Fatalf("%q not delivered while the upstream stream was still open: response is buffered", want)
+				}
+			}
+			readUntil("one", 3*time.Second)
+			readUntil("two", 3*time.Second)
+		})
+	}
+}
+
+// A failure after the response has been committed must not be reported as a
+// JSON error envelope: appending one to a delivered SSE body produces a frame
+// clients parse as a malformed chunk.
+func TestDirectPostCommitFailureDoesNotAppendJSONError(t *testing.T) {
 	provider.Register("openai", provider.NewOpenAI)
-	firstTokenSent := make(chan struct{})
 	release := make(chan struct{})
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
@@ -31,63 +121,47 @@ func TestComboStreamsFirstChunkBeforeUpstreamEOF(t *testing.T) {
 		flusher, _ := w.(http.Flusher)
 		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"one\"}}]}\n\n"))
 		flusher.Flush()
-		close(firstTokenSent)
-		<-release // hold the stream open: no further bytes yet
-		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"two\"}}]}\n\n"))
-		flusher.Flush()
-		_, _ = w.Write([]byte("data: [DONE]\n\n"))
-		flusher.Flush()
+		<-release
 	}))
 	defer upstream.Close()
 	defer close(release)
 
 	cfg := &config.Config{
-		Providers: []config.Provider{{Name: "openai", Type: "openai", BaseURL: upstream.URL, Models: []string{"gpt-4o"}}},
-		Combos: []config.Combo{{
-			Name: "safe", Strategy: "reliable",
-			Targets: []config.ComboTarget{{Provider: "openai", Model: "gpt-4o"}},
-		}},
+		Providers: []config.Provider{{Name: "openai", Type: "openai", BaseURL: upstream.URL, Models: []string{"gpt-4o"}, Timeout: "200ms"}},
 	}
 	raw, hash, prefix, _ := auth.GenerateKey()
 	v := &vault.Vault{ClientKeys: []vault.ClientKey{{ID: "k1", KeyHash: hash, Prefix: prefix, Active: true}}}
 	router := NewRouter(func() *config.Config { return cfg }, vault.NewMemoryStore(v), nil, nil, "test-version")
-
-	// Real server so writes are actually flushed over a connection.
 	gw := httptest.NewServer(router)
 	defer gw.Close()
 
 	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, gw.URL+"/v1/chat/completions",
-		strings.NewReader(`{"model":"safe","stream":true,"messages":[{"role":"user","content":"hi"}]}`))
+		strings.NewReader(`{"model":"openai/gpt-4o","stream":true,"messages":[{"role":"user","content":"hi"}]}`))
 	if err != nil {
 		t.Fatal(err)
 	}
 	req.Header.Set("Authorization", "Bearer "+raw)
-
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer resp.Body.Close()
 
-	select {
-	case <-firstTokenSent:
-	case <-time.After(5 * time.Second):
-		t.Fatal("upstream never received the request")
-	}
-
-	lineCh := make(chan string, 1)
-	go func() {
-		line, _ := bufio.NewReader(resp.Body).ReadString('\n')
-		lineCh <- line
-	}()
-
-	select {
-	case line := <-lineCh:
-		t.Logf("first line = %q", strings.TrimSpace(line))
-		if !strings.Contains(line, "one") {
-			t.Fatalf("first delivered chunk = %q, want the first token", line)
+	buf := make([]byte, 0, 4096)
+	tmp := make([]byte, 512)
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		n, err := resp.Body.Read(tmp)
+		buf = append(buf, tmp[:n]...)
+		if strings.Contains(string(buf), `"error"`) || err != nil {
+			break
 		}
-	case <-time.After(3 * time.Second):
-		t.Fatal("no bytes delivered while upstream stream was still open (response was buffered)")
+	}
+	body := string(buf)
+	if !strings.Contains(body, "one") {
+		t.Fatalf("first chunk missing: %q", body)
+	}
+	if strings.Contains(body, `"error"`) {
+		t.Fatalf("JSON error envelope appended to committed SSE body: %q", body)
 	}
 }
