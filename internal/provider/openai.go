@@ -110,11 +110,7 @@ func (p *openAIProvider) ChatCompletion(ctx context.Context, req ChatRequest, w 
 	if resp.StatusCode != http.StatusOK {
 		return NewHTTPStatusError(resp.StatusCode, fmt.Sprintf("upstream status %d", resp.StatusCode))
 	}
-	for k, vv := range resp.Header {
-		for _, v := range vv {
-			w.Header().Add(k, v)
-		}
-	}
+	copyResponseHeaders(w.Header(), resp.Header)
 	w.WriteHeader(resp.StatusCode)
 	flusher, _ := w.(http.Flusher)
 	bufp := streamBufferPool.Get().(*[]byte)
@@ -139,6 +135,29 @@ func (p *openAIProvider) ChatCompletion(ctx context.Context, req ChatRequest, w 
 		}
 	}
 	return nil
+}
+
+// allowedResponseHeaders lists the upstream headers worth forwarding to a
+// gateway client. Everything else stays upstream: Set-Cookie and
+// WWW-Authenticate describe a session the client does not own, and internal
+// routing/debug headers disclose infrastructure detail. Content-Type and
+// Cache-Control keep SSE clients behaving correctly.
+var allowedResponseHeaders = map[string]bool{
+	"Content-Type":     true,
+	"Cache-Control":    true,
+	"Content-Encoding": true,
+	"Retry-After":      true,
+}
+
+func copyResponseHeaders(destination, source http.Header) {
+	for key, values := range source {
+		if !allowedResponseHeaders[http.CanonicalHeaderKey(key)] {
+			continue
+		}
+		for _, v := range values {
+			destination.Add(key, v)
+		}
+	}
 }
 
 func (p *openAIProvider) authorize(req *http.Request) {
