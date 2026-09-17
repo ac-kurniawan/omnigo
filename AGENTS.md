@@ -6,9 +6,8 @@
 
 OmniGo is an AI gateway built in Go. It proxies an OpenAI-compatible API across
 multiple providers, routes through user-defined combos, and manages provider
-credentials and gateway client keys. It is inspired by
-[OmniRoute](./OmniRoute/README.md) but deliberately smaller: lightweight, fast,
-configurable.
+credentials and gateway client keys. Performance and simplicity are the point:
+lightweight, fast, configurable.
 
 ## Quick Start
 
