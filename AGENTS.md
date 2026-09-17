@@ -23,9 +23,11 @@ gofmt -w .                    # format (or goimports)
 
 - **Go version**: `1.26+` (`go.mod` pins the floor).
 - **Module**: `github.com/ac-kurniawan/omnigo`.
-- **Dependencies**: `gopkg.in/yaml.v3` is the **only** third-party dependency.
-  Everything else is stdlib (`net/http`, `crypto/aes`, `html/template`, `hash`).
-  Do not add a dependency for something a few lines of stdlib covers.
+- **Dependencies**: `gopkg.in/yaml.v3` and the OpenTelemetry Go SDK
+  (`go.opentelemetry.io/otel` + `exporters/prometheus`) are the third-party
+  dependencies. Everything else is stdlib (`net/http`, `crypto/aes`,
+  `html/template`, `hash`). Do not add a dependency for something a few lines
+  of stdlib covers.
 
 ## Project at a Glance
 
@@ -39,6 +41,7 @@ gofmt -w .                    # format (or goimports)
 | Combos     | `internal/combo`  | Routing engine: `priority`, `fill-first`                   |
 | API        | `internal/api`    | `/v1/chat/completions`, `/v1/models`, internal endpoints   |
 | Dashboard  | `internal/dashboard` | HTMX UI: providers, combos, keys, OAuth login              |
+| Observability | `internal/observability` | OpenTelemetry meter, Prometheus exposition at `/actuator/metrics` |
 
 ## Request Pipeline
 
@@ -114,7 +117,7 @@ go test ./...                                    # full suite
 
 1. Never commit secrets, tokens, or API keys.
 2. Never commit `auth.yaml` or `.secret.key`.
-3. Never add a third-party dependency when stdlib (or `yaml.v3`) suffices.
+3. Never add an unsanctioned third-party dependency when stdlib suffices (only `yaml.v3` and `go.opentelemetry.io/otel` are approved).
 4. Never write production code before a failing test exists.
 5. Never log or return raw credentials.
 6. Keep database-free: all state is in-memory + YAML files. No SQL, no ORM.

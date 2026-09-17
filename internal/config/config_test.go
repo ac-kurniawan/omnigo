@@ -224,3 +224,50 @@ combos: []
 		t.Fatal("expected dashboard auth enabled when explicitly true")
 	}
 }
+
+func TestObservabilityMetricsDisabledByDefault(t *testing.T) {
+	cfg := &Config{}
+	if cfg.Observability.MetricsEnabled() {
+		t.Fatal("expected metrics disabled by default (nil)")
+	}
+}
+
+func TestObservabilityMetricsExplicitlyDisabled(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "config.yaml")
+	yamlContent := `observability:
+  metrics: false
+providers: []
+combos: []
+`
+	if err := os.WriteFile(p, []byte(yamlContent), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(p)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Observability.MetricsEnabled() {
+		t.Fatal("expected metrics disabled when explicitly false")
+	}
+}
+
+func TestObservabilityMetricsExplicitlyEnabled(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "config.yaml")
+	yamlContent := `observability:
+  metrics: true
+providers: []
+combos: []
+`
+	if err := os.WriteFile(p, []byte(yamlContent), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(p)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !cfg.Observability.MetricsEnabled() {
+		t.Fatal("expected metrics enabled when explicitly true")
+	}
+}

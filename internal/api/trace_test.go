@@ -155,7 +155,7 @@ func TestHandleChatEmitsTraceAndTelemetryHeaders(t *testing.T) {
 	reg := newProviderRegistry(nil)
 	reg.ensure(cfg)
 
-	h := handleChat(func() *config.Config { return cfg }, reg, nil)
+	h := handleChat(func() *config.Config { return cfg }, reg, nil, nil)
 
 	reqBody := `{"model":"telemetry-test/test-model","messages":[{"role":"user","content":"hi"}]}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(reqBody))
