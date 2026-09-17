@@ -69,7 +69,22 @@ func TestChatRequestBodyNormalizesDeveloperRole(t *testing.T) {
 	if len(got.Messages) != 2 || got.Messages[0].Role != "system" {
 		t.Fatalf("expected developer role normalized to system, got %+v", got.Messages)
 	}
+
 	if got.Messages[1].Role != "user" {
 		t.Fatalf("expected user role preserved, got %+v", got.Messages[1])
+	}
+}
+func TestHTTPStatusErrorDrainability(t *testing.T) {
+	err400 := NewHTTPStatusError(400, "bad request")
+	if err400.Drainable() {
+		t.Fatal("400 Bad Request should not be drainable")
+	}
+	err429 := NewHTTPStatusError(429, "rate limited")
+	if !err429.Drainable() {
+		t.Fatal("429 Too Many Requests should be drainable")
+	}
+	err500 := NewHTTPStatusError(500, "internal error")
+	if !err500.Drainable() {
+		t.Fatal("500 Internal Error should be drainable")
 	}
 }

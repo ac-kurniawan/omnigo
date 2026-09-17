@@ -34,6 +34,8 @@ type Provider struct {
 	responsesURL string
 	modelsURL    string
 	client       *http.Client
+	stream       *http.Client
+	idle         time.Duration
 	store        provider.CredStore
 	pool         provider.AccountPool
 	tokens       sync.Map
@@ -82,11 +84,14 @@ func New(cfg provider.Config, store provider.CredStore) provider.Provider {
 	if timeout <= 0 {
 		timeout = 30 * time.Second
 	}
+	client := &http.Client{Timeout: timeout, Transport: cfg.Transport}
 	return &Provider{
 		name:         cfg.Name,
 		responsesURL: responsesURL,
 		modelsURL:    DefaultModelsURL,
-		client:       &http.Client{Timeout: timeout, Transport: cfg.Transport},
+		client:       client,
+		stream:       provider.StreamClient(client),
+		idle:         timeout,
 		store:        store,
 	}
 }
@@ -185,10 +190,13 @@ func (p *Provider) ChatCompletion(ctx context.Context, req provider.ChatRequest,
 	}
 	var lastErr error
 	for _, account := range accounts {
-		attempt := provider.NewAttemptWriter()
+		attempt := provider.NewStreamingAttemptWriter(w, req.Stream)
 		lastErr = p.chatWithAccount(ctx, req, body, account, attempt)
 		if lastErr == nil {
 			return attempt.Commit(w)
+		}
+		if attempt.Committed() {
+			return lastErr
 		}
 		if errors.Is(lastErr, context.Canceled) || errors.Is(lastErr, context.DeadlineExceeded) {
 			return lastErr
@@ -199,15 +207,21 @@ func (p *Provider) ChatCompletion(ctx context.Context, req provider.ChatRequest,
 }
 
 func (p *Provider) chatWithAccount(ctx context.Context, req provider.ChatRequest, body []byte, account provider.Credentials, w http.ResponseWriter) error {
+	ctx, cancel := context.WithCancelCause(ctx)
+	defer cancel(nil)
 	tokens := p.tokenManager(account)
 	creds, err := tokens.EnsureFreshToken(ctx)
 	if err != nil {
 		return err
 	}
+	// Armed after token refresh so the idle window covers the generation
+	// exchange only, not credential work.
+	guard := provider.NewIdleGuard(p.idle, func() { cancel(provider.ErrUpstreamStall) })
+	defer guard.Stop()
 	sessionID := randomID()
-	resp, err := p.send(ctx, creds, body, sessionID)
+	resp, err := p.send(ctx, creds, body, sessionID, req.Stream)
 	if err != nil {
-		return err
+		return guard.Err(err)
 	}
 	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
 		resp.Body.Close()
@@ -215,9 +229,9 @@ func (p *Provider) chatWithAccount(ctx context.Context, req provider.ChatRequest
 		if err != nil {
 			return err
 		}
-		resp, err = p.send(ctx, creds, body, sessionID)
+		resp, err = p.send(ctx, creds, body, sessionID, req.Stream)
 		if err != nil {
-			return err
+			return guard.Err(err)
 		}
 	}
 	defer resp.Body.Close()
@@ -225,12 +239,13 @@ func (p *Provider) chatWithAccount(ctx context.Context, req provider.ChatRequest
 		return newQuotaError(resp.Header)
 	}
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
-		return fmt.Errorf("codex: upstream status %d", resp.StatusCode)
+		return provider.NewHTTPStatusError(resp.StatusCode, fmt.Sprintf("codex: upstream status %d", resp.StatusCode))
 	}
+	reader := guard.Wrap(resp.Body)
 	if req.Stream {
-		return p.streamResponse(ctx, resp.Body, req.Model, w)
+		return p.streamResponse(ctx, reader, req.Model, w)
 	}
-	return p.completeResponse(ctx, resp.Body, req.Model, w)
+	return p.completeResponse(ctx, reader, req.Model, w)
 }
 
 func (p *Provider) tokenManager(account provider.Credentials) *TokenManager {
@@ -242,7 +257,7 @@ func (p *Provider) tokenManager(account provider.Credentials) *TokenManager {
 	return manager.(*TokenManager)
 }
 
-func (p *Provider) send(ctx context.Context, creds provider.Credentials, body []byte, sessionID string) (*http.Response, error) {
+func (p *Provider) send(ctx context.Context, creds provider.Credentials, body []byte, sessionID string, streaming bool) (*http.Response, error) {
 	if creds.AccessToken == "" {
 		return nil, fmt.Errorf("codex: not authenticated")
 	}
@@ -263,7 +278,7 @@ func (p *Provider) send(ctx context.Context, creds provider.Credentials, body []
 	req.Header.Set("Accept", "text/event-stream")
 	req.Header.Set("session-id", sessionID)
 	req.Header.Set("x-client-request-id", sessionID)
-	resp, err := p.client.Do(req)
+	resp, err := provider.ClientFor(p.stream, p.client, streaming).Do(req)
 	if err != nil {
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 			return nil, err

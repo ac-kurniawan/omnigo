@@ -203,8 +203,12 @@ func (f *fakeProvider) Name() string { return f.name }
 
 func (f *fakeProvider) ChatCompletion(ctx context.Context, r provider.ChatRequest, w http.ResponseWriter) error {
 	if f.chat != nil {
-		return f.chat(r)
+		if err := f.chat(r); err != nil {
+			return err
+		}
 	}
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"ok"}}]}`))
 	return nil
 }
 

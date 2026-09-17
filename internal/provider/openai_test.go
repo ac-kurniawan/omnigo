@@ -3,6 +3,7 @@ package provider
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -95,6 +96,83 @@ func TestOpenAIChatUpstreamErrorReturnsError(t *testing.T) {
 	}
 }
 
+func TestOpenAIChatStreamExceedsClientTimeout(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		flusher, _ := w.(http.Flusher)
+		_, _ = w.Write([]byte("data: chunk1\n\n"))
+		if flusher != nil {
+			flusher.Flush()
+		}
+		// The total stream outlives Timeout; only silence is bounded, so a gap
+		// shorter than the idle window must not abort the generation.
+		for i := 0; i < 3; i++ {
+			time.Sleep(20 * time.Millisecond)
+			_, _ = w.Write([]byte("data: chunk\n\n"))
+			if flusher != nil {
+				flusher.Flush()
+			}
+		}
+		time.Sleep(20 * time.Millisecond)
+		_, _ = w.Write([]byte("data: chunk2\n\n"))
+		if flusher != nil {
+			flusher.Flush()
+		}
+	}))
+	defer srv.Close()
+
+	p := NewOpenAI(Config{
+		Name:    "openai",
+		BaseURL: srv.URL,
+		Timeout: 50 * time.Millisecond,
+	}, staticStore{Credentials{APIKey: "sk-test"}})
+
+	rec := httptest.NewRecorder()
+	err := p.ChatCompletion(context.Background(), ChatRequest{Model: "gpt-4o", Stream: true}, rec)
+	if err != nil {
+		t.Fatalf("ChatCompletion failed unexpectedly: %v", err)
+	}
+	if !strings.Contains(rec.Body.String(), "chunk2") {
+		t.Fatalf("expected chunk2 in stream, got %q", rec.Body.String())
+	}
+}
+
+func TestOpenAIChatStreamStallAborts(t *testing.T) {
+	release := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		flusher, _ := w.(http.Flusher)
+		_, _ = w.Write([]byte("data: chunk1\n\n"))
+		if flusher != nil {
+			flusher.Flush()
+		}
+		<-release
+	}))
+	defer srv.Close()
+	defer close(release)
+
+	p := NewOpenAI(Config{
+		Name:    "openai",
+		BaseURL: srv.URL,
+		Timeout: 50 * time.Millisecond,
+	}, staticStore{Credentials{APIKey: "sk-test"}})
+
+	rec := httptest.NewRecorder()
+	done := make(chan error, 1)
+	go func() {
+		done <- p.ChatCompletion(context.Background(), ChatRequest{Model: "gpt-4o", Stream: true}, rec)
+	}()
+
+	select {
+	case err := <-done:
+		if !errors.Is(err, ErrUpstreamStall) {
+			t.Fatalf("err = %v, want ErrUpstreamStall", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("silent upstream did not abort the stream")
+	}
+}
+
 func TestOpenAITimeoutConfigured(t *testing.T) {
 	store := staticStore{Credentials{APIKey: "sk-test"}}
 	p1 := NewOpenAI(Config{Name: "openai", BaseURL: "https://example.com", Timeout: 15 * time.Second}, store)
@@ -108,6 +186,77 @@ func TestOpenAITimeoutConfigured(t *testing.T) {
 	op2, ok := p2.(*openAIProvider)
 	if !ok || op2.client.Timeout != 30*time.Second {
 		t.Fatalf("client.Timeout = %v, want default 30s", op2.client.Timeout)
+	}
+}
+
+// A non-streaming request must keep its configured wall-clock deadline: a
+// trickling upstream cannot be bounded by inter-byte silence alone, or it
+// holds the request (and a concurrency slot) open indefinitely. A stream is
+// the opposite: its total duration is unbounded by design.
+func TestOpenAINonStreamingUsesDeadlineClient(t *testing.T) {
+	release := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		flusher, _ := w.(http.Flusher)
+		// Dribble bytes forever, never completing the JSON response.
+		for i := 0; i < 50; i++ {
+			_, _ = w.Write([]byte(" "))
+			if flusher != nil {
+				flusher.Flush()
+			}
+			select {
+			case <-release:
+				return
+			case <-time.After(20 * time.Millisecond):
+			}
+		}
+	}))
+	defer srv.Close()
+	defer close(release)
+
+	p := NewOpenAI(Config{
+		Name:    "openai",
+		BaseURL: srv.URL,
+		Timeout: 100 * time.Millisecond,
+	}, staticStore{Credentials{APIKey: "sk-test"}})
+
+	start := time.Now()
+	rec := httptest.NewRecorder()
+	err := p.ChatCompletion(context.Background(), ChatRequest{Model: "gpt-4o", Stream: false}, rec)
+	if err == nil {
+		t.Fatal("non-streaming request against a dribbling upstream succeeded; its deadline was dropped")
+	}
+	if elapsed := time.Since(start); elapsed > 3*time.Second {
+		t.Fatalf("non-streaming request ran %s before failing, want the 100ms configured deadline", elapsed)
+	}
+}
+
+// The gateway is a proxy, not a transparent tunnel: forwarding upstream
+// headers verbatim would leak session cookies, upstream auth challenges, and
+// internal infrastructure metadata to API clients.
+func TestOpenAIStripsSensitiveUpstreamHeaders(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("Set-Cookie", "session=upstream-internal; Path=/")
+		w.Header().Set("WWW-Authenticate", "Basic realm=internal")
+		w.Header().Set("X-Internal-Debug", "upstream-node-7")
+		w.Header().Set("X-Request-Id", "req-123")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer srv.Close()
+
+	p := NewOpenAI(Config{Name: "openai", BaseURL: srv.URL, Timeout: 5 * time.Second}, staticStore{Credentials{APIKey: "sk-test"}})
+	rec := httptest.NewRecorder()
+	if err := p.ChatCompletion(context.Background(), ChatRequest{Model: "gpt-4o", Stream: true}, rec); err != nil {
+		t.Fatalf("chat completion: %v", err)
+	}
+	for _, h := range []string{"Set-Cookie", "WWW-Authenticate", "X-Internal-Debug"} {
+		if v := rec.Header().Get(h); v != "" {
+			t.Errorf("upstream header %s forwarded to client: %q", h, v)
+		}
+	}
+	if ct := rec.Header().Get("Content-Type"); ct == "" {
+		t.Error("Content-Type was stripped; clients need it to parse the stream")
 	}
 }
 
