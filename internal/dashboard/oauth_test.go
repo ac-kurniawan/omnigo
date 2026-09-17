@@ -157,7 +157,7 @@ func TestCodexOAuthCallbacksAppendDistinctAccountsAndUpdateExisting(t *testing.T
 	}{
 		{id: "workspace-1", email: "one@example.com", access: "access-1", refresh: "refresh-1"},
 		{id: "workspace-2", email: "two@example.com", access: "access-2", refresh: "refresh-2"},
-		{id: "workspace-1", email: "one-new@example.com", access: "access-1-new", refresh: "refresh-1-new"},
+		{id: "workspace-1", email: "one@example.com", access: "access-1-new", refresh: "refresh-1-new"},
 	}
 	call := 0
 	s.codexExchange = func(r *http.Request, code, verifier, redirectURI string) (*codex.Token, error) {
@@ -190,7 +190,7 @@ func TestCodexOAuthCallbacksAppendDistinctAccountsAndUpdateExisting(t *testing.T
 	if len(got) != 2 {
 		t.Fatalf("accounts = %+v", got)
 	}
-	if got[0].AccountID != "workspace-1" || got[0].AccessToken != "access-1-new" || got[0].Email != "one-new@example.com" {
+	if got[0].AccountID != "workspace-1" || got[0].AccessToken != "access-1-new" || got[0].Email != "one@example.com" {
 		t.Fatalf("first account = %+v", got[0])
 	}
 	if got[1].AccountID != "workspace-2" || got[1].AccessToken != "access-2" {
@@ -438,5 +438,120 @@ func TestOAuthPasteCallbackRawCode(t *testing.T) {
 	}
 	if gotRedirectURI != antigravity.DefaultRedirectURI {
 		t.Fatalf("gotRedirectURI = %q, want %q", gotRedirectURI, antigravity.DefaultRedirectURI)
+	}
+}
+func TestCodexOAuthPasteCallbackCrossBrowser(t *testing.T) {
+	store := vault.NewMemoryStore(&vault.Vault{ProviderSecrets: map[string]vault.ProviderSecret{}})
+	cfg := &config.Config{Providers: []config.Provider{{Name: "codex-main", Type: "codex"}}}
+	s := newServer(func() *config.Config { return cfg }, store, nil)
+
+	// Step 1: Simulate Browser B requesting the login redirect
+	loginReq := httptest.NewRequest("GET", "/oauth/login/codex-main", nil)
+	loginRR := httptest.NewRecorder()
+	s.routes().ServeHTTP(loginRR, loginReq)
+	if loginRR.Code != http.StatusFound {
+		t.Fatalf("login status = %d", loginRR.Code)
+	}
+	authLocation := loginRR.Header().Get("Location")
+	authURL, err := url.Parse(authLocation)
+	if err != nil {
+		t.Fatalf("parse auth location: %v", err)
+	}
+	state := authURL.Query().Get("state")
+	if state == "" {
+		t.Fatal("auth redirect missing state")
+	}
+
+	// Step 2: Set up token exchange verification
+	idToken := dashboardTestJWT(t, map[string]any{
+		"email":                       "browser-b@example.com",
+		"https://api.openai.com/auth": map[string]any{"chatgpt_account_id": "workspace-shared"},
+	})
+	var capturedVerifier string
+	s.codexExchange = func(r *http.Request, code, verifier, redirectURI string) (*codex.Token, error) {
+		capturedVerifier = verifier
+		return &codex.Token{
+			AccessToken:  "access-b",
+			RefreshToken: "refresh-b",
+			IDToken:      idToken,
+			ExpiresAt:    time.Now().Add(time.Hour),
+		}, nil
+	}
+
+	// Step 3: Simulate Browser A pasting the callback without Browser B's cookies
+	callbackURL := codex.DefaultRedirectURI + "?code=code-from-browser-b&state=" + state
+	form := url.Values{"callback": {callbackURL}}
+	pasteReq := httptest.NewRequest("POST", "/oauth/codex-main/paste-callback", strings.NewReader(form.Encode()))
+	pasteReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	pasteReq.Header.Set("HX-Request", "true")
+	// Notice: pasteReq has NO cookies! Browser A was not the browser that initiated the flow.
+
+	pasteRR := httptest.NewRecorder()
+	s.routes().ServeHTTP(pasteRR, pasteReq)
+	if pasteRR.Code != http.StatusOK {
+		t.Fatalf("cross-browser paste status = %d, body = %s", pasteRR.Code, pasteRR.Body.String())
+	}
+	if capturedVerifier == "" {
+		t.Fatal("expected non-empty PKCE verifier to be used in exchange")
+	}
+
+	accounts := store.Get().Accounts("codex-main")
+	if len(accounts) != 1 {
+		t.Fatalf("expected 1 account stored, got %d", len(accounts))
+	}
+	if accounts[0].Email != "browser-b@example.com" {
+		t.Fatalf("expected email browser-b@example.com, got %q", accounts[0].Email)
+	}
+}
+
+func TestCodexOAuthCallbacksSameWorkspaceDistinctUsers(t *testing.T) {
+	store := vault.NewMemoryStore(&vault.Vault{ProviderSecrets: map[string]vault.ProviderSecret{}})
+	cfg := &config.Config{Providers: []config.Provider{{Name: "codex-main", Type: "codex"}}}
+	s := newServer(func() *config.Config { return cfg }, store, nil)
+
+	accountsData := []struct {
+		email   string
+		access  string
+		refresh string
+	}{
+		{email: "alice@example.com", access: "access-alice", refresh: "refresh-alice"},
+		{email: "bob@example.com", access: "access-bob", refresh: "refresh-bob"},
+	}
+	call := 0
+	s.codexExchange = func(r *http.Request, code, verifier, redirectURI string) (*codex.Token, error) {
+		data := accountsData[call]
+		call++
+		return &codex.Token{
+			AccessToken:  data.access,
+			RefreshToken: data.refresh,
+			IDToken: dashboardTestJWT(t, map[string]any{
+				"email":                       data.email,
+				"https://api.openai.com/auth": map[string]any{"chatgpt_account_id": "shared-workspace"},
+			}),
+			ExpiresAt: time.Now().Add(time.Hour),
+		}, nil
+	}
+
+	for _, acc := range accountsData {
+		form := url.Values{"callback": {codex.DefaultRedirectURI + "?code=code-" + acc.email + "&state=st"}}
+		req := httptest.NewRequest("POST", "/oauth/codex-main/paste-callback", strings.NewReader(form.Encode()))
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		req.Header.Set("HX-Request", "true")
+		req.AddCookie(&http.Cookie{Name: stateCookieName, Value: "st"})
+		req.AddCookie(&http.Cookie{Name: providerCookieName, Value: "codex-main"})
+		req.AddCookie(&http.Cookie{Name: verifierCookieName, Value: "test-verifier"})
+		rr := httptest.NewRecorder()
+		s.routes().ServeHTTP(rr, req)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("status = %d, body = %s", rr.Code, rr.Body.String())
+		}
+	}
+
+	got := store.Get().ProviderAccounts["codex-main"]
+	if len(got) != 2 {
+		t.Fatalf("expected 2 accounts for same workspace with different users, got %d: %+v", len(got), got)
+	}
+	if got[0].Email != "alice@example.com" || got[1].Email != "bob@example.com" {
+		t.Fatalf("unexpected stored accounts: %+v", got)
 	}
 }

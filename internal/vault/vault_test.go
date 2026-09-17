@@ -150,3 +150,25 @@ func TestResolveKeyGeneratesFile(t *testing.T) {
 		t.Fatalf("key file not created: %v", err)
 	}
 }
+func TestVaultUpsertSameAccountIDDifferentEmail(t *testing.T) {
+	v := &Vault{ProviderAccounts: map[string][]ProviderSecret{}}
+	v.UpsertAccount("codex", ProviderSecret{AccountID: "ws-1", Email: "alice@example.com", AccessToken: "tok-alice"})
+	v.UpsertAccount("codex", ProviderSecret{AccountID: "ws-1", Email: "bob@example.com", AccessToken: "tok-bob"})
+
+	accounts := v.Accounts("codex")
+	if len(accounts) != 2 {
+		t.Fatalf("expected 2 accounts for distinct emails in same workspace, got %d", len(accounts))
+	}
+
+	v.UpsertAccount("codex", ProviderSecret{AccountID: "ws-1", Email: "alice@example.com", AccessToken: "tok-alice-v2"})
+	accounts = v.Accounts("codex")
+	if len(accounts) != 2 {
+		t.Fatalf("expected 2 accounts after update, got %d", len(accounts))
+	}
+	if accounts[0].AccessToken != "tok-alice-v2" {
+		t.Fatalf("expected alice updated to tok-alice-v2, got %q", accounts[0].AccessToken)
+	}
+	if accounts[1].AccessToken != "tok-bob" {
+		t.Fatalf("expected bob untouched with tok-bob, got %q", accounts[1].AccessToken)
+	}
+}

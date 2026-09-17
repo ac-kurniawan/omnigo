@@ -46,24 +46,35 @@ func (s *Server) oauthLogin(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "failed to start oauth flow", http.StatusInternalServerError)
 			return
 		}
+		s.recordOAuthPending(state, name, verifier)
 		http.SetCookie(w, &http.Cookie{Name: verifierCookieName, Value: verifier, Path: "/", HttpOnly: true, SameSite: http.SameSiteLaxMode})
 		http.Redirect(w, r, codex.BuildAuthorizeURL(codex.DefaultRedirectURI, state, challenge), http.StatusFound)
 		return
 	}
 
+	s.recordOAuthPending(state, name, "")
 	redirectURI := antigravity.DefaultRedirectURI
 	http.Redirect(w, r, antigravity.BuildAuthorizeURL(redirectURI, state), http.StatusFound)
 }
 
 func (s *Server) oauthCallback(w http.ResponseWriter, r *http.Request) {
-	stateCookie, _ := r.Cookie(stateCookieName)
-	providerCookie, _ := r.Cookie(providerCookieName)
 	state := r.URL.Query().Get("state")
-	if stateCookie == nil || providerCookie == nil || subtle.ConstantTimeCompare([]byte(state), []byte(stateCookie.Value)) != 1 {
-		http.Error(w, "invalid oauth state", http.StatusBadRequest)
-		return
+	var name, verifier string
+	if pendingProvider, pendingVerifier, ok := s.consumeOAuthPending(state); ok {
+		name = pendingProvider
+		verifier = pendingVerifier
+	} else {
+		stateCookie, _ := r.Cookie(stateCookieName)
+		providerCookie, _ := r.Cookie(providerCookieName)
+		if stateCookie == nil || providerCookie == nil || subtle.ConstantTimeCompare([]byte(state), []byte(stateCookie.Value)) != 1 {
+			http.Error(w, "invalid oauth state", http.StatusBadRequest)
+			return
+		}
+		name = providerCookie.Value
+		if verifierCookie, _ := r.Cookie(verifierCookieName); verifierCookie != nil {
+			verifier = verifierCookie.Value
+		}
 	}
-	name := providerCookie.Value
 	pc := s.findProvider(name)
 	if pc == nil {
 		http.Error(w, "unknown provider", http.StatusBadRequest)
@@ -77,12 +88,11 @@ func (s *Server) oauthCallback(w http.ResponseWriter, r *http.Request) {
 
 	redirectURI := scheme(r) + "://" + r.Host + "/oauth/callback"
 	if pc.Type == "codex" {
-		verifierCookie, _ := r.Cookie(verifierCookieName)
-		if verifierCookie == nil || verifierCookie.Value == "" {
+		if verifier == "" {
 			http.Error(w, "missing code verifier", http.StatusBadRequest)
 			return
 		}
-		s.finishCodexLogin(w, r, name, code, verifierCookie.Value, codex.DefaultRedirectURI)
+		s.finishCodexLogin(w, r, name, code, verifier, codex.DefaultRedirectURI)
 		return
 	}
 
@@ -133,7 +143,7 @@ func (s *Server) finishCodexLogin(w http.ResponseWriter, r *http.Request, name, 
 		return
 	}
 
-	if claims.AccountID == "" {
+	if claims.UserID == "" && claims.AccountID == "" {
 		http.Error(w, "Codex account ID is missing", http.StatusBadGateway)
 		return
 	}
@@ -141,7 +151,7 @@ func (s *Server) finishCodexLogin(w http.ResponseWriter, r *http.Request, name, 
 		v.UpsertAccount(name, vault.ProviderSecret{
 			AccessToken: tok.AccessToken, RefreshToken: tok.RefreshToken,
 			IDToken: tok.IDToken, ExpiresAt: tok.ExpiresAt,
-			Email: claims.Email, AccountID: claims.AccountID,
+			Email: claims.Email, AccountID: claims.AccountID, UserID: claims.UserID,
 		})
 		return nil
 	})
@@ -269,23 +279,35 @@ func (s *Server) codexPasteCallback(w http.ResponseWriter, r *http.Request, name
 			return
 		}
 	}
-
-	stateCookie, _ := r.Cookie(stateCookieName)
+	var verifier string
 	if state != "" {
-		if stateCookie == nil || subtle.ConstantTimeCompare([]byte(state), []byte(stateCookie.Value)) != 1 {
-			http.Error(w, "invalid oauth state", http.StatusBadRequest)
-			return
+		if pendingProvider, pendingVerifier, ok := s.consumeOAuthPending(state); ok {
+			if pendingProvider != "" && pendingProvider != name {
+				http.Error(w, "provider mismatch", http.StatusBadRequest)
+				return
+			}
+			verifier = pendingVerifier
 		}
 	}
-	verifierCookie, _ := r.Cookie(verifierCookieName)
-	if verifierCookie == nil || verifierCookie.Value == "" {
-		http.Error(w, "missing code verifier", http.StatusBadRequest)
-		return
+
+	if verifier == "" {
+		stateCookie, _ := r.Cookie(stateCookieName)
+		if state != "" {
+			if stateCookie == nil || subtle.ConstantTimeCompare([]byte(state), []byte(stateCookie.Value)) != 1 {
+				http.Error(w, "invalid oauth state", http.StatusBadRequest)
+				return
+			}
+		}
+		verifierCookie, _ := r.Cookie(verifierCookieName)
+		if verifierCookie == nil || verifierCookie.Value == "" {
+			http.Error(w, "missing code verifier", http.StatusBadRequest)
+			return
+		}
+		verifier = verifierCookie.Value
 	}
 
-	s.finishCodexLogin(w, r, name, code, verifierCookie.Value, codex.DefaultRedirectURI)
+	s.finishCodexLogin(w, r, name, code, verifier, codex.DefaultRedirectURI)
 }
-
 func scheme(r *http.Request) string {
 	if r.TLS != nil {
 		return "https"
