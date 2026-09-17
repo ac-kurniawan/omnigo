@@ -6,6 +6,11 @@ server:
 
 dashboard:
   # auth: true  # HTTP basic auth for dashboard (default: true; env OMNIGO_DASH_USER / OMNIGO_DASH_PASS, fallback: admin/admin)
+
+# Observability. Metrics default to disabled.
+# observability:
+#   metrics: true  # expose Prometheus metrics at /actuator/metrics (default: false)
+
 providers:
   # Antigravity provider (Google Gemini Code Assist)
   - name: agy

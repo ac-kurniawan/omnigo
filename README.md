@@ -9,7 +9,7 @@ OmniGo is the deliberately smaller version:
 
 | Vision        | What it means                                          |
 | ------------- | ------------------------------------------------------ |
-| **Lightweight** | One binary, stdlib only (`yaml.v3` is the sole dep)   |
+| **Lightweight** | One binary; stdlib plus `yaml.v3` and the OpenTelemetry SDK |
 | **Fast**        | In-memory routing, no database, SSE passthrough        |
 | **Pluggable**   | Providers implement a unified `Provider` interface     |
 | **Configurable**| Everything lives in two YAML files, hot-reloaded       |
@@ -30,6 +30,9 @@ OmniGo is the deliberately smaller version:
   `priority` or `fill-first` strategy.
 - **Model connection test** — ping any provider and report status/latency.
 - **HTMX dashboard** — manage providers, combos, keys, and OAuth logins.
+- **Observability** — optional OpenTelemetry metrics (HTTP duration,
+  time-to-first-byte, in-flight requests, provider/combo outcomes) exposed in
+  Prometheus format at `/actuator/metrics`. Disabled by default.
 
 ## Quick Start
 
@@ -80,6 +83,42 @@ OmniGo stores its configuration files under **`~/.config/omnigo/`** (or `%APPDAT
 You can override the directory or individual files via CLI flags or environment variables:
 - `-dir <path>` or `OMNIGO_CONFIG_DIR=<path>`
 - `-config <path>`, `-auth <path>`, `-key <path>`
+
+
+### Metrics (optional)
+
+Set `observability.metrics: true` in `config.yaml` to expose Prometheus-format
+metrics at `/actuator/metrics` (no authentication, like `/health`). The toggle
+is hot-reloaded: enabling or disabling it takes effect without a restart, and
+while disabled the endpoint answers `404`.
+
+```bash
+curl http://localhost:8080/actuator/metrics
+```
+
+Recorded series:
+
+| Metric | Type | Labels |
+| ------ | ---- | ------ |
+| `http_server_request_duration_seconds` | histogram | `http_route`, `http_request_method`, `http_response_status_code` |
+| `http_server_request_time_to_first_byte_seconds` | histogram | `http_route`, `http_request_method` |
+| `http_server_active_requests` | up/down counter | `http_request_method` |
+| `omnigo_provider_requests_total` | counter | `gen_ai_system`, `gen_ai_request_model`, `result` |
+| `omnigo_combo_attempts_total` | counter | `omnigo_combo_name`, `result` |
+| `omnigo_config_reloads_total` | counter | `result` |
+
+Every label is bounded, because a client able to mint one label value per
+request can grow series without limit:
+
+- `http_route` comes from the mux pattern; unmatched requests collapse to
+  `unmatched`, so a request path is never a label.
+- `http_request_method` is limited to the standard methods; anything else
+  becomes `other`.
+- `gen_ai_request_model` only takes values from the provider's configured
+  catalog; the client-supplied `<provider>/<model>` form is otherwise `other`.
+- `result` is a fixed set (`success`, `failure`, `client_abort`,
+  `upstream_stall`, `backpressure`, `rate_limited`, `stream_failed`,
+  `upstream_error`, `unavailable`).
 
 A reference template is available at [`config.example.yaml`](./config.example.yaml).
 
