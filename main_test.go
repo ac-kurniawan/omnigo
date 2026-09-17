@@ -73,6 +73,51 @@ func TestAppKeepsV1ProtectedFromDashboardCredentials(t *testing.T) {
 	}
 }
 
+func TestAppDashboardDisabledInConfig(t *testing.T) {
+	off := false
+	cfg := &config.Config{Dashboard: config.Dashboard{Enabled: &off}}
+	app := newApp(func() *config.Config { return cfg }, vault.NewMemoryStore(&vault.Vault{}), nil, nil, nil)
+
+	// The whole dashboard surface is absent while disabled, basic auth included.
+	for _, path := range []string{"/", "/providers", "/static/htmx.min.js"} {
+		rr := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		req.SetBasicAuth("admin", "admin")
+		app.ServeHTTP(rr, req)
+		if rr.Code != http.StatusNotFound {
+			t.Fatalf("%s: status = %d, want 404", path, rr.Code)
+		}
+	}
+
+	// The gateway is unaffected.
+	rr := httptest.NewRecorder()
+	app.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/health", nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("/health: status = %d, want 200", rr.Code)
+	}
+	rr = httptest.NewRecorder()
+	app.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/v1/models", nil))
+	if rr.Code != http.StatusUnauthorized {
+		t.Fatalf("/v1/models: status = %d, want 401", rr.Code)
+	}
+
+	// Re-enabling via reload restores the dashboard without a restart.
+	on := true
+	cfg.Dashboard.Enabled = &on
+	rr = httptest.NewRecorder()
+	app.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/", nil))
+	if rr.Code != http.StatusUnauthorized {
+		t.Fatalf("re-enabled: status = %d, want 401 (basic auth restored)", rr.Code)
+	}
+	rr = httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.SetBasicAuth("admin", "admin")
+	app.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("re-enabled authenticated: status = %d, want 200", rr.Code)
+	}
+}
+
 func TestReloadSwapsConfig(t *testing.T) {
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "config.yaml")

@@ -71,12 +71,22 @@ func NewHandler(getCfg func() *config.Config, store *vault.Store, mutate config.
 	if len(tracker) > 0 {
 		tr = tracker[0]
 	}
-	s := newServer(getCfg, store, mutate, tr)
-	mw := auth.DashboardBasicAuth(func() bool {
+	inner := auth.DashboardBasicAuth(func() bool {
 		cfg := getCfg()
 		return cfg == nil || cfg.Dashboard.AuthEnabled()
+	})(newServer(getCfg, store, mutate, tr).routes())
+
+	// The enabled gate is read from the live config on every request, so
+	// toggling dashboard.enabled in config.yaml takes effect on reload without
+	// a restart. While disabled the surface is indistinguishable from an
+	// unregistered path: 404 before basic auth is consulted.
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if cfg := getCfg(); cfg != nil && !cfg.Dashboard.IsEnabled() {
+			http.NotFound(w, r)
+			return
+		}
+		inner.ServeHTTP(w, r)
 	})
-	return mw(s.routes())
 }
 
 func newServer(getCfg func() *config.Config, store *vault.Store, mutate config.MutateFunc, tracker ...*combo.Tracker) *Server {
