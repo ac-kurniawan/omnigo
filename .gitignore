@@ -2,7 +2,6 @@
 /.secret.key
 /omnigo
 /aigo
-/OmniRoute/
 /graft/
 /tmp/
 /build-errors.log
