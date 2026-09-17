@@ -265,8 +265,8 @@ func TestCombosRenderLiveAlertWhenDrained(t *testing.T) {
 	}
 }
 
-func TestUpdateComboStrategy(t *testing.T) {
-	cfg := &config.Config{Combos: []config.Combo{{Name: "smart", Strategy: "priority"}}}
+func newComboTestServer(t *testing.T, cfg *config.Config, tracker *combo.Tracker) *Server {
+	t.Helper()
 	store := vault.NewMemoryStore(&vault.Vault{})
 	mutate := func(fn func(*config.Config) error) error {
 		if err := fn(cfg); err != nil {
@@ -274,17 +274,182 @@ func TestUpdateComboStrategy(t *testing.T) {
 		}
 		return cfg.Validate()
 	}
-	s := newServer(func() *config.Config { return cfg }, store, mutate, nil)
+	return newServer(func() *config.Config { return cfg }, store, mutate, tracker)
+}
 
-	for _, strategy := range []string{"reliable", "round-robin"} {
-		req := httptest.NewRequest("POST", "/combos/smart", strings.NewReader("strategy="+strategy))
-		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-		req.Header.Set("HX-Request", "true")
-		rr := httptest.NewRecorder()
-		s.routes().ServeHTTP(rr, req)
-		if rr.Code != http.StatusOK || cfg.Combos[0].Strategy != strategy {
-			t.Fatalf("strategy %q: status = %d, combo = %+v", strategy, rr.Code, cfg.Combos[0])
+func TestUpdateComboFullReplace(t *testing.T) {
+	cfg := &config.Config{
+		Combos: []config.Combo{{
+			Name:     "smart",
+			Strategy: "priority",
+			Targets: []config.ComboTarget{
+				{Provider: "agy", Model: "gemini-3.7-flash"},
+				{Provider: "openai-main", Model: "gpt-4o"},
+			},
+			DrainTTL: "90s",
+		}},
+	}
+	s := newComboTestServer(t, cfg, nil)
+
+	body := "strategy=round-robin&targets=openai-main/gpt-4o-mini,agy/gemini-3.7-pro"
+	req := httptest.NewRequest("POST", "/combos/smart", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("HX-Request", "true")
+	rr := httptest.NewRecorder()
+	s.routes().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rr.Code, rr.Body.String())
+	}
+	got := cfg.Combos[0]
+	if got.Strategy != "round-robin" {
+		t.Fatalf("strategy = %q, want round-robin", got.Strategy)
+	}
+	want := []config.ComboTarget{
+		{Provider: "openai-main", Model: "gpt-4o-mini"},
+		{Provider: "agy", Model: "gemini-3.7-pro"},
+	}
+	if len(got.Targets) != len(want) {
+		t.Fatalf("targets = %+v, want %+v", got.Targets, want)
+	}
+	for i := range want {
+		if got.Targets[i] != want[i] {
+			t.Fatalf("targets[%d] = %+v, want %+v", i, got.Targets[i], want[i])
 		}
+	}
+	if got.DrainTTL != "90s" {
+		t.Fatalf("drain_ttl = %q, want preserved 90s", got.DrainTTL)
+	}
+}
+
+func TestUpdateComboRejectsEmptyTargets(t *testing.T) {
+	cfg := &config.Config{
+		Combos: []config.Combo{{
+			Name:     "smart",
+			Strategy: "priority",
+			Targets:  []config.ComboTarget{{Provider: "agy", Model: "gemini-3.7-flash"}},
+		}},
+	}
+	s := newComboTestServer(t, cfg, nil)
+
+	req := httptest.NewRequest("POST", "/combos/smart", strings.NewReader("strategy=priority&targets="))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("HX-Request", "true")
+	rr := httptest.NewRecorder()
+	s.routes().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400; body = %s", rr.Code, rr.Body.String())
+	}
+	if len(cfg.Combos[0].Targets) != 1 || cfg.Combos[0].Targets[0].Model != "gemini-3.7-flash" {
+		t.Fatalf("combo mutated on rejected update: %+v", cfg.Combos[0])
+	}
+}
+
+func TestUpdateComboRejectsUnknownStrategy(t *testing.T) {
+	cfg := &config.Config{
+		Combos: []config.Combo{{
+			Name:     "smart",
+			Strategy: "priority",
+			Targets:  []config.ComboTarget{{Provider: "agy", Model: "gemini-3.7-flash"}},
+		}},
+	}
+	s := newComboTestServer(t, cfg, nil)
+
+	req := httptest.NewRequest("POST", "/combos/smart", strings.NewReader("strategy=weighted&targets=agy/gemini-3.7-flash"))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("HX-Request", "true")
+	rr := httptest.NewRecorder()
+	s.routes().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400; body = %s", rr.Code, rr.Body.String())
+	}
+	if cfg.Combos[0].Strategy != "priority" {
+		t.Fatalf("strategy mutated to %q on rejected update", cfg.Combos[0].Strategy)
+	}
+}
+
+func TestUpdateComboUnknownCombo(t *testing.T) {
+	cfg := &config.Config{
+		Combos: []config.Combo{{Name: "smart", Strategy: "priority", Targets: []config.ComboTarget{{Provider: "agy", Model: "m"}}}},
+	}
+	s := newComboTestServer(t, cfg, nil)
+
+	req := httptest.NewRequest("POST", "/combos/nope", strings.NewReader("strategy=priority&targets=agy/m"))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("HX-Request", "true")
+	rr := httptest.NewRecorder()
+	s.routes().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400; body = %s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestUpdateComboResetsCooldownsForNewChain(t *testing.T) {
+	drained := combo.Target{Provider: "openai-main", Model: "gpt-4o"}
+	untouched := combo.Target{Provider: "other", Model: "m1"}
+	cfg := &config.Config{
+		Combos: []config.Combo{{
+			Name:     "smart",
+			Strategy: "priority",
+			Targets:  []config.ComboTarget{{Provider: "agy", Model: "gemini-3.7-flash"}},
+		}},
+	}
+	tracker := combo.NewTracker("")
+	tracker.MarkDrained(drained, time.Minute, "quota")
+	tracker.MarkDrained(untouched, time.Minute, "quota")
+	s := newComboTestServer(t, cfg, tracker)
+
+	// New chain re-includes the drained target and drops nothing else.
+	body := "strategy=priority&targets=openai-main/gpt-4o"
+	req := httptest.NewRequest("POST", "/combos/smart", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("HX-Request", "true")
+	rr := httptest.NewRecorder()
+	s.routes().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rr.Code, rr.Body.String())
+	}
+	if tracker.IsDrained(drained) {
+		t.Fatal("target in the new chain is still drained after update")
+	}
+	if !tracker.IsDrained(untouched) {
+		t.Fatal("cooldown of an unrelated target was cleared by the update")
+	}
+}
+
+func TestCombosRenderEditButtonAndHiddenTargets(t *testing.T) {
+	cfg := &config.Config{
+		Combos: []config.Combo{{
+			Name:     "smart",
+			Strategy: "priority",
+			Targets: []config.ComboTarget{
+				{Provider: "agy", Model: "gemini-3.7-flash"},
+				{Provider: "openai-main", Model: "gpt-4o"},
+			},
+		}},
+	}
+	s := newComboTestServer(t, cfg, nil)
+
+	req := httptest.NewRequest("GET", "/combos", nil)
+	req.Header.Set("HX-Request", "true")
+	rr := httptest.NewRecorder()
+	s.routes().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rr.Code, rr.Body.String())
+	}
+	body := rr.Body.String()
+	wantHidden := `<input type="hidden" name="targets" value="agy/gemini-3.7-flash,openai-main/gpt-4o">`
+	if !strings.Contains(body, wantHidden) {
+		t.Fatalf("rendered table missing hidden targets input: %s", body)
+	}
+	wantEditBtn := `openEditComboModal('smart', 'priority', 'agy/gemini-3.7-flash,openai-main/gpt-4o')`
+	if !strings.Contains(body, wantEditBtn) {
+		t.Fatalf("rendered table missing openEditComboModal call: %s", body)
 	}
 }
 

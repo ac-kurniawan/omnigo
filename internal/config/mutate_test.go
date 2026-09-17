@@ -76,3 +76,79 @@ func TestMutateValidates(t *testing.T) {
 		t.Fatal("expected validation error")
 	}
 }
+
+func TestSetComboSuccess(t *testing.T) {
+	cfg := &Config{
+		Combos: []Combo{
+			{
+				Name:     "smart",
+				Strategy: "priority",
+				Targets: []ComboTarget{
+					{Provider: "openai-main", Model: "gpt-4o"},
+				},
+			},
+		},
+	}
+
+	newTargets := []ComboTarget{
+		{Provider: "openai-main", Model: "gpt-4o-mini"},
+		{Provider: "openai-main", Model: "gpt-4o"},
+	}
+	if err := SetCombo(cfg, "smart", "round-robin", newTargets); err != nil {
+		t.Fatalf("SetCombo: %v", err)
+	}
+
+	if cfg.Combos[0].Strategy != "round-robin" {
+		t.Fatalf("strategy = %q, want round-robin", cfg.Combos[0].Strategy)
+	}
+	if len(cfg.Combos[0].Targets) != 2 || cfg.Combos[0].Targets[0].Model != "gpt-4o-mini" {
+		t.Fatalf("targets = %+v", cfg.Combos[0].Targets)
+	}
+}
+
+func TestSetComboUnknownCombo(t *testing.T) {
+	cfg := &Config{Combos: []Combo{{Name: "smart", Strategy: "priority"}}}
+	err := SetCombo(cfg, "nonexistent", "priority", []ComboTarget{{Provider: "p", Model: "m"}})
+	if err == nil {
+		t.Fatal("expected error for unknown combo")
+	}
+}
+
+func TestSetComboRejectsEmptyTargets(t *testing.T) {
+	cfg := &Config{
+		Combos: []Combo{
+			{Name: "smart", Strategy: "priority", Targets: []ComboTarget{{Provider: "p", Model: "m"}}},
+		},
+	}
+	err := SetCombo(cfg, "smart", "priority", nil)
+	if err == nil {
+		t.Fatal("expected error for empty targets")
+	}
+}
+
+func TestUpdateComboDisk(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(p, []byte(mutateYAML), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	newTargets := []ComboTarget{
+		{Provider: "openai-main", Model: "gpt-4o"},
+		{Provider: "openai-main", Model: "gpt-4o-mini"},
+	}
+	if err := UpdateCombo(p, "auto", "reliable", newTargets); err != nil {
+		t.Fatalf("UpdateCombo: %v", err)
+	}
+
+	cfg, err := Load(p)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(cfg.Combos) != 1 || cfg.Combos[0].Strategy != "reliable" {
+		t.Fatalf("combo strategy = %q, want reliable", cfg.Combos[0].Strategy)
+	}
+	if len(cfg.Combos[0].Targets) != 2 || cfg.Combos[0].Targets[1].Model != "gpt-4o-mini" {
+		t.Fatalf("combo targets = %+v", cfg.Combos[0].Targets)
+	}
+}
