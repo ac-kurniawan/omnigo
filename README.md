@@ -4,13 +4,12 @@ An AI gateway built in Go. It proxies an OpenAI-compatible API across multiple
 providers, routes through user-defined combos, and manages provider credentials
 and gateway client keys.
 
-Inspired by [OmniRoute](./OmniRoute/README.md) — but OmniRoute is too much.
-OmniGo is the deliberately smaller version:
+Performance and simplicity are the point.
 
 | Vision        | What it means                                          |
 | ------------- | ------------------------------------------------------ |
-| **Lightweight** | One binary; stdlib plus `yaml.v3` and the OpenTelemetry SDK |
 | **Fast**        | In-memory routing, no database, SSE passthrough        |
+| **Simple**      | One binary; stdlib plus `yaml.v3` and the OpenTelemetry SDK |
 | **Pluggable**   | Providers implement a unified `Provider` interface     |
 | **Configurable**| Everything lives in two YAML files, hot-reloaded       |
 

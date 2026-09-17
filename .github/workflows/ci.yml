@@ -22,7 +22,7 @@ jobs:
 
       - name: Check code formatting
         run: |
-          diffs=$(gofmt -l . | grep -v OmniRoute || true)
+          diffs=$(gofmt -l .)
           if [ -n "$diffs" ]; then
             echo "Unformatted Go files detected:"
             echo "$diffs"
