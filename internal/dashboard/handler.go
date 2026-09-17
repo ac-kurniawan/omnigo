@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"html/template"
 	"net/http"
+	"net/url"
+	"sync"
 	"time"
 
 	"github.com/ac-kurniawan/omnigo/internal/auth"
@@ -34,6 +36,12 @@ type viewData struct {
 	Tracker   *combo.Tracker
 }
 
+type oauthPendingState struct {
+	provider  string
+	verifier  string
+	createdAt time.Time
+}
+
 type Server struct {
 	getCfg  func() *config.Config
 	store   *vault.Store
@@ -50,6 +58,9 @@ type Server struct {
 	// codexExchange is the injectable token-exchange seam for the Codex
 	// provider (defaults to the codex package).
 	codexExchange func(r *http.Request, code, verifier, redirectURI string) (*codex.Token, error)
+
+	oauthMu      sync.Mutex
+	oauthPending map[string]oauthPendingState
 }
 
 func NewHandler(getCfg func() *config.Config, store *vault.Store, mutate config.MutateFunc, tracker ...*combo.Tracker) http.Handler {
@@ -106,6 +117,12 @@ func newServer(getCfg func() *config.Config, store *vault.Store, mutate config.M
 			}
 			return vault.ProviderSecret{}
 		},
+		"accountIdentity": func(account vault.ProviderSecret) string {
+			return account.Identity()
+		},
+		"urlEscape": func(s string) string {
+			return url.PathEscape(s)
+		},
 		"accountHealthy": func(account vault.ProviderSecret) bool {
 			if account.AccessToken == "" && account.RefreshToken == "" {
 				return false
@@ -148,6 +165,7 @@ func newServer(getCfg func() *config.Config, store *vault.Store, mutate config.M
 	s.codexExchange = func(r *http.Request, code, verifier, redirectURI string) (*codex.Token, error) {
 		return codex.ExchangeCode(r.Context(), code, verifier, redirectURI)
 	}
+	s.oauthPending = make(map[string]oauthPendingState)
 	return s
 }
 
@@ -203,4 +221,49 @@ func randomHex(n int) string {
 		return "fallback"
 	}
 	return hex.EncodeToString(b)
+}
+
+func (s *Server) recordOAuthPending(state, provider, verifier string) {
+	s.oauthMu.Lock()
+	defer s.oauthMu.Unlock()
+	if s.oauthPending == nil {
+		s.oauthPending = make(map[string]oauthPendingState)
+	}
+	now := time.Now()
+	for k, v := range s.oauthPending {
+		if now.Sub(v.createdAt) > 15*time.Minute {
+			delete(s.oauthPending, k)
+		}
+	}
+	// Hard ceiling to prevent memory exhaustion under floods
+	if len(s.oauthPending) >= 1000 {
+		for k := range s.oauthPending {
+			delete(s.oauthPending, k)
+			if len(s.oauthPending) < 500 {
+				break
+			}
+		}
+	}
+	s.oauthPending[state] = oauthPendingState{
+		provider:  provider,
+		verifier:  verifier,
+		createdAt: now,
+	}
+}
+
+func (s *Server) consumeOAuthPending(state string) (provider, verifier string, ok bool) {
+	if state == "" {
+		return "", "", false
+	}
+	s.oauthMu.Lock()
+	defer s.oauthMu.Unlock()
+	flow, found := s.oauthPending[state]
+	if !found {
+		return "", "", false
+	}
+	delete(s.oauthPending, state)
+	if time.Since(flow.createdAt) > 15*time.Minute {
+		return "", "", false
+	}
+	return flow.provider, flow.verifier, true
 }

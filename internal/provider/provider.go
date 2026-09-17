@@ -84,10 +84,20 @@ type Credentials struct {
 	ExpiresAt    time.Time
 	ProjectID    string
 	AccountID    string
+	UserID       string
 	Email        string
 }
 
 func (c Credentials) Identity() string {
+	if c.UserID != "" && c.AccountID != "" && c.UserID != c.AccountID {
+		return c.AccountID + ":" + c.UserID
+	}
+	if c.UserID != "" {
+		return c.UserID
+	}
+	if c.AccountID != "" && c.Email != "" && c.AccountID != c.Email {
+		return c.AccountID + ":" + c.Email
+	}
 	if c.AccountID != "" {
 		return c.AccountID
 	}

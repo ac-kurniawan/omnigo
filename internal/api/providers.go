@@ -66,7 +66,7 @@ func credentialsFromSecret(sec vault.ProviderSecret) provider.Credentials {
 	return provider.Credentials{
 		APIKey: sec.APIKey, AccessToken: sec.AccessToken, RefreshToken: sec.RefreshToken,
 		IDToken: sec.IDToken, ExpiresAt: sec.ExpiresAt, ProjectID: sec.ProjectID,
-		AccountID: sec.AccountID, Email: sec.Email,
+		AccountID: sec.AccountID, UserID: sec.UserID, Email: sec.Email,
 	}
 }
 
@@ -74,7 +74,7 @@ func secretFromCredentials(c provider.Credentials) vault.ProviderSecret {
 	return vault.ProviderSecret{
 		APIKey: c.APIKey, AccessToken: c.AccessToken, RefreshToken: c.RefreshToken,
 		IDToken: c.IDToken, ExpiresAt: c.ExpiresAt, ProjectID: c.ProjectID,
-		AccountID: c.AccountID, Email: c.Email,
+		AccountID: c.AccountID, UserID: c.UserID, Email: c.Email,
 	}
 }
 
