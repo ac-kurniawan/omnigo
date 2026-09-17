@@ -19,6 +19,7 @@ type ProviderSecret struct {
 	ExpiresAt    time.Time `yaml:"expires_at,omitempty"`
 	ProjectID    string    `yaml:"project_id,omitempty"`
 	AccountID    string    `yaml:"account_id,omitempty"`
+	UserID       string    `yaml:"user_id,omitempty"`
 	Email        string    `yaml:"email,omitempty"`
 }
 
@@ -46,8 +47,16 @@ func (v *Vault) Accounts(name string) []ProviderSecret {
 	}
 	return nil
 }
-
 func (s ProviderSecret) Identity() string {
+	if s.UserID != "" && s.AccountID != "" && s.UserID != s.AccountID {
+		return s.AccountID + ":" + s.UserID
+	}
+	if s.UserID != "" {
+		return s.UserID
+	}
+	if s.AccountID != "" && s.Email != "" && s.AccountID != s.Email {
+		return s.AccountID + ":" + s.Email
+	}
 	if s.AccountID != "" {
 		return s.AccountID
 	}
@@ -55,7 +64,7 @@ func (s ProviderSecret) Identity() string {
 }
 
 func (s ProviderSecret) Empty() bool {
-	return s.APIKey == "" && s.AccessToken == "" && s.RefreshToken == "" && s.IDToken == "" && s.ProjectID == "" && s.AccountID == "" && s.Email == ""
+	return s.APIKey == "" && s.AccessToken == "" && s.RefreshToken == "" && s.IDToken == "" && s.ProjectID == "" && s.AccountID == "" && s.UserID == "" && s.Email == ""
 }
 
 func (v *Vault) UpsertAccount(name string, secret ProviderSecret) {
@@ -64,13 +73,15 @@ func (v *Vault) UpsertAccount(name string, secret ProviderSecret) {
 	}
 	accounts := v.Accounts(name)
 	identity := secret.Identity()
-	if identity != "" && len(accounts) == 1 && accounts[0].Identity() == "" && accounts[0].APIKey == "" {
-		v.ProviderAccounts[name] = []ProviderSecret{secret}
-		delete(v.ProviderSecrets, name)
-		return
-	}
 	for i := range accounts {
 		if identity != "" && accounts[i].Identity() == identity {
+			accounts[i] = secret
+			v.ProviderAccounts[name] = accounts
+			delete(v.ProviderSecrets, name)
+			return
+		}
+		if secret.AccountID != "" && accounts[i].AccountID == secret.AccountID &&
+			accounts[i].UserID == "" && (accounts[i].Email == "" || accounts[i].Email == secret.Email) {
 			accounts[i] = secret
 			v.ProviderAccounts[name] = accounts
 			delete(v.ProviderSecrets, name)

@@ -95,7 +95,7 @@ func TestIndexRendersOAuthAccountPoolActions(t *testing.T) {
 	rr := httptest.NewRecorder()
 	testHandler(t, cfg, v).ServeHTTP(rr, httptest.NewRequest("GET", "/", nil))
 	body := rr.Body.String()
-	for _, value := range []string{"one@example.com", "two@example.com", "Connect Another", "/providers/codex-main/accounts/workspace-1/delete", "Reconnect"} {
+	for _, value := range []string{"one@example.com", "two@example.com", "Connect Another", "/providers/codex-main/accounts/workspace-1:one@example.com/delete", "Reconnect"} {
 		if !strings.Contains(body, value) {
 			t.Fatalf("dashboard missing %q", value)
 		}

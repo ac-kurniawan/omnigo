@@ -147,6 +147,30 @@ func TestRemoveOAuthAccountPreservesOtherAccounts(t *testing.T) {
 	}
 }
 
+// Two users in the same workspace share AccountID; identity must include the
+// user so only the targeted connection is removed.
+func TestRemoveOAuthAccountDistinguishesUsersInSameWorkspace(t *testing.T) {
+	cfg := &config.Config{Providers: []config.Provider{{Name: "codex-main", Type: "codex"}}}
+	store := vault.NewMemoryStore(&vault.Vault{ProviderAccounts: map[string][]vault.ProviderSecret{
+		"codex-main": {
+			{AccountID: "ws-1", Email: "alice@example.com", AccessToken: "access-alice"},
+			{AccountID: "ws-1", Email: "bob@example.com", AccessToken: "access-bob"},
+		},
+	}})
+	s := newServer(func() *config.Config { return cfg }, store, nil)
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest("POST", "/providers/codex-main/accounts/ws-1:alice@example.com/delete", nil)
+	req.Header.Set("HX-Request", "true")
+	s.routes().ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rr.Code, rr.Body.String())
+	}
+	got := store.Get().Accounts("codex-main")
+	if len(got) != 1 || got[0].Email != "bob@example.com" {
+		t.Fatalf("accounts = %+v", got)
+	}
+}
+
 func TestToggleProviderDisabled(t *testing.T) {
 	cfg := &config.Config{
 		Providers: []config.Provider{{Name: "groq", Type: "openai", BaseURL: "https://api.groq.com"}},
