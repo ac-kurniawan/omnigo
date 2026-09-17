@@ -17,6 +17,7 @@ import (
 	"github.com/ac-kurniawan/omnigo/internal/provider/antigravity"
 	"github.com/ac-kurniawan/omnigo/internal/provider/codex"
 	"github.com/ac-kurniawan/omnigo/internal/vault"
+	"github.com/ac-kurniawan/omnigo/internal/version"
 )
 
 //go:embed templates/*
@@ -34,6 +35,7 @@ type viewData struct {
 	NewKey    string
 	CSRFToken string
 	Tracker   *combo.Tracker
+	Version   string
 }
 
 type oauthPendingState struct {
@@ -48,6 +50,7 @@ type Server struct {
 	mutate  config.MutateFunc
 	tmpl    *template.Template
 	tracker *combo.Tracker
+	version string
 
 	// exchange/discover are injectable OAuth seams (defaults to the
 	// antigravity package); tests override them with fakes.
@@ -152,6 +155,7 @@ func newServer(getCfg func() *config.Config, store *vault.Store, mutate config.M
 		mutate:  mutate,
 		tmpl:    tmpl,
 		tracker: tr,
+		version: version.Value,
 	}
 	s.exchange = func(r *http.Request, code, redirectURI string) (*antigravity.Token, error) {
 		return antigravity.ExchangeCode(r.Context(), code, redirectURI)
@@ -211,6 +215,7 @@ func (s *Server) index(w http.ResponseWriter, r *http.Request) {
 		Accounts:  snapshot.ProviderAccounts,
 		CSRFToken: token,
 		Tracker:   s.tracker,
+		Version:   s.version,
 	}
 	_ = s.tmpl.ExecuteTemplate(w, "index.html", data)
 }

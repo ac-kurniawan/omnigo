@@ -15,6 +15,7 @@ import (
 	"github.com/ac-kurniawan/omnigo/internal/observability"
 	"github.com/ac-kurniawan/omnigo/internal/provider"
 	"github.com/ac-kurniawan/omnigo/internal/vault"
+	"github.com/ac-kurniawan/omnigo/internal/version"
 )
 
 func TestAppServesDashboardAndGateV1(t *testing.T) {
@@ -30,7 +31,7 @@ func TestAppServesDashboardAndGateV1(t *testing.T) {
 
 	rr := httptest.NewRecorder()
 	app.ServeHTTP(rr, httptest.NewRequest("GET", "/health", nil))
-	if rr.Code != http.StatusOK || !strings.Contains(rr.Body.String(), `"status":"ok"`) || !strings.Contains(rr.Body.String(), `"version":"dev"`) {
+	if rr.Code != http.StatusOK || !strings.Contains(rr.Body.String(), `"status":"ok"`) || !strings.Contains(rr.Body.String(), `"version":"`+version.Value+`"`) {
 		t.Fatalf("health: status %d body %s", rr.Code, rr.Body.String())
 	}
 
@@ -97,12 +98,6 @@ func TestReloadSwapsConfig(t *testing.T) {
 	}
 	if s.getCfg().Server.Port != 9090 {
 		t.Fatalf("port = %d, want 9090 after reload", s.getCfg().Server.Port)
-	}
-}
-
-func TestVersionDefault(t *testing.T) {
-	if version == "" {
-		t.Fatal("version should not be empty")
 	}
 }
 

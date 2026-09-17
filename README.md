@@ -46,6 +46,12 @@ go build -o omnigo .
 air
 ```
 
+The version shown in the dashboard header, `-version`, and `/health` comes from
+the Git tag stamped into the binary at build time. Release binaries and images
+are stamped automatically; a plain `go build` reports `dev`, and
+`go install github.com/ac-kurniawan/omnigo@v0.8.5` reports the installed module
+version.
+
 ### Docker & Docker Compose
 
 ```bash
