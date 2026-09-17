@@ -26,10 +26,25 @@ func NewRouter(getCfg func() *config.Config, store *vault.Store, mutate config.M
 	mux.Handle("GET /v1/models", authed(http.HandlerFunc(handleModels(getCfg))))
 	mux.Handle("GET /v1/models/{model...}", authed(http.HandlerFunc(handleModel(getCfg))))
 
-	mux.Handle("POST /internal/refresh-models/{provider}", auth.DashboardMiddleware(http.HandlerFunc(handleRefreshModels(getCfg, registry, mutate))))
-	mux.Handle("POST /internal/test/{provider}", auth.DashboardMiddleware(http.HandlerFunc(handleTestProvider(getCfg, registry))))
+	mux.Handle("POST /internal/refresh-models/{provider}", dashboardEnabled(getCfg, auth.DashboardMiddleware(handleRefreshModels(getCfg, registry, mutate))))
+	mux.Handle("POST /internal/test/{provider}", dashboardEnabled(getCfg, auth.DashboardMiddleware(handleTestProvider(getCfg, registry))))
 
 	return mux
+}
+
+// dashboardEnabled gates the dashboard's /internal/* helpers on
+// dashboard.enabled, mirroring the UI surface: while disabled the paths answer
+// 404, matching an unregistered path, before dashboard authorization runs. The
+// flag is read from the live config on every request so a reload applies
+// without a restart.
+func dashboardEnabled(getCfg func() *config.Config, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if cfg := getCfg(); cfg != nil && !cfg.Dashboard.IsEnabled() {
+			http.NotFound(w, r)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 // MetricsHandler is implemented by concrete metrics implementations that can

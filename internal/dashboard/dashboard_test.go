@@ -224,6 +224,46 @@ func TestDashboardAuthDynamicToggle(t *testing.T) {
 	}
 }
 
+func TestDashboardDisabledReturns404(t *testing.T) {
+	off := false
+	cfg := &config.Config{Dashboard: config.Dashboard{Enabled: &off}}
+	h := NewHandler(func() *config.Config { return cfg }, vault.NewMemoryStore(&vault.Vault{}), nil)
+
+	for _, path := range []string{"/", "/providers", "/keys", "/oauth/login/codex-main", "/static/htmx.min.js"} {
+		rr := httptest.NewRecorder()
+		h.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, path, nil))
+		if rr.Code != http.StatusNotFound {
+			t.Fatalf("%s: status = %d, want 404", path, rr.Code)
+		}
+	}
+}
+
+func TestDashboardDisableTakesEffectWithoutRestart(t *testing.T) {
+	enabled, authOff := true, false
+	cfg := &config.Config{Dashboard: config.Dashboard{Enabled: &enabled, Auth: &authOff}}
+	h := NewHandler(func() *config.Config { return cfg }, vault.NewMemoryStore(&vault.Vault{}), nil)
+
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/", nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("enabled: status = %d, want 200", rr.Code)
+	}
+
+	enabled = false
+	rr = httptest.NewRecorder()
+	h.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/", nil))
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("disabled: status = %d, want 404", rr.Code)
+	}
+
+	enabled = true
+	rr = httptest.NewRecorder()
+	h.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/", nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("re-enabled: status = %d, want 200", rr.Code)
+	}
+}
+
 func TestIndexRendersPlaygroundInspector(t *testing.T) {
 	cfg := &config.Config{
 		Providers: []config.Provider{{Name: "antigravity", Type: "antigravity", Models: []string{"gemini-2.5-pro"}}},

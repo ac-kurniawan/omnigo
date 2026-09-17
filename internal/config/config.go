@@ -96,7 +96,17 @@ func (o Observability) MetricsEnabled() bool {
 }
 
 type Dashboard struct {
-	Auth *bool `yaml:"auth,omitempty"`
+	// Enabled serves the dashboard UI and its /internal/* helpers. When false
+	// the whole surface answers 404 and basic auth is not applied.
+	// Default: true (when Enabled is nil or explicitly true).
+	Enabled *bool `yaml:"enabled,omitempty"`
+	Auth    *bool `yaml:"auth,omitempty"`
+}
+
+// IsEnabled returns whether the dashboard is served.
+// Default: true (when Enabled is nil or explicitly true).
+func (d Dashboard) IsEnabled() bool {
+	return d.Enabled == nil || *d.Enabled
 }
 
 // AuthEnabled returns whether dashboard basic auth is on.
