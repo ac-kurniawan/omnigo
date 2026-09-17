@@ -81,6 +81,7 @@ func (m *TokenManager) refresh(ctx context.Context, previousAccessToken string, 
 			creds.IDToken = tok.IDToken
 			creds.Email = claims.Email
 			creds.AccountID = claims.AccountID
+			creds.UserID = claims.UserID
 		}
 	}
 	if err := m.store.Put(creds); err != nil {
