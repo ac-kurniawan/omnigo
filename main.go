@@ -20,9 +20,8 @@ import (
 	"github.com/ac-kurniawan/omnigo/internal/dashboard"
 	"github.com/ac-kurniawan/omnigo/internal/observability"
 	"github.com/ac-kurniawan/omnigo/internal/vault"
+	"github.com/ac-kurniawan/omnigo/internal/version"
 )
-
-var version = "dev"
 
 // appState holds the reloadable config snapshot and the vault store.
 type appState struct {
@@ -105,7 +104,7 @@ func (s *appState) mutate(fn func(*config.Config) error) error {
 }
 
 func newApp(getCfg func() *config.Config, store *vault.Store, mutate config.MutateFunc, tracker *combo.Tracker, metrics *observability.Metrics) http.Handler {
-	apiHandler := api.NewRouter(getCfg, store, mutate, tracker, version, metrics)
+	apiHandler := api.NewRouter(getCfg, store, mutate, tracker, version.Value, metrics)
 
 	root := http.NewServeMux()
 	root.Handle("/health", apiHandler)
@@ -125,7 +124,7 @@ func main() {
 	flag.Parse()
 
 	if *showVersion {
-		fmt.Printf("omnigo %s\n", version)
+		fmt.Printf("omnigo %s\n", version.Value)
 		return
 	}
 
@@ -156,7 +155,7 @@ func main() {
 	metrics, err := observability.New(func() bool {
 		cfg := state.getCfg()
 		return cfg != nil && cfg.Observability.MetricsEnabled()
-	}, version)
+	}, version.Value)
 	if err != nil {
 		log.Fatalf("observability: %v", err)
 	}
@@ -176,7 +175,7 @@ func main() {
 	go state.watch(ctx, 2*time.Second, metrics)
 
 	addr := state.getCfg().Server.Host + ":" + strconv.Itoa(state.getCfg().Server.Port)
-	log.Printf("OmniGo %s listening on http://%s (config: %s)", version, addr, paths.Config)
+	log.Printf("OmniGo %s listening on http://%s (config: %s)", version.Value, addr, paths.Config)
 	if state.getCfg().Observability.MetricsEnabled() {
 		log.Printf("metrics enabled at http://%s/actuator/metrics", addr)
 	}

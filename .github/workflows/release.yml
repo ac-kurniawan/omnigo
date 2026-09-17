@@ -48,7 +48,7 @@ jobs:
 
             echo "Building for ${OS}/${ARCH}..."
             CGO_ENABLED=0 GOOS=$OS GOARCH=$ARCH go build \
-              -ldflags="-s -w -X main.version=${VERSION}" \
+              -ldflags="-s -w -X github.com/ac-kurniawan/omnigo/internal/version.Value=${VERSION}" \
               -o "${OUTPUT_DIR}/${BIN_NAME}" .
 
             # Copy reference config and docs into archive

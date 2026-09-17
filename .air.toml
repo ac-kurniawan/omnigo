@@ -5,7 +5,7 @@ tmp_dir = "tmp"
 [build]
   args_bin = ["-config", "config.yaml"]
   bin = "./tmp/main"
-  cmd = "go build -o ./tmp/main ."
+  cmd = "go build -ldflags \"-X github.com/ac-kurniawan/omnigo/internal/version.Value=$(git describe --tags --always 2>/dev/null)\" -o ./tmp/main ."
   delay = 500
   exclude_dir = ["assets", "tmp", "vendor", "testdata", "graft", ".git"]
   exclude_file = ["auth.yaml", ".secret.key", "drains.json"]
