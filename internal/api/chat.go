@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -65,8 +67,12 @@ func handleChat(getCfg func() *config.Config, registry *providerRegistry, tracke
 		}
 		req.Model = model
 		SetTelemetryHeaders(w, tc, provName, model, startTime)
-		if err := p.ChatCompletion(r.Context(), req, w); err != nil {
-			writeError(w, http.StatusBadGateway, err.Error())
+		// Providers stream straight to the client on this path, so a late failure
+		// must not be answered with a fresh JSON error envelope: the SSE body is
+		// already on the wire and the object would be parsed as a bad frame.
+		tracked := &commitTracker{ResponseWriter: w}
+		if err := p.ChatCompletion(r.Context(), req, tracked); err != nil && !tracked.committed {
+			writeProviderError(w, err)
 		}
 	}
 }
@@ -139,17 +145,16 @@ func runCombo(w http.ResponseWriter, r *http.Request, cfg *config.Config, regist
 			}
 		}
 		req.Model = t.Model
-		SetTelemetryHeaders(w, tc, t.Provider, t.Model, startTime)
-		if cb.Strategy != "reliable" && cb.Strategy != "round-robin" {
-			return p.ChatCompletion(ctx, req, w)
-		}
 		attempt := newBufferedResponseWriter(w, req.Stream)
 		SetTelemetryHeaders(attempt, tc, t.Provider, t.Model, startTime)
 		providerErr := p.ChatCompletion(ctx, req, attempt)
 		err := attempt.finish(providerErr)
 		if errors.Is(err, errResponseCommitted) {
 			responseCommitted = true
-			if tracker != nil {
+			// A client abort mid-stream cancels the request context; that is not an
+			// upstream fault, so the target stays healthy. A stalled upstream leaves
+			// the request context alive and is still drained.
+			if tracker != nil && cb.Strategy != "priority" && r.Context().Err() == nil {
 				tracker.MarkDrained(t, cb.ParsedDrainTTL(), sanitizeFailure(err))
 			}
 			return nil
@@ -160,7 +165,7 @@ func runCombo(w http.ResponseWriter, r *http.Request, cfg *config.Config, regist
 		return nil
 	})
 	if err != nil && !responseCommitted {
-		writeError(w, http.StatusBadGateway, sanitizeFailure(err))
+		writeProviderError(w, err)
 	}
 }
 
@@ -181,21 +186,36 @@ func (e sanitizedError) DrainReason() string {
 	return e.message
 }
 
+// credentialPattern matches secrets that appear as key=value or key: "value"
+// pairs. Upstream errors embed credentials inside URL query strings and JSON
+var credentialPattern = regexp.MustCompile(`(?i)((?:api[_-]?key|apikey|key|token|secret|password|authorization|bearer)["']?\s*[:=]\s*["']?)([^\s"'&,;)}\]]+)`)
+
+// userInfoPattern matches the password half of a URL's userinfo component,
+// e.g. https://user:secret@host/.
+var userInfoPattern = regexp.MustCompile(`(://[^/\s:@]+:)([^@\s/]+)(@)`)
+
 func sanitizeFailure(err error) string {
 	if err == nil {
 		return "upstream failure"
 	}
-	fields := strings.Fields(err.Error())
+	msg := err.Error()
+	// Redact key=value / key: "value" pairs wherever they appear, so a secret
+	// buried in a URL query or a JSON blob is caught along with the plain
+	// "Bearer <token>" shape.
+	msg = credentialPattern.ReplaceAllString(msg, "${1}[redacted]")
+	msg = userInfoPattern.ReplaceAllString(msg, "${1}[redacted]${3}")
+
+	fields := strings.Fields(msg)
 	redactNext := false
 	for i, field := range fields {
 		trimmed := strings.Trim(field, `"'(),;`)
 		lower := strings.ToLower(trimmed)
-		if redactNext || strings.HasPrefix(lower, "sk-") || strings.Contains(lower, "token=") || strings.Contains(lower, "api_key=") || strings.Contains(lower, "apikey=") {
+		if redactNext || strings.HasPrefix(lower, "sk-") {
 			fields[i] = "[redacted]"
 			redactNext = false
 			continue
 		}
-		redactNext = lower == "bearer" || strings.HasSuffix(lower, "token:") || strings.HasSuffix(lower, "api_key:") || strings.HasSuffix(lower, "apikey:")
+		redactNext = lower == "bearer"
 	}
 	return strings.Join(fields, " ")
 }
@@ -210,6 +230,23 @@ func providerForName(cfg *config.Config, registry *providerRegistry, name string
 		}
 	}
 	return nil, false
+}
+
+// writeProviderError maps a provider failure to a client response. Gateway-side
+// saturation is a 429 with Retry-After; everything else is a 502. Messages are
+// sanitized because upstream errors can embed credentials.
+func writeProviderError(w http.ResponseWriter, err error) {
+	msg := sanitizeFailure(err)
+	var busy interface {
+		HTTPStatus() int
+		RetryAfter() time.Duration
+	}
+	if errors.As(err, &busy) && busy.HTTPStatus() == http.StatusTooManyRequests {
+		w.Header().Set("Retry-After", strconv.Itoa(int(busy.RetryAfter().Seconds())))
+		writeError(w, http.StatusTooManyRequests, msg)
+		return
+	}
+	writeError(w, http.StatusBadGateway, msg)
 }
 
 func writeError(w http.ResponseWriter, status int, msg string) {
@@ -228,6 +265,8 @@ func statusToCode(status int) string {
 		return "model_not_found"
 	case http.StatusBadGateway:
 		return "upstream_error"
+	case http.StatusTooManyRequests:
+		return "rate_limit_exceeded"
 	default:
 		return "invalid_request_error"
 	}

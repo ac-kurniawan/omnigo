@@ -144,17 +144,17 @@ func TestProviderHeadersBodyAndStreaming(t *testing.T) {
 	}
 }
 
-func TestProviderAccountPoolFallsBackAndBuffersFailedStream(t *testing.T) {
+func TestProviderAccountPoolFallsBackOnPreCommitFailure(t *testing.T) {
 	var calls []string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		account := r.Header.Get("chatgpt-account-id")
 		calls = append(calls, account)
-		w.Header().Set("Content-Type", "text/event-stream")
 		if account == "account-1" {
-			_, _ = io.WriteString(w, event("response.output_text.delta", map[string]any{"delta": "leaked"}))
-			_, _ = io.WriteString(w, "data: {malformed}\n\n")
+			w.WriteHeader(http.StatusBadGateway)
+			_, _ = io.WriteString(w, `{"error":"upstream down"}`)
 			return
 		}
+		w.Header().Set("Content-Type", "text/event-stream")
 		_, _ = io.WriteString(w, event("response.output_text.delta", map[string]any{"delta": "success"}))
 		_, _ = io.WriteString(w, event("response.completed", map[string]any{"response": map[string]any{"status": "completed"}}))
 	}))
@@ -170,7 +170,7 @@ func TestProviderAccountPoolFallsBackAndBuffersFailedStream(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(rr.Body.String(), "leaked") || !strings.Contains(rr.Body.String(), "success") {
+	if !strings.Contains(rr.Body.String(), "success") {
 		t.Fatalf("response = %s", rr.Body.String())
 	}
 	if len(calls) != 2 || calls[0] != "account-1" || calls[1] != "account-2" {
@@ -726,4 +726,70 @@ func TestProviderReusesSessionIDAcrossRetry(t *testing.T) {
 	if len(sessionIDs) != 2 || sessionIDs[0] == "" || sessionIDs[0] != sessionIDs[1] {
 		t.Fatalf("session ids = %q", sessionIDs)
 	}
+}
+
+// A streaming generation must reach the client as the upstream produces it.
+// Full buffering would withhold every byte until the upstream closed, so a
+// probe that reads the client writer while the upstream stream is still open
+// must already see the first chunk.
+func TestProviderStreamsBeforeUpstreamCompletes(t *testing.T) {
+	release := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, event("response.created", map[string]any{"response": map[string]any{"id": "resp_1", "model": "gpt-5.3-codex"}}))
+		_, _ = io.WriteString(w, event("response.output_text.delta", map[string]any{"delta": "Hello "}))
+		w.(http.Flusher).Flush()
+		<-release
+	}))
+	defer server.Close()
+	defer close(release)
+
+	store := &memoryCredStore{creds: provider.Credentials{AccessToken: "access-token", RefreshToken: "refresh-token", AccountID: "account-1", ExpiresAt: time.Now().Add(time.Hour)}}
+	p := New(provider.Config{Name: "codex", BaseURL: server.URL + "/responses", Timeout: 5 * time.Second}, store)
+	rec := newProbeRecorder()
+	done := make(chan error, 1)
+	go func() {
+		done <- p.ChatCompletion(context.Background(), provider.ChatRequest{
+			Model: "gpt-5.3-codex", Stream: true,
+			Raw: []byte(`{"messages":[{"role":"user","content":"hi"}]}`),
+		}, rec)
+	}()
+
+	deadline := time.After(2 * time.Second)
+	for rec.delivered() == "" {
+		select {
+		case <-deadline:
+			t.Fatal("no bytes reached the client while the upstream stream was still open: response is fully buffered")
+		case <-time.After(5 * time.Millisecond):
+		}
+	}
+	if !strings.Contains(rec.delivered(), "Hello ") {
+		t.Fatalf("delivered bytes = %q, want the first upstream delta", rec.delivered())
+	}
+}
+
+// probeRecorder captures what a streaming client would have observed before the
+// upstream stream finished.
+type probeRecorder struct {
+	header http.Header
+	mu     sync.Mutex
+	body   strings.Builder
+}
+
+func newProbeRecorder() *probeRecorder {
+	return &probeRecorder{header: make(http.Header)}
+}
+
+func (r *probeRecorder) Header() http.Header { return r.header }
+func (r *probeRecorder) WriteHeader(int)     {}
+func (r *probeRecorder) Write(b []byte) (int, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.body.Write(b)
+}
+func (r *probeRecorder) Flush() {}
+func (r *probeRecorder) delivered() string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.body.String()
 }

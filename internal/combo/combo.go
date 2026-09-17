@@ -37,11 +37,18 @@ func (c Combo) Run(ctx context.Context, dispatch DispatchFunc) (Target, error) {
 
 	var failures []string
 	var lastErr error
+	backpressure := 0
 	for _, target := range targets {
 		if err := dispatch(ctx, target); err != nil {
 			lastErr = err
+			if ctx.Err() != nil {
+				return Target{}, ctx.Err()
+			}
 			failures = append(failures, fmt.Sprintf("%s: %v", targetKey(target), err))
-			if tracksFailures {
+			if isBackpressure(err) {
+				backpressure++
+			}
+			if tracksFailures && isDrainable(err) {
 				c.Tracker.MarkDrained(target, failureCooldown(err, c.drainTTL()), failureReason(err))
 			}
 			continue
@@ -50,6 +57,11 @@ func (c Combo) Run(ctx context.Context, dispatch DispatchFunc) (Target, error) {
 	}
 	if len(failures) == 0 {
 		return Target{}, fmt.Errorf("combo %q has no healthy targets", c.Name)
+	}
+	// Every target is locally saturated: report gateway backpressure so the API
+	// layer answers 429 + Retry-After instead of blaming the upstreams with 502.
+	if backpressure == len(failures) {
+		return Target{}, lastErr
 	}
 	if c.Strategy == "reliable" || c.Strategy == "round-robin" {
 		return Target{}, fmt.Errorf("combo %q failed: %s", c.Name, strings.Join(failures, "; "))
@@ -106,4 +118,26 @@ func (c Combo) drainTTL() time.Duration {
 		return c.DrainTTL
 	}
 	return 60 * time.Second
+}
+
+func isDrainable(err error) bool {
+	var checker interface{ Drainable() bool }
+	if errors.As(err, &checker) {
+		return checker.Drainable()
+	}
+	var status interface{ HTTPStatus() int }
+	if errors.As(err, &status) {
+		code := status.HTTPStatus()
+		if code == 400 || code == 404 || code == 422 {
+			return false
+		}
+	}
+	return true
+}
+
+// isBackpressure reports gateway-side saturation (local concurrency limit)
+// rather than an upstream fault, so routing can surface 429 instead of 502.
+func isBackpressure(err error) bool {
+	var busy interface{ RetryAfter() time.Duration }
+	return errors.As(err, &busy)
 }
