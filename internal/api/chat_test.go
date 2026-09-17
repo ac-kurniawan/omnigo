@@ -445,7 +445,7 @@ func TestChatFillFirstUsesTrackerAndDrains(t *testing.T) {
 	raw, hash, prefix, _ := auth.GenerateKey()
 	v := &vault.Vault{ClientKeys: []vault.ClientKey{{ID: "k1", KeyHash: hash, Prefix: prefix, Active: true}}}
 
-	router := NewRouter(func() *config.Config { return cfg }, vault.NewMemoryStore(v), nil, tr, "test-version")
+	router := NewRouter(func() *config.Config { return cfg }, vault.NewMemoryStore(v), nil, tr, "test-version", nil)
 
 	// Request 1: prov-a fails, marks drained, falls back to prov-b
 	req1 := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(`{"model":"smart","messages":[{"role":"user","content":"hi"}]}`))
@@ -789,7 +789,7 @@ func performChat(t *testing.T, cfg *config.Config, tr *combo.Tracker, body strin
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
 	req.Header.Set("Authorization", "Bearer "+raw)
 	rr := httptest.NewRecorder()
-	NewRouter(func() *config.Config { return cfg }, vault.NewMemoryStore(v), nil, tr, "test-version").ServeHTTP(rr, req)
+	NewRouter(func() *config.Config { return cfg }, vault.NewMemoryStore(v), nil, tr, "test-version", nil).ServeHTTP(rr, req)
 	return rr
 }
 
@@ -1024,7 +1024,7 @@ func TestComboClientAbortMidStreamDoesNotDrain(t *testing.T) {
 	tr := combo.NewTracker("")
 	raw, hash, prefix, _ := auth.GenerateKey()
 	v := &vault.Vault{ClientKeys: []vault.ClientKey{{ID: "k1", KeyHash: hash, Prefix: prefix, Active: true}}}
-	router := NewRouter(func() *config.Config { return cfg }, vault.NewMemoryStore(v), nil, tr, "test-version")
+	router := NewRouter(func() *config.Config { return cfg }, vault.NewMemoryStore(v), nil, tr, "test-version", nil)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"safe","messages":[],"stream":true}`)).WithContext(ctx)

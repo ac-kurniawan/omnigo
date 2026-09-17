@@ -12,6 +12,7 @@ import (
 
 	"github.com/ac-kurniawan/omnigo/internal/auth"
 	"github.com/ac-kurniawan/omnigo/internal/config"
+	"github.com/ac-kurniawan/omnigo/internal/observability"
 	"github.com/ac-kurniawan/omnigo/internal/provider"
 	"github.com/ac-kurniawan/omnigo/internal/vault"
 )
@@ -25,7 +26,7 @@ func TestAppServesDashboardAndGateV1(t *testing.T) {
 	store := vault.NewMemoryStore(&vault.Vault{ProviderSecrets: map[string]vault.ProviderSecret{}})
 	app := newApp(func() *config.Config { return cfg }, store, func(fn func(*config.Config) error) error {
 		return fn(cfg)
-	}, nil)
+	}, nil, nil)
 
 	rr := httptest.NewRecorder()
 	app.ServeHTTP(rr, httptest.NewRequest("GET", "/health", nil))
@@ -57,7 +58,7 @@ func TestAppServesDashboardAndGateV1(t *testing.T) {
 
 func TestAppKeepsV1ProtectedFromDashboardCredentials(t *testing.T) {
 	cfg := &config.Config{}
-	app := newApp(func() *config.Config { return cfg }, vault.NewMemoryStore(&vault.Vault{}), nil, nil)
+	app := newApp(func() *config.Config { return cfg }, vault.NewMemoryStore(&vault.Vault{}), nil, nil, nil)
 	req := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
 	req.Host = "omnigo.test"
 	req.Header.Set("Origin", "http://omnigo.test")
@@ -135,7 +136,7 @@ func TestPlaygroundDashboardAndV1TelemetryIntegration(t *testing.T) {
 		}
 	})
 
-	app := newApp(func() *config.Config { return cfg }, store, nil, nil)
+	app := newApp(func() *config.Config { return cfg }, store, nil, nil, nil)
 
 	// 1. Dashboard renders the Inspector & Playground
 	dashReq := httptest.NewRequest(http.MethodGet, "/", nil)
@@ -191,6 +192,75 @@ func TestPlaygroundDashboardAndV1TelemetryIntegration(t *testing.T) {
 	}
 	if mod := respHeaders.Get("X-OmniGo-Model"); mod != "gpt-test" {
 		t.Errorf("expected X-OmniGo-Model = gpt-test, got %q", mod)
+	}
+}
+
+func TestActuatorMetricsEndToEndWithApp(t *testing.T) {
+	on := true
+	cfg := &config.Config{
+		Observability: config.Observability{Metrics: &on},
+		Providers:     []config.Provider{{Name: "prov-live", Type: "prov-live", Models: []string{"live-m"}}},
+	}
+	rawKey, hash, prefix, err := auth.GenerateKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := vault.NewMemoryStore(&vault.Vault{
+		ClientKeys: []vault.ClientKey{{ID: "k1", KeyHash: hash, Prefix: prefix, Active: true}},
+	})
+	provider.Register("prov-live", func(pcfg provider.Config, cstore provider.CredStore) provider.Provider {
+		return &fakeProvider{name: pcfg.Name}
+	})
+
+	metrics, err := observability.New(func() bool {
+		return cfg.Observability.MetricsEnabled()
+	}, "integration-test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = metrics.Shutdown(context.Background()) }()
+
+	app := newApp(func() *config.Config { return cfg }, store, nil, nil, metrics)
+
+	// 1. Initially scrape works and shows the service resource
+	rr := httptest.NewRecorder()
+	app.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/actuator/metrics", nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("actuator status = %d, want 200", rr.Code)
+	}
+
+	// 2. Client executes /v1/chat/completions through the middleware
+	chatReq := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"prov-live/live-m","messages":[]}`))
+	chatReq.Header.Set("Authorization", "Bearer "+rawKey)
+	chatRec := httptest.NewRecorder()
+	app.ServeHTTP(chatRec, chatReq)
+	if chatRec.Code != http.StatusOK {
+		t.Fatalf("chat status = %d, body = %s", chatRec.Code, chatRec.Body.String())
+	}
+
+	// 3. Scrape exposes the recorded HTTP duration and provider request count
+	rr = httptest.NewRecorder()
+	app.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/actuator/metrics", nil))
+	body := rr.Body.String()
+	for _, want := range []string{
+		"http_server_request_duration_seconds",
+		`http_route="/v1/chat/completions"`,
+		"omnigo_provider_requests_total",
+		`gen_ai_system="prov-live"`,
+		`result="success"`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("scrape missing %q\n---\n%s", want, body)
+		}
+	}
+
+	// 4. Disabling metrics in config flips the endpoint to 404 without a restart
+	off := false
+	cfg.Observability.Metrics = &off
+	rr = httptest.NewRecorder()
+	app.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/actuator/metrics", nil))
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("disabled status = %d, want 404", rr.Code)
 	}
 }
 
