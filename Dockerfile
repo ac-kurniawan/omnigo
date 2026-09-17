@@ -14,7 +14,7 @@ ARG TARGETARCH
 ARG VERSION=dev
 ARG COMPRESS=0
 RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH:-amd64} go build \
-    -ldflags="-s -w -X main.version=${VERSION}" \
+    -ldflags="-s -w -X github.com/ac-kurniawan/omnigo/internal/version.Value=${VERSION}" \
     -o /bin/omnigo . && \
     if [ "$COMPRESS" = "1" ] || [ "$COMPRESS" = "true" ]; then \
         apk add --no-cache upx && upx --best --lzma /bin/omnigo; \
