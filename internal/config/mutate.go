@@ -183,3 +183,30 @@ func SetProviderDisabled(c *Config, name string, disabled bool) error {
 	}
 	return fmt.Errorf("provider %q not found", name)
 }
+
+// SetCombo replaces a combo's strategy and target chain in-memory, in place.
+// It preserves the combo's position in the list and its drain_ttl, and rejects
+// unknown strategies or an empty target chain.
+func SetCombo(c *Config, name, strategy string, targets []ComboTarget) error {
+	if !validStrategies[strategy] {
+		return fmt.Errorf("combo %q: unknown strategy %q", name, strategy)
+	}
+	if len(targets) == 0 {
+		return fmt.Errorf("combo %q: at least one target is required", name)
+	}
+	for i := range c.Combos {
+		if c.Combos[i].Name == name {
+			c.Combos[i].Strategy = strategy
+			c.Combos[i].Targets = targets
+			return nil
+		}
+	}
+	return fmt.Errorf("combo %q not found", name)
+}
+
+// UpdateCombo replaces a combo's strategy and target chain on disk.
+func UpdateCombo(path, name, strategy string, targets []ComboTarget) error {
+	return Mutate(path, func(c *Config) error {
+		return SetCombo(c, name, strategy, targets)
+	})
+}
