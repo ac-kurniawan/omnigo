@@ -83,6 +83,18 @@ func (c Combo) ParsedDrainTTL() time.Duration {
 	return d
 }
 
+type Observability struct {
+	// Metrics exposes Prometheus-format metrics at /actuator/metrics.
+	// Default: disabled (nil).
+	Metrics *bool `yaml:"metrics,omitempty"`
+}
+
+// MetricsEnabled reports whether the metrics endpoint and recording are on.
+// Default: false (when Metrics is nil or explicitly false).
+func (o Observability) MetricsEnabled() bool {
+	return o.Metrics != nil && *o.Metrics
+}
+
 type Dashboard struct {
 	Auth *bool `yaml:"auth,omitempty"`
 }
@@ -94,11 +106,12 @@ func (d Dashboard) AuthEnabled() bool {
 }
 
 type Config struct {
-	Server    Server     `yaml:"server"`
-	Dashboard Dashboard  `yaml:"dashboard,omitempty"`
-	Providers []Provider `yaml:"providers"`
-	Combos    []Combo    `yaml:"combos"`
-	Timeout   string     `yaml:"timeout,omitempty"`
+	Server        Server        `yaml:"server"`
+	Dashboard     Dashboard     `yaml:"dashboard,omitempty"`
+	Observability Observability `yaml:"observability,omitempty"`
+	Providers     []Provider    `yaml:"providers"`
+	Combos        []Combo       `yaml:"combos"`
+	Timeout       string        `yaml:"timeout,omitempty"`
 }
 
 func (c *Config) DefaultTimeout() time.Duration {

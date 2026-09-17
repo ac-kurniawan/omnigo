@@ -18,6 +18,7 @@ import (
 	"github.com/ac-kurniawan/omnigo/internal/combo"
 	"github.com/ac-kurniawan/omnigo/internal/config"
 	"github.com/ac-kurniawan/omnigo/internal/dashboard"
+	"github.com/ac-kurniawan/omnigo/internal/observability"
 	"github.com/ac-kurniawan/omnigo/internal/vault"
 )
 
@@ -62,7 +63,7 @@ func (s *appState) reload() error {
 func (s *appState) getCfg() *config.Config { return s.cfg.Load() }
 
 // watch polls file mtimes and reloads when either changes.
-func (s *appState) watch(ctx context.Context, interval time.Duration) {
+func (s *appState) watch(ctx context.Context, interval time.Duration, metrics *observability.Metrics) {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	cfgMod := modTime(s.cfgPath)
@@ -77,9 +78,11 @@ func (s *appState) watch(ctx context.Context, interval time.Duration) {
 				continue
 			}
 			if err := s.reload(); err != nil {
+				metrics.RecordConfigReload(false)
 				log.Printf("reload: %v", err)
 				continue
 			}
+			metrics.RecordConfigReload(true)
 			cfgMod, authMod = cm, am
 			log.Printf("config reloaded")
 		}
@@ -101,15 +104,16 @@ func (s *appState) mutate(fn func(*config.Config) error) error {
 	return s.reload()
 }
 
-func newApp(getCfg func() *config.Config, store *vault.Store, mutate config.MutateFunc, tracker *combo.Tracker) http.Handler {
-	apiHandler := api.NewRouter(getCfg, store, mutate, tracker, version)
+func newApp(getCfg func() *config.Config, store *vault.Store, mutate config.MutateFunc, tracker *combo.Tracker, metrics *observability.Metrics) http.Handler {
+	apiHandler := api.NewRouter(getCfg, store, mutate, tracker, version, metrics)
 
 	root := http.NewServeMux()
 	root.Handle("/health", apiHandler)
+	root.Handle("/actuator/", apiHandler)
 	root.Handle("/v1/", apiHandler)
 	root.Handle("/internal/", apiHandler)
 	root.Handle("/", dashboard.NewHandler(getCfg, store, mutate, tracker))
-	return root
+	return metrics.Middleware(root)
 }
 
 func main() {
@@ -146,18 +150,39 @@ func main() {
 
 	tracker := combo.NewTracker(paths.Drains)
 
+	// Metrics are always constructed: the enabled gate is read from the live
+	// config on every request, so toggling observability.metrics in config.yaml
+	// takes effect on reload without a restart.
+	metrics, err := observability.New(func() bool {
+		cfg := state.getCfg()
+		return cfg != nil && cfg.Observability.MetricsEnabled()
+	}, version)
+	if err != nil {
+		log.Fatalf("observability: %v", err)
+	}
+	defer func() {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := metrics.Shutdown(shutdownCtx); err != nil {
+			log.Printf("metrics shutdown: %v", err)
+		}
+	}()
+
 	sigCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	go state.watch(ctx, 2*time.Second)
+	go state.watch(ctx, 2*time.Second, metrics)
 
 	addr := state.getCfg().Server.Host + ":" + strconv.Itoa(state.getCfg().Server.Port)
 	log.Printf("OmniGo %s listening on http://%s (config: %s)", version, addr, paths.Config)
+	if state.getCfg().Observability.MetricsEnabled() {
+		log.Printf("metrics enabled at http://%s/actuator/metrics", addr)
+	}
 	srv := &http.Server{
 		Addr:              addr,
-		Handler:           newApp(state.getCfg, state.store, state.mutate, tracker),
+		Handler:           newApp(state.getCfg, state.store, state.mutate, tracker, metrics),
 		ReadHeaderTimeout: 10 * time.Second,
 		IdleTimeout:       state.getCfg().DefaultTimeout() * 2,
 	}

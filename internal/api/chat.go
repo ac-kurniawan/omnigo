@@ -17,7 +17,8 @@ import (
 	"github.com/ac-kurniawan/omnigo/internal/provider"
 )
 
-func handleChat(getCfg func() *config.Config, registry *providerRegistry, tracker *combo.Tracker) http.HandlerFunc {
+func handleChat(getCfg func() *config.Config, registry *providerRegistry, tracker *combo.Tracker, m Metrics) http.HandlerFunc {
+	metrics := orNoop(m)
 	return func(w http.ResponseWriter, r *http.Request) {
 		startTime := time.Now()
 		tc := NewTraceContext(r.Header.Get("traceparent"))
@@ -56,7 +57,7 @@ func handleChat(getCfg func() *config.Config, registry *providerRegistry, tracke
 		req := provider.ChatRequest{Model: body.Model, Stream: body.Stream, Messages: msgs, Raw: raw}
 
 		if cb, ok := findCombo(cfg, body.Model); ok {
-			runCombo(w, r, cfg, registry, cb, req, tracker, tc, startTime)
+			runCombo(w, r, cfg, registry, cb, req, tracker, tc, startTime, metrics)
 			return
 		}
 
@@ -71,8 +72,10 @@ func handleChat(getCfg func() *config.Config, registry *providerRegistry, tracke
 		// must not be answered with a fresh JSON error envelope: the SSE body is
 		// already on the wire and the object would be parsed as a bad frame.
 		tracked := &commitTracker{ResponseWriter: w}
-		if err := p.ChatCompletion(r.Context(), req, tracked); err != nil && !tracked.committed {
-			writeProviderError(w, err)
+		providerErr := p.ChatCompletion(r.Context(), req, tracked)
+		metrics.RecordProviderRequest(provName, knownModelLabel(cfg, provName, model), classifyProviderError(providerErr, tracked.committed, r.Context().Err() != nil))
+		if providerErr != nil && !tracked.committed {
+			writeProviderError(w, providerErr)
 		}
 	}
 }
@@ -123,7 +126,7 @@ func resolveDirect(cfg *config.Config, registry *providerRegistry, model string)
 	return nil, "", "", false
 }
 
-func runCombo(w http.ResponseWriter, r *http.Request, cfg *config.Config, registry *providerRegistry, cb config.Combo, req provider.ChatRequest, tracker *combo.Tracker, tc *TraceContext, startTime time.Time) {
+func runCombo(w http.ResponseWriter, r *http.Request, cfg *config.Config, registry *providerRegistry, cb config.Combo, req provider.ChatRequest, tracker *combo.Tracker, tc *TraceContext, startTime time.Time, metrics Metrics) {
 	c := combo.Combo{
 		Name:     cb.Name,
 		Strategy: cb.Strategy,
@@ -137,10 +140,12 @@ func runCombo(w http.ResponseWriter, r *http.Request, cfg *config.Config, regist
 	_, err := c.Run(r.Context(), func(ctx context.Context, t combo.Target) error {
 		p, ok := providerForName(cfg, registry, t.Provider)
 		if !ok {
+			metrics.RecordProviderRequest(t.Provider, t.Model, resultUnavailable)
 			return fmt.Errorf("unknown provider: %s", t.Provider)
 		}
 		for _, pc := range cfg.Providers {
 			if pc.Name == t.Provider && pc.IsModelDisabled(t.Model) {
+				metrics.RecordProviderRequest(t.Provider, t.Model, resultUnavailable)
 				return fmt.Errorf("model %q is disabled on provider %q", t.Model, t.Provider)
 			}
 		}
@@ -154,16 +159,25 @@ func runCombo(w http.ResponseWriter, r *http.Request, cfg *config.Config, regist
 			// A client abort mid-stream cancels the request context; that is not an
 			// upstream fault, so the target stays healthy. A stalled upstream leaves
 			// the request context alive and is still drained.
-			if tracker != nil && cb.Strategy != "priority" && r.Context().Err() == nil {
+			clientGone := r.Context().Err() != nil
+			metrics.RecordProviderRequest(t.Provider, t.Model, classifyProviderError(err, true, clientGone))
+			if tracker != nil && cb.Strategy != "priority" && !clientGone {
 				tracker.MarkDrained(t, cb.ParsedDrainTTL(), sanitizeFailure(err))
 			}
 			return nil
 		}
 		if err != nil {
+			metrics.RecordProviderRequest(t.Provider, t.Model, classifyProviderError(err, false, false))
 			return sanitizedError{err: err, message: sanitizeFailure(err)}
 		}
+		metrics.RecordProviderRequest(t.Provider, t.Model, resultSuccess)
 		return nil
 	})
+	attemptResult := resultSuccess
+	if err != nil {
+		attemptResult = resultFailure
+	}
+	metrics.RecordCombinationAttempt(cb.Name, attemptResult)
 	if err != nil && !responseCommitted {
 		writeProviderError(w, err)
 	}
