@@ -316,8 +316,10 @@
                 </div>
               </form>
 
-              <!-- Combo Model Picker Modal -->
-              <dialog id="combo-model-picker-modal" class="modal modal-bottom sm:modal-middle">
+            </div>
+          </div>
+          <!-- Combo Model Picker Modal -->
+          <dialog id="combo-model-picker-modal" class="modal modal-bottom sm:modal-middle">
                 <div class="modal-box max-w-xl text-left border border-base-content/10 shadow-2xl p-6 rounded-2xl">
                   <div class="flex items-center justify-between border-b border-base-content/10 pb-3">
                     <div>
@@ -399,8 +401,73 @@
                 </div>
                 <form method="dialog" class="modal-backdrop"><button>close</button></form>
               </dialog>
+
+          <!-- Combo Edit Modal -->
+          <dialog id="combo-edit-modal" class="modal modal-bottom sm:modal-middle">
+            <div class="modal-box max-w-xl text-left border border-base-content/10 shadow-2xl p-6 rounded-2xl">
+              <div class="flex items-center justify-between border-b border-base-content/10 pb-3">
+                <div>
+                  <h3 class="text-base font-bold flex items-center gap-2">
+                    <span>Edit Routing Combo</span>
+                    <span class="badge badge-primary font-mono badge-sm" id="combo-edit-name-badge">combo</span>
+                  </h3>
+                  <p class="text-xs text-base-content/60 mt-0.5">Update fallback target order or routing strategy.</p>
+                </div>
+                <form method="dialog">
+                  <button class="btn btn-sm btn-circle btn-ghost">✕</button>
+                </form>
+              </div>
+
+              <form id="combo-edit-form" method="POST" hx-target="#combos" hx-swap="innerHTML" class="space-y-4 pt-4" onsubmit="return validateEditComboForm(this)">
+                <div>
+                  <label class="label pb-1.5 pt-0 text-xs font-semibold text-base-content/70">Routing Strategy</label>
+                  <select name="strategy" id="combo-edit-strategy" class="select select-bordered select-sm w-full font-mono text-xs px-3 h-auto min-h-[2.25rem] rounded-lg" required>
+                    <option value="priority">priority (Try targets first to last in order)</option>
+                    <option value="fill-first">fill-first (Exhaust primary quota first)</option>
+                    <option value="reliable">reliable (Buffer failures and use the first healthy target)</option>
+                    <option value="round-robin">round-robin (Rotate across healthy targets)</option>
+                  </select>
+                </div>
+
+                <!-- Target Fallback Chain Section -->
+                <div class="space-y-2 pt-1">
+                  <div class="flex items-center justify-between">
+                    <label class="text-xs font-semibold text-base-content/70 flex items-center gap-1.5">
+                      <span>Target Fallback Chain</span>
+                      <span class="badge badge-xs badge-ghost font-mono" id="combo-edit-chain-count">0 models</span>
+                    </label>
+                    <button type="button" class="btn btn-xs btn-primary btn-outline rounded-lg gap-1.5 font-medium px-3" onclick="openEditComboModelPicker()">
+                      <svg xmlns="http://www.w3.org/2000/svg" class="size-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/></svg>
+                      Select Models
+                    </button>
+                  </div>
+
+                  <!-- Hidden input holding ordered targets string -->
+                  <input type="hidden" name="targets" id="combo-edit-targets-hidden" required>
+
+                  <!-- Ordered Chain List Container -->
+                  <div id="combo-edit-chain-container" class="space-y-1.5 min-h-[3.5rem] p-3 rounded-xl bg-base-100 border border-dashed border-base-content/15">
+                    <div id="combo-edit-chain-empty" class="text-center py-4 text-xs text-base-content/40 italic flex flex-col items-center gap-1.5">
+                      <span>No models in target chain.</span>
+                      <button type="button" class="btn btn-xs btn-ghost text-primary hover:underline p-0 h-auto" onclick="openEditComboModelPicker()">
+                        Click here to select models &rarr;
+                      </button>
+                    </div>
+                    <div id="combo-edit-chain-items" class="space-y-1.5 hidden"></div>
+                  </div>
+                </div>
+
+                <div class="modal-action border-t border-base-content/10 pt-3 flex items-center justify-between">
+                  <button type="button" class="btn btn-sm btn-ghost px-4 rounded-xl" onclick="document.getElementById('combo-edit-modal')?.close()">Cancel</button>
+                  <button type="submit" class="btn btn-sm btn-primary px-5 rounded-xl font-medium gap-1.5 shadow-sm">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="size-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>
+                    Save Changes
+                  </button>
+                </div>
+              </form>
             </div>
-          </div>
+            <form method="dialog" class="modal-backdrop"><button>close</button></form>
+          </dialog>
 
           <!-- Combos Table -->
           <div id="combos" hx-get="/combos" hx-trigger="every 2s, refreshCombos from:body" hx-swap="innerHTML">{{template "combos" .}}</div>
@@ -710,11 +777,38 @@
     });
 
     // --- Combo Target Chain Manager ---
-    let comboTargets = [];
+    let comboTargets = [];      // chain being built in the create form
+    let editComboTargets = [];  // chain being edited in the edit modal
+    let pickerContext = 'create';
+
+    // Which chain the picker and the reorder/remove buttons act on.
+    const CHAINS = {
+      create: {
+        ids: { items: 'combo-chain-items', empty: 'combo-chain-empty', count: 'combo-chain-count', hidden: 'combo-targets-hidden' },
+        get: () => comboTargets,
+        set: v => { comboTargets = v; }
+      },
+      edit: {
+        ids: { items: 'combo-edit-chain-items', empty: 'combo-edit-chain-empty', count: 'combo-edit-chain-count', hidden: 'combo-edit-targets-hidden' },
+        get: () => editComboTargets,
+        set: v => { editComboTargets = v; }
+      }
+    };
 
     function openComboModelPicker() {
+      pickerContext = 'create';
+      showComboModelPicker();
+    }
+
+    function openEditComboModelPicker() {
+      pickerContext = 'edit';
+      showComboModelPicker();
+    }
+
+    function showComboModelPicker() {
+      const selected = CHAINS[pickerContext].get();
       document.querySelectorAll('.picker-model-checkbox').forEach(cb => {
-        cb.checked = comboTargets.includes(cb.dataset.target);
+        cb.checked = selected.includes(cb.dataset.target);
       });
       updatePickerCounter();
       document.getElementById('combo-model-picker-modal')?.showModal();
@@ -750,13 +844,14 @@
     }
 
     function applyComboPickerSelection() {
+      const chain = CHAINS[pickerContext];
       const selected = [];
       document.querySelectorAll('.picker-model-checkbox:checked').forEach(cb => {
         selected.push(cb.dataset.target);
       });
       // Retain previous order for already-included items, append new ones
       const newChain = [];
-      comboTargets.forEach(t => {
+      chain.get().forEach(t => {
         if (selected.includes(t)) {
           newChain.push(t);
         }
@@ -766,21 +861,23 @@
           newChain.push(t);
         }
       });
-      comboTargets = newChain;
-      renderComboChain();
+      chain.set(newChain);
+      renderChain(pickerContext);
       document.getElementById('combo-model-picker-modal')?.close();
     }
 
-    function renderComboChain() {
-      const container = document.getElementById('combo-chain-items');
-      const empty = document.getElementById('combo-chain-empty');
-      const countBadge = document.getElementById('combo-chain-count');
-      const hiddenInput = document.getElementById('combo-targets-hidden');
+    function renderChain(context) {
+      const chain = CHAINS[context];
+      const targets = chain.get();
+      const container = document.getElementById(chain.ids.items);
+      const empty = document.getElementById(chain.ids.empty);
+      const countBadge = document.getElementById(chain.ids.count);
+      const hiddenInput = document.getElementById(chain.ids.hidden);
 
-      if (countBadge) countBadge.innerText = `${comboTargets.length} model${comboTargets.length === 1 ? '' : 's'}`;
-      if (hiddenInput) hiddenInput.value = comboTargets.join(',');
+      if (countBadge) countBadge.innerText = `${targets.length} model${targets.length === 1 ? '' : 's'}`;
+      if (hiddenInput) hiddenInput.value = targets.join(',');
 
-      if (comboTargets.length === 0) {
+      if (targets.length === 0) {
         if (empty) empty.classList.remove('hidden');
         if (container) {
           container.classList.add('hidden');
@@ -790,48 +887,74 @@
       }
 
       if (empty) empty.classList.add('hidden');
-      if (container) {
-        container.classList.remove('hidden');
-        container.innerHTML = comboTargets.map((target, idx) => {
-          const parts = target.split('/');
-          const prov = parts[0] || '';
-          const model = parts.slice(1).join('/') || '';
-          const isFirst = idx === 0;
-          const isLast = idx === comboTargets.length - 1;
-          const priorityLabel = idx === 0 ? 'Primary' : `Fallback ${idx}`;
-          return `
-            <div class="flex items-center justify-between p-2.5 rounded-xl bg-base-200/60 hover:bg-base-200 border border-base-content/10 font-mono text-xs transition-colors">
-              <div class="flex items-center gap-2.5 min-w-0 flex-1">
-                <span class="badge ${idx === 0 ? 'badge-primary' : 'badge-ghost'} badge-xs font-sans font-bold px-2 py-0.5 shrink-0">#${idx + 1} ${priorityLabel}</span>
-                <div class="flex items-center gap-1.5 truncate">
-                  <span class="font-bold text-primary">${prov}</span>
-                  <span class="text-base-content/40">/</span>
-                  <span class="font-medium text-base-content truncate">${model}</span>
-                </div>
-              </div>
-              <div class="flex items-center gap-1 shrink-0 ml-2 font-sans">
-                <button type="button" class="btn btn-ghost btn-xs size-7 min-h-0 p-0 rounded-lg text-base-content/70 hover:text-primary ${isFirst ? 'opacity-20 cursor-not-allowed' : ''}" ${isFirst ? 'disabled' : ''} onclick="moveComboTarget(${idx}, -1)" title="Move up in priority">▲</button>
-                <button type="button" class="btn btn-ghost btn-xs size-7 min-h-0 p-0 rounded-lg text-base-content/70 hover:text-primary ${isLast ? 'opacity-20 cursor-not-allowed' : ''}" ${isLast ? 'disabled' : ''} onclick="moveComboTarget(${idx}, 1)" title="Move down in priority">▼</button>
-                <button type="button" class="btn btn-ghost btn-xs size-7 min-h-0 p-0 rounded-lg text-error hover:bg-error/15" onclick="removeComboTarget(${idx})" title="Remove from combo">✕</button>
+      if (!container) return;
+      container.classList.remove('hidden');
+      const moveFn = context === 'edit' ? 'moveEditComboTarget' : 'moveComboTarget';
+      const removeFn = context === 'edit' ? 'removeEditComboTarget' : 'removeComboTarget';
+      container.innerHTML = targets.map((target, idx) => {
+        const parts = target.split('/');
+        const prov = parts[0] || '';
+        const model = parts.slice(1).join('/') || '';
+        const isFirst = idx === 0;
+        const isLast = idx === targets.length - 1;
+        const priorityLabel = idx === 0 ? 'Primary' : `Fallback ${idx}`;
+        return `
+          <div class="flex items-center justify-between p-2.5 rounded-xl bg-base-200/60 hover:bg-base-200 border border-base-content/10 font-mono text-xs transition-colors">
+            <div class="flex items-center gap-2.5 min-w-0 flex-1">
+              <span class="badge ${idx === 0 ? 'badge-primary' : 'badge-ghost'} badge-xs font-sans font-bold px-2 py-0.5 shrink-0">#${idx + 1} ${priorityLabel}</span>
+              <div class="flex items-center gap-1.5 truncate">
+                <span class="font-bold text-primary">${prov}</span>
+                <span class="text-base-content/40">/</span>
+                <span class="font-medium text-base-content truncate">${model}</span>
               </div>
             </div>
-          `;
-        }).join('');
-      }
+            <div class="flex items-center gap-1 shrink-0 ml-2 font-sans">
+              <button type="button" class="btn btn-ghost btn-xs size-7 min-h-0 p-0 rounded-lg text-base-content/70 hover:text-primary ${isFirst ? 'opacity-20 cursor-not-allowed' : ''}" ${isFirst ? 'disabled' : ''} onclick="${moveFn}(${idx}, -1)" title="Move up in priority">▲</button>
+              <button type="button" class="btn btn-ghost btn-xs size-7 min-h-0 p-0 rounded-lg text-base-content/70 hover:text-primary ${isLast ? 'opacity-20 cursor-not-allowed' : ''}" ${isLast ? 'disabled' : ''} onclick="${moveFn}(${idx}, 1)" title="Move down in priority">▼</button>
+              <button type="button" class="btn btn-ghost btn-xs size-7 min-h-0 p-0 rounded-lg text-error hover:bg-error/15" onclick="${removeFn}(${idx})" title="Remove from combo">✕</button>
+            </div>
+          </div>
+        `;
+      }).join('');
+    }
+
+    function renderComboChain() {
+      renderChain('create');
+    }
+
+    function renderEditComboChain() {
+      renderChain('edit');
+    }
+
+    function moveTargetIn(context, index, direction) {
+      const targets = CHAINS[context].get();
+      const newIndex = index + direction;
+      if (newIndex < 0 || newIndex >= targets.length) return;
+      const temp = targets[index];
+      targets[index] = targets[newIndex];
+      targets[newIndex] = temp;
+      renderChain(context);
     }
 
     function moveComboTarget(index, direction) {
-      const newIndex = index + direction;
-      if (newIndex < 0 || newIndex >= comboTargets.length) return;
-      const temp = comboTargets[index];
-      comboTargets[index] = comboTargets[newIndex];
-      comboTargets[newIndex] = temp;
-      renderComboChain();
+      moveTargetIn('create', index, direction);
+    }
+
+    function moveEditComboTarget(index, direction) {
+      moveTargetIn('edit', index, direction);
+    }
+
+    function removeTargetFrom(context, index) {
+      CHAINS[context].get().splice(index, 1);
+      renderChain(context);
     }
 
     function removeComboTarget(index) {
-      comboTargets.splice(index, 1);
-      renderComboChain();
+      removeTargetFrom('create', index);
+    }
+
+    function removeEditComboTarget(index) {
+      removeTargetFrom('edit', index);
     }
 
     function validateComboForm(form) {
@@ -842,12 +965,41 @@
       return true;
     }
 
-    // Reset combo form on successful HTMX combo creation
+    function validateEditComboForm(form) {
+      if (editComboTargets.length === 0) {
+        openEditComboModelPicker();
+        return false;
+      }
+      return true;
+    }
+
+    function openEditComboModal(name, strategy, targetsCsv) {
+      editComboTargets = (targetsCsv || '').split(',').map(s => s.trim()).filter(Boolean);
+      const badge = document.getElementById('combo-edit-name-badge');
+      if (badge) badge.innerText = name;
+      const strategySelect = document.getElementById('combo-edit-strategy');
+      if (strategySelect) strategySelect.value = strategy;
+      const form = document.getElementById('combo-edit-form');
+      if (form) {
+        const action = '/combos/' + encodeURIComponent(name);
+        form.setAttribute('action', action);
+        form.setAttribute('hx-post', action);
+        htmx.process(form);
+      }
+      renderEditComboChain();
+      document.getElementById('combo-edit-modal')?.showModal();
+    }
+
+    // Reset the create form / dismiss the edit modal after a successful mutation
     document.body.addEventListener('htmx:afterRequest', function(evt) {
-      if (evt.detail.successful && evt.detail.elt && evt.detail.elt.matches('form[action="/combos"]')) {
+      if (!evt.detail.successful || !evt.detail.elt) return;
+      if (evt.detail.elt.matches('form[action="/combos"]')) {
         comboTargets = [];
         renderComboChain();
         evt.detail.elt.reset();
+      }
+      if (evt.detail.elt.id === 'combo-edit-form') {
+        document.getElementById('combo-edit-modal')?.close();
       }
     });
     // --- Gateway Inspector & Playground ---
@@ -1545,6 +1697,7 @@
         <td class="font-bold font-mono text-primary py-3.5 px-4 text-sm">{{.Name}}</td>
         <td class="py-3.5 px-4">
           <form action="/combos/{{.Name}}" method="POST" hx-post="/combos/{{.Name}}" hx-target="#combos" hx-swap="innerHTML">
+            <input type="hidden" name="targets" value="{{range $i, $t := .Targets}}{{if $i}},{{end}}{{$t.Provider}}/{{$t.Model}}{{end}}">
             <select name="strategy" class="select select-bordered select-xs font-mono text-xs rounded-lg" onchange="this.form.requestSubmit()">
               <option value="priority" {{if eq .Strategy "priority"}}selected{{end}}>priority</option>
               <option value="fill-first" {{if eq .Strategy "fill-first"}}selected{{end}}>fill-first</option>
@@ -1583,6 +1736,10 @@
           </div>
         </td>
         <td class="text-right py-3.5 px-4 whitespace-nowrap">
+          <button type="button" onclick="openEditComboModal('{{.Name}}', '{{.Strategy}}', '{{range $i, $t := .Targets}}{{if $i}},{{end}}{{$t.Provider}}/{{$t.Model}}{{end}}')" class="btn btn-xs btn-outline btn-primary px-2.5 py-1 h-auto min-h-[1.75rem] rounded-lg gap-1 font-medium mr-1">
+            <svg xmlns="http://www.w3.org/2000/svg" class="size-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" /></svg>
+            Edit
+          </button>
           <button hx-post="/combos/{{.Name}}/delete" hx-target="#combos" hx-swap="innerHTML" hx-confirm="Remove combo {{.Name}}?" class="btn btn-xs btn-outline btn-error px-2.5 py-1 h-auto min-h-[1.75rem] rounded-lg gap-1 font-medium">
             <svg xmlns="http://www.w3.org/2000/svg" class="size-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>
             Delete
