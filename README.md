@@ -89,6 +89,30 @@ You can override the directory or individual files via CLI flags or environment 
 - `-dir <path>` or `OMNIGO_CONFIG_DIR=<path>`
 - `-config <path>`, `-auth <path>`, `-key <path>`
 
+### Timeouts
+
+Two knobs bound every upstream call, and both are hot-reloaded:
+
+```yaml
+server:
+  timeout: 20s          # default 20s
+  stream_timeout: 10m   # default 10m; 0 = no total bound
+```
+
+- `timeout` bounds how long the gateway waits on a provider. A buffered call is
+  capped end to end; a streamed generation is capped per silence, so a long
+  answer is not killed mid-flight. Server keep-alive and shutdown bounds are
+  fixed transport constants, independent of this value.
+- `stream_timeout` caps the total wall-clock time of one streamed generation,
+  time to first byte included. Silence alone cannot end a stream that keeps
+  trickling bytes; this budget can. `0` (or `0s`) disables it, leaving a
+  generation bounded only by silence.
+
+Both take a per-provider override (`providers[].timeout`,
+`providers[].stream_timeout`), which wins over the server value. Nothing caps
+time to first byte separately: the configured value governs it for streams and
+buffered calls alike.
+
 ### Dashboard (optional)
 
 The dashboard is served by default. Set `dashboard.enabled: false` in

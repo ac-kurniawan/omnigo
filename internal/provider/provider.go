@@ -69,11 +69,12 @@ type TestResult struct {
 }
 
 type Config struct {
-	Name      string
-	BaseURL   string
-	Models    []string
-	Timeout   time.Duration
-	Transport http.RoundTripper
+	Name          string
+	BaseURL       string
+	Models        []string
+	Timeout       time.Duration
+	Transport     http.RoundTripper
+	StreamTimeout time.Duration
 }
 
 type Credentials struct {

@@ -221,27 +221,71 @@ func BenchmarkResolveDirectCachedProvider(b *testing.B) {
 	}
 }
 
-func TestProviderReceivesConfiguredTimeout(t *testing.T) {
-	var gotTimeout time.Duration
+func TestProviderReceivesConfiguredTimeouts(t *testing.T) {
+	var got provider.Config
 	provider.Register("openai", func(cfg provider.Config, store provider.CredStore) provider.Provider {
-		gotTimeout = cfg.Timeout
+		got = cfg
 		return &fakeProvider{name: cfg.Name}
 	})
 	cfg := &config.Config{
-		Server: config.Server{Timeout: "40s"},
+		Server: config.Server{Timeout: "40s", StreamTimeout: "15m"},
 		Providers: []config.Provider{
-			{Name: "openai-custom", Type: "openai", Timeout: "12s"},
+			{Name: "openai-custom", Type: "openai", Timeout: "12s", StreamTimeout: "1m"},
 			{Name: "openai-default", Type: "openai"},
 		},
 	}
 	v := &vault.Vault{}
-	_, _ = buildProvider(cfg.Providers[0], vault.NewMemoryStore(v), nil, cfg.DefaultTimeout())
-	if gotTimeout != 12*time.Second {
-		t.Fatalf("custom provider timeout = %v, want 12s", gotTimeout)
+	_, _ = buildProvider(cfg.Providers[0], vault.NewMemoryStore(v), nil, cfg.Timeouts())
+	if got.Timeout != 12*time.Second {
+		t.Fatalf("custom provider timeout = %v, want 12s", got.Timeout)
 	}
-	_, _ = buildProvider(cfg.Providers[1], vault.NewMemoryStore(v), nil, cfg.DefaultTimeout())
-	if gotTimeout != 40*time.Second {
-		t.Fatalf("default provider timeout = %v, want 40s (from server)", gotTimeout)
+	if got.StreamTimeout != time.Minute {
+		t.Fatalf("custom provider stream timeout = %v, want 1m", got.StreamTimeout)
+	}
+	_, _ = buildProvider(cfg.Providers[1], vault.NewMemoryStore(v), nil, cfg.Timeouts())
+	if got.Timeout != 40*time.Second {
+		t.Fatalf("default provider timeout = %v, want 40s (from server)", got.Timeout)
+	}
+	if got.StreamTimeout != 15*time.Minute {
+		t.Fatalf("default provider stream timeout = %v, want 15m (from server)", got.StreamTimeout)
+	}
+}
+
+// A streaming generation whose response headers arrive within the configured
+// provider timeout must succeed; the transport must not impose an independent
+// cap that aborts it early.
+func TestChatStreamAllowsConfiguredTimeToFirstByte(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(80 * time.Millisecond)
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"ok\"}}]}\n\n"))
+		w.(http.Flusher).Flush()
+	}))
+	defer upstream.Close()
+
+	cfg := &config.Config{
+		Providers: []config.Provider{{
+			Name:    "openai",
+			Type:    "openai",
+			BaseURL: upstream.URL,
+			Models:  []string{"gpt-4o"},
+			Timeout: "300ms",
+		}},
+	}
+	rawKey, hash, prefix, _ := auth.GenerateKey()
+	v := &vault.Vault{
+		ProviderSecrets: map[string]vault.ProviderSecret{"openai": {APIKey: "sk-x"}},
+		ClientKeys:      []vault.ClientKey{{ID: "k1", KeyHash: hash, Prefix: prefix, Active: true}},
+	}
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"openai/gpt-4o","stream":true,"messages":[]}`))
+	req.Header.Set("Authorization", "Bearer "+rawKey)
+	rr := httptest.NewRecorder()
+	testRouter(t, cfg, v).ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d body = %s, want 200 (headers arrived within 300ms timeout)", rr.Code, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), "ok") {
+		t.Fatalf("stream body missing data: %s", rr.Body.String())
 	}
 }
 

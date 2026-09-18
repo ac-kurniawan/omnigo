@@ -30,17 +30,17 @@ const (
 var DefaultModels = []string{"gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5", "gpt-5.2"}
 
 type Provider struct {
-	name         string
-	responsesURL string
-	modelsURL    string
-	client       *http.Client
-	stream       *http.Client
-	idle         time.Duration
-	store        provider.CredStore
-	pool         provider.AccountPool
-	tokens       sync.Map
+	name          string
+	responsesURL  string
+	modelsURL     string
+	client        *http.Client
+	stream        *http.Client
+	idle          time.Duration
+	streamTimeout time.Duration
+	store         provider.CredStore
+	pool          provider.AccountPool
+	tokens        sync.Map
 }
-
 type streamState struct {
 	id             string
 	model          string
@@ -82,17 +82,18 @@ func New(cfg provider.Config, store provider.CredStore) provider.Provider {
 	}
 	timeout := cfg.Timeout
 	if timeout <= 0 {
-		timeout = 30 * time.Second
+		timeout = 20 * time.Second
 	}
 	client := &http.Client{Timeout: timeout, Transport: cfg.Transport}
 	return &Provider{
-		name:         cfg.Name,
-		responsesURL: responsesURL,
-		modelsURL:    DefaultModelsURL,
-		client:       client,
-		stream:       provider.StreamClient(client),
-		idle:         timeout,
-		store:        store,
+		name:          cfg.Name,
+		responsesURL:  responsesURL,
+		modelsURL:     DefaultModelsURL,
+		client:        client,
+		stream:        provider.StreamClient(client),
+		idle:          timeout,
+		streamTimeout: cfg.StreamTimeout,
+		store:         store,
 	}
 }
 
@@ -216,7 +217,7 @@ func (p *Provider) chatWithAccount(ctx context.Context, req provider.ChatRequest
 	}
 	// Armed after token refresh so the idle window covers the generation
 	// exchange only, not credential work.
-	guard := provider.NewIdleGuard(p.idle, func() { cancel(provider.ErrUpstreamStall) })
+	guard := provider.NewIdleGuard(p.idle, provider.StreamBudget(p.streamTimeout, req.Stream), func() { cancel(provider.ErrUpstreamStall) })
 	defer guard.Stop()
 	sessionID := randomID()
 	resp, err := p.send(ctx, creds, body, sessionID, req.Stream)
