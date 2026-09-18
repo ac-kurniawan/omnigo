@@ -88,6 +88,23 @@
   </script>
   <style>
     .select-all { user-select: all; }
+    .status-pill {
+      display: inline-flex;
+      min-height: 1.375rem;
+      align-items: center;
+      justify-content: center;
+      border: 1px solid transparent;
+      border-radius: 9999px;
+      padding: 0.1875rem 0.5625rem;
+      font-size: 0.6875rem;
+      font-weight: 600;
+      line-height: 1;
+      white-space: nowrap;
+    }
+    .status-pill-success { color: oklch(var(--bc) / 0.92); background: oklch(var(--su) / 0.12); border-color: oklch(var(--su) / 0.3); }
+    .status-pill-warning { color: oklch(var(--bc) / 0.92); background: oklch(var(--wa) / 0.12); border-color: oklch(var(--wa) / 0.3); }
+    .status-pill-error { color: oklch(var(--bc) / 0.92); background: oklch(var(--er) / 0.12); border-color: oklch(var(--er) / 0.3); }
+    .status-pill-neutral { color: oklch(var(--bc) / 0.82); background: oklch(var(--bc) / 0.07); border-color: oklch(var(--bc) / 0.14); }
   </style>
 </head>
 <body class="bg-base-200/50 min-h-screen text-base-content antialiased flex flex-col justify-between">
@@ -101,7 +118,7 @@
         <div>
           <div class="flex items-center gap-2">
             <span class="text-xl font-black tracking-tight bg-gradient-to-r from-primary via-accent to-secondary bg-clip-text text-transparent">OmniGo</span>
-            <span class="badge badge-primary badge-outline badge-xs font-mono font-semibold px-2 py-0.5">{{.Version}}</span>
+            <span class="status-pill border-primary/35 bg-primary/10 text-base-content/90 font-mono" title="OmniGo version {{.Version}}">{{.Version}}</span>
           </div>
           <div class="text-[10px] text-base-content/60 font-semibold tracking-wider uppercase">Lightweight AI Gateway in Go</div>
         </div>
@@ -1637,12 +1654,12 @@
                     <div class="flex flex-wrap items-center gap-2">
                       <span class="size-2 rounded-full {{if accountHealthy .}}bg-success{{else}}bg-error{{end}}"></span>
                       <span class="font-medium">{{if .Email}}{{.Email}}{{else}}{{.AccountID}}{{end}}</span>
-                      <span class="badge badge-ghost badge-xs">{{accountStatus .}}</span>
+                      <span class="status-pill {{accountStatusClass .}}">{{accountStatus .}}</span>
                       {{if and .Email .AccountID}}<span class="font-mono text-base-content/50">{{.AccountID}}</span>{{end}}
                       {{if $q}}
-                        <button type="button" class="badge {{quotaBadgeClass $q}} badge-xs cursor-pointer" title="{{quotaHeadline $q}}" aria-label="Show full quota detail for {{if .Email}}{{.Email}}{{else}}{{.AccountID}}{{end}}" onclick="document.getElementById('{{quotaModalID $provName (accountIdentity .)}}').showModal()">{{quotaStatusLabel $q}}</button>
+                        <button type="button" class="status-pill {{quotaStatusClass $q}} cursor-pointer" title="{{quotaHeadline $q}}" aria-label="Show full quota detail for {{if .Email}}{{.Email}}{{else}}{{.AccountID}}{{end}}" onclick="document.getElementById('{{quotaModalID $provName (accountIdentity .)}}').showModal()">{{quotaStatusLabel $q}}</button>
                       {{else}}
-                        <span class="badge badge-ghost badge-xs">Quota not polled</span>
+                        <span class="status-pill status-pill-neutral">Not checked</span>
                       {{end}}
                     </div>
                     <div class="flex items-center gap-1">
@@ -1656,11 +1673,11 @@
                       <div class="flex flex-col gap-1.5 pt-0.5">
                         {{range quotaTopWindows $q 3}}
                           <div class="flex items-center gap-2">
-                            <span class="font-mono text-[11px] text-base-content/70 truncate w-36 sm:w-44 shrink-0" title="{{.Name}}">{{.Name}}</span>
-                            <progress class="progress {{quotaWindowProgressClass .}} flex-1 h-2" value="{{.RemainingPercent}}" max="100" aria-label="{{.Name}} remaining quota"></progress>
-                            <span class="font-mono text-[11px] font-semibold w-12 text-right shrink-0">{{quotaFormatPercent .RemainingPercent}}</span>
+                            <span class="font-mono text-[11px] font-medium text-base-content/80 truncate w-36 sm:w-44 shrink-0" title="{{quotaWindowLabel .}}">{{quotaWindowLabel .}}</span>
+                            <progress class="progress {{quotaWindowProgressClass .}} flex-1 h-2" value="{{.RemainingPercent}}" max="100" aria-label="{{quotaWindowLabel .}} remaining quota"></progress>
+                            <span class="font-mono text-[11px] font-semibold text-base-content/90 w-12 text-right shrink-0">{{quotaFormatPercent .RemainingPercent}}</span>
                             {{$rst := quotaResetIn .}}
-                            {{if $rst}}<span class="text-[10px] text-base-content/50 w-16 text-right shrink-0 truncate" title="Resets in {{$rst}}">{{$rst}}</span>{{else}}<span class="w-16 shrink-0"></span>{{end}}
+                            {{if $rst}}<span class="text-[10px] text-base-content/60 w-16 text-right shrink-0 truncate" title="Resets in {{$rst}}">{{$rst}}</span>{{else}}<span class="w-16 shrink-0"></span>{{end}}
                           </div>
                         {{end}}
                         {{if gt (len $q.Windows) 3}}
@@ -1688,11 +1705,11 @@
                             {{range quotaSortedWindows $q}}
                               <div class="flex flex-col gap-1.5 rounded-lg border border-base-content/10 bg-base-200/40 p-2.5">
                                 <div class="flex items-center justify-between gap-1 text-[11px]">
-                                  <span class="font-mono font-medium truncate" title="{{.Name}}">{{.Name}}</span>
-                                  <span class="font-mono font-semibold">{{quotaFormatPercent .RemainingPercent}}</span>
+                                  <span class="font-mono font-medium text-base-content/90 truncate" title="{{quotaWindowLabel .}}">{{quotaWindowLabel .}}</span>
+                                  <span class="font-mono font-semibold text-base-content/90">{{quotaFormatPercent .RemainingPercent}}</span>
                                 </div>
-                                <progress class="progress {{quotaWindowProgressClass .}} w-full h-2" value="{{.RemainingPercent}}" max="100" aria-label="{{.Name}} remaining quota"></progress>
-                                <div class="flex items-center justify-between text-[10px] text-base-content/60">
+                                <progress class="progress {{quotaWindowProgressClass .}} w-full h-2" value="{{.RemainingPercent}}" max="100" aria-label="{{quotaWindowLabel .}} remaining quota"></progress>
+                                <div class="flex items-center justify-between text-[10px] text-base-content/70">
                                   <span>Used: {{quotaFormatPercent .UsedPercent}}</span>
                                   {{$rst := quotaResetIn .}}
                                   {{if $rst}}<span>Resets: {{$rst}}</span>{{end}}
