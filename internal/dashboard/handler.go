@@ -231,6 +231,44 @@ func newServer(getCfg func() *config.Config, store *vault.Store, mutate config.M
 			}
 			return fmt.Sprintf("%.1f%%", p)
 		},
+		"quotaTopWindows": func(snapshot *quota.AccountSnapshot, n int) []quota.Window {
+			if snapshot == nil {
+				return nil
+			}
+			return snapshot.TopWindows(n)
+		},
+		"quotaSortedWindows": func(snapshot *quota.AccountSnapshot) []quota.Window {
+			if snapshot == nil {
+				return nil
+			}
+			return snapshot.SortedWindows()
+		},
+		"quotaWindowProgressClass": func(w quota.Window) string {
+			rem := w.RemainingPercent()
+			switch {
+			case rem < 10:
+				return "progress-error"
+			case rem <= 30:
+				return "progress-warning"
+			default:
+				return "progress-success"
+			}
+		},
+		"quotaObservedAgo": func(snapshot *quota.AccountSnapshot) string {
+			if snapshot == nil || snapshot.ObservedAt.IsZero() {
+				return ""
+			}
+			d := time.Since(snapshot.ObservedAt).Round(time.Second)
+			if d < time.Minute {
+				return "just now"
+			}
+			m := int(d.Minutes())
+			if m < 60 {
+				return fmt.Sprintf("%dm ago", m)
+			}
+			h := int(d.Hours())
+			return fmt.Sprintf("%dh ago", h)
+		},
 		"quotaResetIn": func(w quota.Window) string {
 			if w.ResetAt.IsZero() {
 				return ""
@@ -250,8 +288,17 @@ func newServer(getCfg func() *config.Config, store *vault.Store, mutate config.M
 			return fmt.Sprintf("%dm", m)
 		},
 		"quotaModalID": func(provider, identity string) string {
-			// Derive a stable HTML-safe ID for the modal dialog.
-			safe := strings.NewReplacer(":", "-", "@", "-", "+", "-", ".", "-").Replace(provider + "-" + identity)
+			// Derive a stable HTML-safe ID for the modal dialog and the
+			// aria-labelledby reference to its title. Whitespace must go too:
+			// aria-labelledby is a whitespace-separated id list, so a value
+			// containing a space could never reference the element.
+			safe := strings.Map(func(r rune) rune {
+				switch r {
+				case ':', '@', '+', '.', ' ', '\t', '\n', '\r':
+					return '-'
+				}
+				return r
+			}, provider+"-"+identity)
 			return "quota-modal-" + safe
 		},
 	}).ParseFS(templatesFS, "templates/*.html"))
