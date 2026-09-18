@@ -23,7 +23,7 @@ type Provider struct {
 	idle          time.Duration
 	streamTimeout time.Duration
 	pool          provider.AccountPool
-	refresh       sync.Map
+	tokens        sync.Map
 }
 
 var sseBufferPool = sync.Pool{
@@ -58,13 +58,13 @@ func (p *Provider) Models(ctx context.Context) ([]provider.Model, error) {
 	accounts, drainErr := p.pool.AvailableWithError(p.store)
 	lastErr := drainErr
 	for _, account := range accounts {
-		store := provider.ScopedStore(p.store, account)
-		c, err := p.ensureFreshTokenFrom(ctx, store)
+		tokens := p.tokenManager(account)
+		c, err := tokens.EnsureFreshToken(ctx)
 		if err == nil {
 			var ids []string
 			ids, err = fetchModels(ctx, c.AccessToken, c.ProjectID)
 			if err != nil && isAuthError(err) && c.RefreshToken != "" {
-				if fresh, refErr := p.forceRefreshTokenFrom(ctx, store); refErr == nil {
+				if fresh, refErr := tokens.ForceRefreshToken(ctx, c.AccessToken); refErr == nil {
 					c = fresh
 					ids, err = fetchModels(ctx, c.AccessToken, c.ProjectID)
 				}
@@ -127,8 +127,8 @@ func (p *Provider) ChatCompletion(ctx context.Context, req provider.ChatRequest,
 func (p *Provider) chatWithAccount(ctx context.Context, req provider.ChatRequest, account provider.Credentials, w http.ResponseWriter) error {
 	ctx, cancel := context.WithCancelCause(ctx)
 	defer cancel(nil)
-	store := provider.ScopedStore(p.store, account)
-	c, err := p.ensureFreshTokenFrom(ctx, store)
+	tokens := p.tokenManager(account)
+	c, err := tokens.EnsureFreshToken(ctx)
 	if err != nil {
 		return err
 	}
@@ -141,7 +141,7 @@ func (p *Provider) chatWithAccount(ctx context.Context, req provider.ChatRequest
 		if resp != nil {
 			resp.Body.Close()
 		}
-		if fresh, refErr := p.forceRefreshTokenFrom(ctx, store); refErr == nil {
+		if fresh, refErr := tokens.ForceRefreshToken(ctx, c.AccessToken); refErr == nil {
 			c = fresh
 			resp, err = p.sendStreamRequest(ctx, c, req)
 		} else {
@@ -208,75 +208,13 @@ func isAuthStatus(resp *http.Response) bool {
 	return resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden
 }
 
-// ensureFreshToken refreshes the access token when it is missing or expiring
-// within 5 minutes, persisting the result through the store.
-func (p *Provider) ensureFreshToken(ctx context.Context) (provider.Credentials, error) {
-	accounts := p.pool.Available(p.store)
-	if len(accounts) == 0 {
-		return provider.Credentials{}, fmt.Errorf("antigravity: not authenticated")
-	}
-	return p.ensureFreshTokenFrom(ctx, provider.ScopedStore(p.store, accounts[0]))
-}
-
-func (p *Provider) ensureFreshTokenFrom(ctx context.Context, store provider.CredStore) (provider.Credentials, error) {
-	c := store.Get()
-	if c.AccessToken == "" && c.RefreshToken == "" {
-		return c, fmt.Errorf("antigravity: not authenticated")
-	}
-	if c.AccessToken != "" && !c.ExpiresAt.IsZero() && time.Until(c.ExpiresAt) > 5*time.Minute {
-		return c, nil
-	}
-	if c.RefreshToken == "" {
-		return c, fmt.Errorf("antigravity: token expired and no refresh token")
-	}
-	return p.forceRefreshTokenFrom(ctx, store)
-}
-
-func (p *Provider) forceRefreshToken(ctx context.Context) (provider.Credentials, error) {
-	accounts := p.pool.Available(p.store)
-	if len(accounts) == 0 {
-		return provider.Credentials{}, fmt.Errorf("antigravity: not authenticated")
-	}
-	return p.forceRefreshTokenFrom(ctx, provider.ScopedStore(p.store, accounts[0]))
-}
-
-func (p *Provider) forceRefreshTokenFrom(ctx context.Context, store provider.CredStore) (provider.Credentials, error) {
-	c := store.Get()
-	key := c.Identity()
+func (p *Provider) tokenManager(account provider.Credentials) *TokenManager {
+	key := account.Identity()
 	if key == "" {
-		key = c.RefreshToken
+		key = account.RefreshToken
 	}
-	lockValue, _ := p.refresh.LoadOrStore(key, &sync.Mutex{})
-	lock := lockValue.(*sync.Mutex)
-	lock.Lock()
-	defer lock.Unlock()
-	latest := store.Get()
-	if latest.AccessToken != c.AccessToken && latest.AccessToken != "" {
-		return latest, nil
-	}
-	c = latest
-	if c.RefreshToken == "" {
-		return c, fmt.Errorf("antigravity: no refresh token")
-	}
-	tok, err := Refresh(ctx, c.RefreshToken)
-	if err != nil {
-		return c, err
-	}
-	c.AccessToken = tok.AccessToken
-	c.ExpiresAt = tok.ExpiresAt
-	if tok.RefreshToken != "" {
-		c.RefreshToken = tok.RefreshToken
-	}
-	// Discover project if empty
-	if c.ProjectID == "" {
-		if pid, err := DiscoverProject(ctx, c.AccessToken); err == nil && pid != "" {
-			c.ProjectID = pid
-		}
-	}
-	if err := store.Put(c); err != nil {
-		return c, err
-	}
-	return c, nil
+	manager, _ := p.tokens.LoadOrStore(key, NewTokenManager(provider.ScopedStore(p.store, account)))
+	return manager.(*TokenManager)
 }
 
 func (p *Provider) completeToOpenAI(r io.Reader, model string, w http.ResponseWriter) error {
