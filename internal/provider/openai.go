@@ -20,27 +20,29 @@ var streamBufferPool = sync.Pool{
 }
 
 type openAIProvider struct {
-	name    string
-	baseURL string
-	store   CredStore
-	client  *http.Client
-	stream  *http.Client
-	idle    time.Duration
+	name          string
+	baseURL       string
+	store         CredStore
+	client        *http.Client
+	stream        *http.Client
+	idle          time.Duration
+	streamTimeout time.Duration
 }
 
 func NewOpenAI(cfg Config, store CredStore) Provider {
 	timeout := cfg.Timeout
 	if timeout <= 0 {
-		timeout = 30 * time.Second
+		timeout = 20 * time.Second
 	}
 	client := &http.Client{Timeout: timeout, Transport: cfg.Transport}
 	return &openAIProvider{
-		name:    cfg.Name,
-		baseURL: strings.TrimRight(cfg.BaseURL, "/"),
-		store:   store,
-		client:  client,
-		stream:  StreamClient(client),
-		idle:    timeout,
+		name:          cfg.Name,
+		baseURL:       strings.TrimRight(cfg.BaseURL, "/"),
+		store:         store,
+		client:        client,
+		stream:        StreamClient(client),
+		idle:          timeout,
+		streamTimeout: cfg.StreamTimeout,
 	}
 }
 
@@ -94,7 +96,7 @@ func (p *openAIProvider) ChatCompletion(ctx context.Context, req ChatRequest, w 
 	}
 	ctx, cancel := context.WithCancelCause(ctx)
 	defer cancel(nil)
-	guard := NewIdleGuard(p.idle, func() { cancel(ErrUpstreamStall) })
+	guard := NewIdleGuard(p.idle, StreamBudget(p.streamTimeout, req.Stream), func() { cancel(ErrUpstreamStall) })
 	defer guard.Stop()
 	up, err := http.NewRequestWithContext(ctx, http.MethodPost, p.baseURL+"/chat/completions", bytes.NewReader(body))
 	if err != nil {

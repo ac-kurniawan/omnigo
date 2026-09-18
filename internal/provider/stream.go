@@ -3,26 +3,40 @@ package provider
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"sync"
 	"time"
 )
 
-// ErrUpstreamStall reports that a streaming upstream sent no data for longer
-// than the idle timeout. It is an upstream fault, so combo routing drains the
-// target and fails over.
-var ErrUpstreamStall = errors.New("upstream stalled: no data within idle timeout")
+// ErrUpstreamStall reports that a streaming upstream stopped making progress
+// within its bounds: it went silent past the idle timeout, or the whole
+// generation outlived the stream timeout. Either way it is an upstream fault,
+// so combo routing drains the target and fails over. The bound that tripped is
+// named in the error returned by IdleGuard.Err.
+var ErrUpstreamStall = errors.New("upstream stalled")
 
 // StreamClient returns a client with no wall-clock deadline, for streaming
 // generations. Total generation time cannot bound a stream: a long answer and
 // a dead connection look identical to a clock. IdleGuard bounds silence
-// instead, and the transport's ResponseHeaderTimeout bounds time to first byte.
+// instead, and its stream budget bounds a generation that never finishes.
 func StreamClient(client *http.Client) *http.Client {
 	if client == nil {
 		return &http.Client{}
 	}
 	return &http.Client{Transport: client.Transport, CheckRedirect: client.CheckRedirect, Jar: client.Jar}
+}
+
+// StreamBudget returns the total wall-clock budget for one generation: the
+// configured stream timeout when streaming, and 0 (unbounded) otherwise, since
+// a buffered exchange is already bounded by its client timeout. A non-positive
+// total leaves a stream unbounded, so only silence is bounded.
+func StreamBudget(total time.Duration, streaming bool) time.Duration {
+	if !streaming {
+		return 0
+	}
+	return total
 }
 
 // ClientFor selects the transport client for a request. Only a stream may run
@@ -36,32 +50,43 @@ func ClientFor(stream, buffered *http.Client, streaming bool) *http.Client {
 	return buffered
 }
 
-// IdleGuard cancels a generation when the upstream goes silent for longer than
-// idle. Wrap the response body with Wrap, then Stop the guard once the body is
-// closed. A non-positive idle or nil cancel disables the guard.
+// IdleGuard cancels a generation that stops making progress: the upstream went
+// silent for longer than idle, or the whole generation outlived budget (when
+// budget is positive). Silence alone cannot bound a stream that trickles bytes
+// forever; a budget can, while leaving a long generation free of a wall-clock
+// cap. Wrap the response body with Wrap, then Stop the guard once the body is
+// closed. A nil cancel disables the guard, a non-positive idle disables the
+// silence bound, and a non-positive budget disables the total bound.
 type IdleGuard struct {
 	idle   time.Duration
+	budget time.Duration
 	cancel context.CancelFunc
 
-	mu      sync.Mutex
-	last    time.Time
-	timer   *time.Timer
-	stalled bool
+	mu       sync.Mutex
+	last     time.Time
+	timer    *time.Timer
+	total    *time.Timer
+	stallErr error
 }
 
-func NewIdleGuard(idle time.Duration, cancel context.CancelFunc) *IdleGuard {
-	g := &IdleGuard{idle: idle, cancel: cancel, last: time.Now()}
-	if idle <= 0 || cancel == nil {
+func NewIdleGuard(idle, budget time.Duration, cancel context.CancelFunc) *IdleGuard {
+	g := &IdleGuard{idle: idle, budget: budget, cancel: cancel, last: time.Now()}
+	if cancel == nil {
 		return g
 	}
-	g.timer = time.AfterFunc(idle, g.onIdle)
+	if idle > 0 {
+		g.timer = time.AfterFunc(idle, g.onIdle)
+	}
+	if budget > 0 {
+		g.total = time.AfterFunc(budget, g.onBudget)
+	}
 	return g
 }
 
 func (g *IdleGuard) onIdle() {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	if g.stalled {
+	if g.stallErr != nil {
 		return
 	}
 	// Data may have arrived between the fire and this lock; recheck instead of
@@ -70,14 +95,28 @@ func (g *IdleGuard) onIdle() {
 		g.timer.Reset(g.idle)
 		return
 	}
-	g.stalled = true
+	g.stall(fmt.Errorf("%w: no data within %s", ErrUpstreamStall, g.idle))
+}
+
+func (g *IdleGuard) onBudget() {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.stallErr != nil {
+		return
+	}
+	g.stall(fmt.Errorf("%w: generation exceeded %s", ErrUpstreamStall, g.budget))
+}
+
+// stall records cause and cancels the generation. Callers hold g.mu.
+func (g *IdleGuard) stall(cause error) {
+	g.stallErr = cause
 	g.cancel()
 }
 
 func (g *IdleGuard) touch() {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	if g.stalled || g.timer == nil {
+	if g.stallErr != nil || g.timer == nil {
 		return
 	}
 	g.last = time.Now()
@@ -86,18 +125,21 @@ func (g *IdleGuard) touch() {
 
 // Wrap restarts the idle countdown whenever bytes arrive from r.
 func (g *IdleGuard) Wrap(r io.Reader) io.Reader {
-	if g.timer == nil {
+	if g.timer == nil && g.total == nil {
 		return r
 	}
 	return &idleReader{reader: r, guard: g}
 }
 
-// Stop releases the timer once the response body is no longer read.
+// Stop releases the timers once the response body is no longer read.
 func (g *IdleGuard) Stop() {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	if g.timer != nil {
 		g.timer.Stop()
+	}
+	if g.total != nil {
+		g.total.Stop()
 	}
 }
 
@@ -105,14 +147,17 @@ func (g *IdleGuard) Stop() {
 func (g *IdleGuard) Stalled() bool {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	return g.stalled
+	return g.stallErr != nil
 }
 
-// Err reports ErrUpstreamStall in place of the context cancellation this guard
-// caused, so callers do not see a bare "context canceled" for a dead upstream.
+// Err reports the stall this guard caused, naming the bound that tripped,
+// instead of the bare context cancellation the caller observed, so a dead
+// upstream is never reported as a cancelled client.
 func (g *IdleGuard) Err(err error) error {
-	if err != nil && g.Stalled() {
-		return ErrUpstreamStall
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if err != nil && g.stallErr != nil {
+		return g.stallErr
 	}
 	return err
 }
@@ -130,7 +175,7 @@ func (r *idleReader) Read(p []byte) (int, error) {
 	if err != nil && r.guard.Stalled() {
 		// The cancel that aborted this read was ours, so report the stall
 		// rather than a bare context cancellation.
-		return n, ErrUpstreamStall
+		return n, r.guard.Err(err)
 	}
 	return n, err
 }

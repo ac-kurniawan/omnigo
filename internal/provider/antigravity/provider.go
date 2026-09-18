@@ -16,13 +16,14 @@ import (
 )
 
 type Provider struct {
-	name    string
-	store   provider.CredStore
-	client  *http.Client
-	stream  *http.Client
-	idle    time.Duration
-	pool    provider.AccountPool
-	refresh sync.Map
+	name          string
+	store         provider.CredStore
+	client        *http.Client
+	stream        *http.Client
+	idle          time.Duration
+	streamTimeout time.Duration
+	pool          provider.AccountPool
+	refresh       sync.Map
 }
 
 var sseBufferPool = sync.Pool{
@@ -38,15 +39,16 @@ func New(cfg provider.Config, store provider.CredStore) provider.Provider {
 	}
 	timeout := cfg.Timeout
 	if timeout <= 0 {
-		timeout = 30 * time.Second
+		timeout = 20 * time.Second
 	}
 	client := &http.Client{Timeout: timeout, Transport: cfg.Transport}
 	return &Provider{
-		name:   cfg.Name,
-		store:  store,
-		client: client,
-		stream: provider.StreamClient(client),
-		idle:   timeout,
+		name:          cfg.Name,
+		store:         store,
+		client:        client,
+		stream:        provider.StreamClient(client),
+		idle:          timeout,
+		streamTimeout: cfg.StreamTimeout,
 	}
 }
 
@@ -132,7 +134,7 @@ func (p *Provider) chatWithAccount(ctx context.Context, req provider.ChatRequest
 	}
 	// Armed after token refresh so the idle window covers the generation
 	// exchange only, not credential work.
-	guard := provider.NewIdleGuard(p.idle, func() { cancel(provider.ErrUpstreamStall) })
+	guard := provider.NewIdleGuard(p.idle, provider.StreamBudget(p.streamTimeout, req.Stream), func() { cancel(provider.ErrUpstreamStall) })
 	defer guard.Stop()
 	resp, err := p.sendStreamRequest(ctx, c, req)
 	if err != nil && isAuthStatus(resp) && c.RefreshToken != "" {
