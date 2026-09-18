@@ -66,7 +66,7 @@ docker run -d \
   ghcr.io/ac-kurniawan/omnigo:latest
 ```
 
-Dashboard: `http://localhost:8080` (HTTP Basic Auth: `admin`/`admin` by default, or set via `OMNIGO_DASH_USER` / `OMNIGO_DASH_PASS`; toggle with `dashboard.auth` in `config.yaml`) · API: `http://localhost:8080/v1`
+Dashboard: `http://localhost:8080` (HTTP Basic Auth: `admin`/`admin` by default, or set via `OMNIGO_DASH_USER` / `OMNIGO_DASH_PASS`; toggle with `dashboard.auth` in `config.yaml`; serve with `dashboard.enabled`, default `true`) · API: `http://localhost:8080/v1`
 
 ```bash
 curl http://localhost:8080/v1/chat/completions \
@@ -89,6 +89,18 @@ You can override the directory or individual files via CLI flags or environment 
 - `-dir <path>` or `OMNIGO_CONFIG_DIR=<path>`
 - `-config <path>`, `-auth <path>`, `-key <path>`
 
+### Dashboard (optional)
+
+The dashboard is served by default. Set `dashboard.enabled: false` in
+`config.yaml` to turn it off: the UI, its static assets, and the `/internal/*`
+helpers then answer `404`, and basic auth is not applied. The toggle is
+hot-reloaded, and `/v1/*`, `/health`, and `/actuator/metrics` are unaffected.
+Use it when the management UI should not be reachable where the gateway runs.
+
+```yaml
+dashboard:
+  enabled: false
+```
 
 ### Metrics (optional)
 

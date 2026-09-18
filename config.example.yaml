@@ -5,6 +5,7 @@ server:
 
 
 dashboard:
+  # enabled: true  # serve the dashboard UI; false answers 404 for the UI and /internal/* (default: true)
   # auth: true  # HTTP basic auth for dashboard (default: true; env OMNIGO_DASH_USER / OMNIGO_DASH_PASS, fallback: admin/admin)
 
 # Observability. Metrics default to disabled.

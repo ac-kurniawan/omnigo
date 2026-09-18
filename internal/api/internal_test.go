@@ -117,3 +117,18 @@ func TestInternalTestProvider(t *testing.T) {
 		t.Fatalf("body = %s", rr.Body.String())
 	}
 }
+
+func TestInternalEndpointsDisabledWithDashboard(t *testing.T) {
+	off := false
+	cfg := &config.Config{Dashboard: config.Dashboard{Enabled: &off}}
+	for _, path := range []string{"/internal/test/openai", "/internal/refresh-models/openai"} {
+		// A deliberately invalid CSRF/origin request: while disabled the path
+		// must be indistinguishable from unregistered, so 404 wins over 403.
+		req := httptest.NewRequest(http.MethodPost, path, nil)
+		rr := httptest.NewRecorder()
+		testRouter(t, cfg, &vault.Vault{}).ServeHTTP(rr, req)
+		if rr.Code != http.StatusNotFound {
+			t.Fatalf("%s: status = %d, want 404", path, rr.Code)
+		}
+	}
+}
