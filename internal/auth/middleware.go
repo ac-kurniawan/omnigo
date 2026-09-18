@@ -16,12 +16,12 @@ func Middleware(getVault func() *vault.Vault) func(http.Handler) http.Handler {
 	var mu sync.RWMutex
 	var cachedVault *vault.Vault
 	var keys map[string]vault.ClientKey
-	lookup := func(v *vault.Vault, raw string) bool {
+	lookup := func(v *vault.Vault, raw string) (vault.ClientKey, bool) {
 		mu.RLock()
 		if v == cachedVault {
-			_, ok := Lookup(keys, raw)
+			key, ok := Lookup(keys, raw)
 			mu.RUnlock()
-			return ok
+			return key, ok
 		}
 		mu.RUnlock()
 
@@ -30,9 +30,9 @@ func Middleware(getVault func() *vault.Vault) func(http.Handler) http.Handler {
 			keys = IndexKeys(v.ClientKeys)
 			cachedVault = v
 		}
-		_, ok := Lookup(keys, raw)
+		key, ok := Lookup(keys, raw)
 		mu.Unlock()
-		return ok
+		return key, ok
 	}
 
 	return func(next http.Handler) http.Handler {
@@ -47,10 +47,12 @@ func Middleware(getVault func() *vault.Vault) func(http.Handler) http.Handler {
 				unauthorized(w)
 				return
 			}
-			if !lookup(v, raw) {
+			key, ok := lookup(v, raw)
+			if !ok {
 				unauthorized(w)
 				return
 			}
+			CallerFrom(r.Context()).Set(key)
 			next.ServeHTTP(w, r)
 		})
 	}

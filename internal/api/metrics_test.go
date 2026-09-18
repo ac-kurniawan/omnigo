@@ -82,11 +82,11 @@ type testMetrics struct {
 	comboCalls    [][2]string
 }
 
-func (m *testMetrics) RecordProviderRequest(provider, model, result string) {
+func (m *testMetrics) RecordProviderRequest(ctx context.Context, provider, model, result string) {
 	m.providerCalls = append(m.providerCalls, [3]string{provider, model, result})
 }
 
-func (m *testMetrics) RecordCombinationAttempt(combo, result string) {
+func (m *testMetrics) RecordCombinationAttempt(ctx context.Context, combo, result string) {
 	m.comboCalls = append(m.comboCalls, [2]string{combo, result})
 }
 
@@ -259,5 +259,118 @@ func TestMethodLabelIsBoundedToKnownMethods(t *testing.T) {
 	}
 	if !strings.Contains(body, `http_request_method="other"`) {
 		t.Fatalf("expected unknown methods to collapse to \"other\"\n%s", body)
+	}
+}
+
+// seriesLine returns the first exposition line for metric that carries every
+// want substring, or "" when no such series was recorded. Label order in the
+// exposition is the client library's business, so match per label instead.
+func seriesLine(body, metric string, want ...string) string {
+	for _, line := range strings.Split(body, "\n") {
+		if !strings.HasPrefix(line, metric) {
+			continue
+		}
+		matched := true
+		for _, w := range want {
+			if !strings.Contains(line, w) {
+				matched = false
+				break
+			}
+		}
+		if matched {
+			return line
+		}
+	}
+	return ""
+}
+
+// Grouping gateway traffic by client key is the point of the label: the
+// authenticated key's id must reach both the HTTP series and the provider
+// outcome counter for a request that passed auth.
+func TestMetricsCarryClientKeyIDLabel(t *testing.T) {
+	provider.Register("openai", func(pcfg provider.Config, store provider.CredStore) provider.Provider {
+		return &fakeProvider{name: pcfg.Name, chat: func(r provider.ChatRequest) error { return nil }}
+	})
+	on := true
+	cfg := &config.Config{
+		Observability: config.Observability{Metrics: &on},
+		Providers:     []config.Provider{{Name: "solo", Type: "openai", Models: []string{"m1"}}},
+	}
+	metrics, err := observability.New(func() bool { return true }, "test-version")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = metrics.Shutdown(context.Background()) }()
+
+	raw, hash, prefix, err := auth.GenerateKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	v := &vault.Vault{ClientKeys: []vault.ClientKey{{ID: "k1", KeyHash: hash, Prefix: prefix, Active: true}}}
+	router := NewRouter(func() *config.Config { return cfg }, vault.NewMemoryStore(v), nil, nil, "test-version", metrics)
+	app := metrics.Middleware(router)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"solo/m1","messages":[]}`))
+	req.Header.Set("Authorization", "Bearer "+raw)
+	rr := httptest.NewRecorder()
+	app.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("chat status = %d, body = %s", rr.Code, rr.Body.String())
+	}
+
+	scrapeRec := httptest.NewRecorder()
+	metrics.Handler().ServeHTTP(scrapeRec, httptest.NewRequest(http.MethodGet, "/actuator/metrics", nil))
+	body := scrapeRec.Body.String()
+
+	if line := seriesLine(body, "http_server_request_duration_seconds_count", `http_route="/v1/chat/completions"`); line == "" {
+		t.Fatalf("no http duration series for /v1/chat/completions\n%s", body)
+	} else if !strings.Contains(line, `api_key_id="k1"`) {
+		t.Errorf("http duration series missing the client key label: %s", line)
+	}
+	if line := seriesLine(body, "omnigo_provider_requests_total", `gen_ai_system="solo"`); line == "" {
+		t.Fatalf("no provider request series for solo\n%s", body)
+	} else if !strings.Contains(line, `api_key_id="k1"`) {
+		t.Errorf("provider request series missing the client key label: %s", line)
+	}
+}
+
+// A rejected key must not become a label: otherwise anyone could mint an
+// unbounded series set by inventing key material, and the label would report
+// traffic for keys that were never issued. Unauthenticated traffic reports
+// "none" instead.
+func TestClientKeyLabelIsBoundedToValidatedKeys(t *testing.T) {
+	on := true
+	cfg := &config.Config{Observability: config.Observability{Metrics: &on}}
+	metrics, err := observability.New(func() bool { return true }, "test-version")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = metrics.Shutdown(context.Background()) }()
+
+	_, hash, prefix, err := auth.GenerateKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	v := &vault.Vault{ClientKeys: []vault.ClientKey{{ID: "k1", KeyHash: hash, Prefix: prefix, Active: true}}}
+	router := NewRouter(func() *config.Config { return cfg }, vault.NewMemoryStore(v), nil, nil, "test-version", metrics)
+	app := metrics.Middleware(router)
+
+	for _, suffix := range []string{"A1", "A2", "A3", "A4", "A5"} {
+		req := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+		req.Header.Set("Authorization", "Bearer ak-ATTACK-"+suffix)
+		app.ServeHTTP(httptest.NewRecorder(), req)
+	}
+
+	scrapeRec := httptest.NewRecorder()
+	metrics.Handler().ServeHTTP(scrapeRec, httptest.NewRequest(http.MethodGet, "/actuator/metrics", nil))
+	body := scrapeRec.Body.String()
+
+	if strings.Contains(body, "ATTACK") {
+		t.Fatalf("client-supplied key became a metric label\n%s", body)
+	}
+	if line := seriesLine(body, "http_server_request_duration_seconds_count", `http_route="/v1/models"`); line == "" {
+		t.Fatalf("no http duration series for /v1/models\n%s", body)
+	} else if !strings.Contains(line, `api_key_id="none"`) {
+		t.Errorf("rejected key should report api_key_id=\"none\": %s", line)
 	}
 }
