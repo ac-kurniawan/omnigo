@@ -51,6 +51,16 @@ func TestSharedTransportReusesConnections(t *testing.T) {
 	}
 }
 
+// A provider configured with a long timeout must be allowed to wait for
+// response headers that long: a hardcoded transport cap would undercut it for
+// every provider sharing the pool, since the pool is shared and the cap cannot
+// vary per provider.
+func TestSharedTransportDoesNotCapTimeToFirstByte(t *testing.T) {
+	if got := newSharedTransport().ResponseHeaderTimeout; got != 0 {
+		t.Fatalf("ResponseHeaderTimeout = %v, want 0 (bounded per request by the configured timeout)", got)
+	}
+}
+
 func TestRegistryKeepsDisabledProvidersForInternalEndpoints(t *testing.T) {
 	provider.Register("disabled-registry-test", func(cfg provider.Config, store provider.CredStore) provider.Provider {
 		return &fakeProvider{name: cfg.Name}
@@ -89,6 +99,32 @@ func TestRegistryReusesCodexProviderAndCredentialsAcrossReload(t *testing.T) {
 	}
 }
 
+// A changed stream timeout must rebuild the provider: reusing the cached
+// instance would silently keep imposing the previous budget after a reload.
+func TestRegistryRebuildsProviderOnStreamTimeoutChange(t *testing.T) {
+	var got provider.Config
+	provider.Register("stream-timeout-reload-test", func(cfg provider.Config, store provider.CredStore) provider.Provider {
+		got = cfg
+		return &fakeProvider{name: cfg.Name}
+	})
+	registry := newProviderRegistry(vault.NewMemoryStore(&vault.Vault{}))
+	cfg := &config.Config{Providers: []config.Provider{{Name: "p", Type: "stream-timeout-reload-test", StreamTimeout: "1m"}}}
+	if _, ok := registry.Get(cfg, "p"); !ok {
+		t.Fatal("provider missing")
+	}
+	if got.StreamTimeout != time.Minute {
+		t.Fatalf("stream timeout = %v, want 1m", got.StreamTimeout)
+	}
+
+	cfg2 := &config.Config{Providers: []config.Provider{{Name: "p", Type: "stream-timeout-reload-test", StreamTimeout: "9m"}}}
+	if _, ok := registry.Get(cfg2, "p"); !ok {
+		t.Fatal("provider missing after reload")
+	}
+	if got.StreamTimeout != 9*time.Minute {
+		t.Fatalf("stream timeout after reload = %v, want 9m (provider was reused)", got.StreamTimeout)
+	}
+}
+
 func BenchmarkBuildProviderPerRequest(b *testing.B) {
 	provider.Register("bench-baseline", func(cfg provider.Config, store provider.CredStore) provider.Provider {
 		return &fakeProvider{name: cfg.Name}
@@ -98,7 +134,7 @@ func BenchmarkBuildProviderPerRequest(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for b.Loop() {
-		if _, err := buildProvider(pc, store, nil, 30*time.Second); err != nil {
+		if _, err := buildProvider(pc, store, nil, config.Timeouts{Request: 20 * time.Second, Stream: 10 * time.Minute}); err != nil {
 			b.Fatal(err)
 		}
 	}

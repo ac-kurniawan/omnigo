@@ -3,7 +3,6 @@ package api
 import (
 	"fmt"
 	"net/http"
-	"time"
 
 	"github.com/ac-kurniawan/omnigo/internal/config"
 	"github.com/ac-kurniawan/omnigo/internal/provider"
@@ -78,22 +77,18 @@ func secretFromCredentials(c provider.Credentials) vault.ProviderSecret {
 	}
 }
 
-func buildProvider(cfg config.Provider, store *vault.Store, transport http.RoundTripper, defaultTimeout ...time.Duration) (provider.Provider, error) {
+func buildProvider(cfg config.Provider, store *vault.Store, transport http.RoundTripper, defaults config.Timeouts) (provider.Provider, error) {
 	factory, ok := provider.Get(cfg.Type)
 	if !ok {
 		return nil, fmt.Errorf("unknown provider type %q", cfg.Type)
 	}
-	def := 30 * time.Second
-	if len(defaultTimeout) > 0 && defaultTimeout[0] > 0 {
-		def = defaultTimeout[0]
-	}
-	timeout := cfg.ParsedTimeout(def)
 	p := factory(provider.Config{
-		Name:      cfg.Name,
-		BaseURL:   cfg.BaseURL,
-		Models:    cfg.Models,
-		Timeout:   timeout,
-		Transport: transport,
+		Name:          cfg.Name,
+		BaseURL:       cfg.BaseURL,
+		Models:        cfg.Models,
+		Timeout:       cfg.ParsedTimeout(defaults.Request),
+		StreamTimeout: cfg.ParsedStreamTimeout(defaults.Stream),
+		Transport:     transport,
 	}, credStore{store: store, name: cfg.Name})
 	if cfg.MaxConcurrency > 0 {
 		p = provider.WithConcurrencyLimit(p, cfg.MaxConcurrency)

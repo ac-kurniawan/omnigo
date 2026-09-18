@@ -115,6 +115,17 @@ func newApp(getCfg func() *config.Config, store *vault.Store, mutate config.Muta
 	return metrics.Middleware(root)
 }
 
+// Server lifecycle bounds are transport concerns, independent of the
+// configured upstream timeout: a request may legitimately wait longer than a
+// keep-alive or a shutdown drain should.
+const (
+	// idleTimeout closes keep-alive connections abandoned between requests.
+	idleTimeout = 120 * time.Second
+	// shutdownDrainTimeout gives in-flight generations time to finish before
+	// the process exits.
+	shutdownDrainTimeout = 30 * time.Second
+)
+
 func main() {
 	dirFlag := flag.String("dir", "", "path to omnigo config directory (default: ~/.config/omnigo)")
 	cfgFlag := flag.String("config", "", "path to config.yaml (overrides default in config dir)")
@@ -183,7 +194,7 @@ func main() {
 		Addr:              addr,
 		Handler:           newApp(state.getCfg, state.store, state.mutate, tracker, metrics),
 		ReadHeaderTimeout: 10 * time.Second,
-		IdleTimeout:       state.getCfg().DefaultTimeout() * 2,
+		IdleTimeout:       idleTimeout,
 	}
 
 	serverErr := make(chan error, 1)
@@ -198,11 +209,7 @@ func main() {
 		log.Fatalf("server: %v", err)
 	case <-sigCtx.Done():
 		log.Printf("shutting down OmniGo gracefully...")
-		drainTimeout := state.getCfg().DefaultTimeout()
-		if drainTimeout < 10*time.Second {
-			drainTimeout = 10 * time.Second
-		}
-		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), drainTimeout)
+		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), shutdownDrainTimeout)
 		defer shutdownCancel()
 		if err := srv.Shutdown(shutdownCtx); err != nil {
 			log.Printf("shutdown error: %v", err)

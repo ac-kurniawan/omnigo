@@ -116,17 +116,65 @@ func TestLoadProviderDisabled(t *testing.T) {
 	}
 }
 
-func TestTimeoutDefaultIs30s(t *testing.T) {
+func TestTimeoutDefaultIs20s(t *testing.T) {
 	cfg := &Config{}
-	if got := cfg.DefaultTimeout(); got != 30*time.Second {
-		t.Fatalf("DefaultTimeout = %v, want 30s", got)
+	if got := cfg.DefaultTimeout(); got != 20*time.Second {
+		t.Fatalf("DefaultTimeout = %v, want 20s", got)
 	}
-	if got := cfg.Server.ParsedTimeout(); got != 30*time.Second {
-		t.Fatalf("Server.ParsedTimeout = %v, want 30s", got)
+	if got := cfg.Server.ParsedTimeout(); got != 20*time.Second {
+		t.Fatalf("Server.ParsedTimeout = %v, want 20s", got)
 	}
 	p := Provider{Name: "test", Type: "openai"}
-	if got := p.ParsedTimeout(cfg.DefaultTimeout()); got != 30*time.Second {
-		t.Fatalf("Provider.ParsedTimeout = %v, want 30s", got)
+	if got := p.ParsedTimeout(cfg.DefaultTimeout()); got != 20*time.Second {
+		t.Fatalf("Provider.ParsedTimeout = %v, want 20s", got)
+	}
+}
+
+func TestStreamTimeoutDefaultsAndOverrides(t *testing.T) {
+	cfg := &Config{}
+	if got := cfg.DefaultStreamTimeout(); got != 10*time.Minute {
+		t.Fatalf("DefaultStreamTimeout = %v, want 10m", got)
+	}
+	if got := cfg.Server.ParsedStreamTimeout(); got != 10*time.Minute {
+		t.Fatalf("Server.ParsedStreamTimeout = %v, want 10m", got)
+	}
+	p := Provider{Name: "test", Type: "openai"}
+	if got := p.ParsedStreamTimeout(cfg.DefaultStreamTimeout()); got != 10*time.Minute {
+		t.Fatalf("Provider.ParsedStreamTimeout = %v, want 10m", got)
+	}
+
+	cfgCustom := &Config{
+		Server: Server{StreamTimeout: "5m"},
+		Providers: []Provider{
+			{Name: "custom", Type: "openai", StreamTimeout: "30m"},
+			{Name: "unbounded", Type: "openai", StreamTimeout: "0s"},
+			{Name: "fallback", Type: "openai"},
+		},
+	}
+	if got := cfgCustom.DefaultStreamTimeout(); got != 5*time.Minute {
+		t.Fatalf("Server custom stream timeout = %v, want 5m", got)
+	}
+	if got := cfgCustom.Providers[0].ParsedStreamTimeout(cfgCustom.DefaultStreamTimeout()); got != 30*time.Minute {
+		t.Fatalf("custom provider stream timeout = %v, want 30m", got)
+	}
+	if got := cfgCustom.Providers[1].ParsedStreamTimeout(cfgCustom.DefaultStreamTimeout()); got != 0 {
+		t.Fatalf("unbounded provider stream timeout = %v, want 0", got)
+	}
+	if got := cfgCustom.Providers[2].ParsedStreamTimeout(cfgCustom.DefaultStreamTimeout()); got != 5*time.Minute {
+		t.Fatalf("fallback provider stream timeout = %v, want 5m", got)
+	}
+
+	cfgServerZero := &Config{
+		Server: Server{StreamTimeout: "0s"},
+		Providers: []Provider{
+			{Name: "server-unbounded", Type: "openai"},
+		},
+	}
+	if got := cfgServerZero.DefaultStreamTimeout(); got != 0 {
+		t.Fatalf("Server 0s stream timeout = %v, want 0", got)
+	}
+	if got := cfgServerZero.Providers[0].ParsedStreamTimeout(cfgServerZero.DefaultStreamTimeout()); got != 0 {
+		t.Fatalf("inherited 0s stream timeout = %v, want 0", got)
 	}
 }
 
@@ -168,6 +216,10 @@ func TestValidateRejectsInvalidTimeout(t *testing.T) {
 		{"negative server timeout", &Config{Server: Server{Timeout: "-10s"}}},
 		{"invalid top-level timeout", &Config{Timeout: "invalid"}},
 		{"invalid provider timeout", &Config{Providers: []Provider{{Name: "p", Type: "openai", Timeout: "invalid"}}}},
+		{"invalid server stream timeout", &Config{Server: Server{StreamTimeout: "invalid"}}},
+		{"negative server stream timeout", &Config{Server: Server{StreamTimeout: "-1s"}}},
+		{"invalid provider stream timeout", &Config{Providers: []Provider{{Name: "p", Type: "openai", StreamTimeout: "invalid"}}}},
+		{"negative provider stream timeout", &Config{Providers: []Provider{{Name: "p", Type: "openai", StreamTimeout: "-5s"}}}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

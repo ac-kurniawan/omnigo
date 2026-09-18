@@ -9,18 +9,39 @@ import (
 )
 
 type Server struct {
-	Host    string `yaml:"host"`
-	Port    int    `yaml:"port"`
-	Timeout string `yaml:"timeout,omitempty"`
+	Host          string `yaml:"host"`
+	Port          int    `yaml:"port"`
+	Timeout       string `yaml:"timeout,omitempty"`
+	StreamTimeout string `yaml:"stream_timeout,omitempty"`
 }
 
 func (s Server) ParsedTimeout() time.Duration {
 	if s.Timeout == "" {
-		return 30 * time.Second
+		return 20 * time.Second
 	}
 	d, err := time.ParseDuration(s.Timeout)
 	if err != nil || d <= 0 {
-		return 30 * time.Second
+		return 20 * time.Second
+	}
+	return d
+}
+
+// ParsedStreamTimeout returns the total wall-clock budget for one streamed
+// generation. Unlike the request timeout, a zero budget is meaningful: it
+// leaves streamed generations unbounded, so only silence is bounded.
+func (s Server) ParsedStreamTimeout() time.Duration {
+	return parseStreamTimeout(s.StreamTimeout, 10*time.Minute)
+}
+
+// parseStreamTimeout parses a stream budget where an unset value takes the
+// fallback and a negative value is rejected as invalid by Validate.
+func parseStreamTimeout(value string, fallback time.Duration) time.Duration {
+	if value == "" {
+		return fallback
+	}
+	d, err := time.ParseDuration(value)
+	if err != nil || d < 0 {
+		return fallback
 	}
 	return d
 }
@@ -34,12 +55,13 @@ type Provider struct {
 	DisabledModels []string `yaml:"disabled_models,omitempty"`
 	Disabled       bool     `yaml:"disabled,omitempty"`
 	Timeout        string   `yaml:"timeout,omitempty"`
+	StreamTimeout  string   `yaml:"stream_timeout,omitempty"`
 	MaxConcurrency int      `yaml:"max_concurrency,omitempty"`
 }
 
 func (p Provider) ParsedTimeout(defaultTimeout time.Duration) time.Duration {
 	if defaultTimeout <= 0 {
-		defaultTimeout = 30 * time.Second
+		defaultTimeout = 20 * time.Second
 	}
 	if p.Timeout == "" {
 		return defaultTimeout
@@ -49,6 +71,12 @@ func (p Provider) ParsedTimeout(defaultTimeout time.Duration) time.Duration {
 		return defaultTimeout
 	}
 	return d
+}
+
+// ParsedStreamTimeout returns this provider's stream budget, falling back to
+// the server-wide default when unset.
+func (p Provider) ParsedStreamTimeout(defaultTimeout time.Duration) time.Duration {
+	return parseStreamTimeout(p.StreamTimeout, defaultTimeout)
 }
 
 func (p Provider) IsModelDisabled(model string) bool {
@@ -134,7 +162,25 @@ func (c *Config) DefaultTimeout() time.Duration {
 			return d
 		}
 	}
-	return 30 * time.Second
+	return 20 * time.Second
+}
+
+// DefaultStreamTimeout returns the server-wide stream budget: the total
+// wall-clock time one streamed generation may run before the gateway gives up
+// on the upstream. Zero leaves streams unbounded.
+func (c *Config) DefaultStreamTimeout() time.Duration {
+	return c.Server.ParsedStreamTimeout()
+}
+
+// Timeouts are the server-wide defaults a provider inherits.
+type Timeouts struct {
+	Request time.Duration
+	Stream  time.Duration
+}
+
+// Timeouts resolves the configured server defaults.
+func (c *Config) Timeouts() Timeouts {
+	return Timeouts{Request: c.DefaultTimeout(), Stream: c.DefaultStreamTimeout()}
 }
 
 func Load(path string) (*Config, error) {
@@ -156,6 +202,11 @@ var validTypes = map[string]bool{"openai": true, "antigravity": true, "codex": t
 var validStrategies = map[string]bool{"priority": true, "fill-first": true, "reliable": true, "round-robin": true}
 
 func (c *Config) Validate() error {
+	if c.Server.StreamTimeout != "" {
+		if err := validateStreamTimeout(c.Server.StreamTimeout); err != nil {
+			return fmt.Errorf("server: %w", err)
+		}
+	}
 	if c.Server.Timeout != "" {
 		d, err := time.ParseDuration(c.Server.Timeout)
 		if err != nil || d <= 0 {
@@ -178,6 +229,11 @@ func (c *Config) Validate() error {
 				return fmt.Errorf("provider %q: invalid timeout %q", p.Name, p.Timeout)
 			}
 		}
+		if p.StreamTimeout != "" {
+			if err := validateStreamTimeout(p.StreamTimeout); err != nil {
+				return fmt.Errorf("provider %q: %w", p.Name, err)
+			}
+		}
 		if p.MaxConcurrency < 0 {
 			return fmt.Errorf("provider %q: invalid max_concurrency %d", p.Name, p.MaxConcurrency)
 		}
@@ -192,6 +248,16 @@ func (c *Config) Validate() error {
 				return fmt.Errorf("combo %q: invalid drain_ttl %q", cb.Name, cb.DrainTTL)
 			}
 		}
+	}
+	return nil
+}
+
+// validateStreamTimeout accepts any non-negative duration: zero is the explicit
+// opt-out from bounding a streamed generation.
+func validateStreamTimeout(value string) error {
+	d, err := time.ParseDuration(value)
+	if err != nil || d < 0 {
+		return fmt.Errorf("invalid stream_timeout %q", value)
 	}
 	return nil
 }
