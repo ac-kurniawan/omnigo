@@ -225,6 +225,53 @@ combos: []
 	}
 }
 
+func TestDashboardEnabledDefault(t *testing.T) {
+	cfg := &Config{}
+	if !cfg.Dashboard.IsEnabled() {
+		t.Fatal("expected dashboard enabled by default (nil)")
+	}
+}
+
+func TestDashboardExplicitlyDisabled(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "config.yaml")
+	yamlContent := `dashboard:
+  enabled: false
+providers: []
+combos: []
+`
+	if err := os.WriteFile(p, []byte(yamlContent), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(p)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Dashboard.IsEnabled() {
+		t.Fatal("expected dashboard disabled when explicitly false")
+	}
+}
+
+func TestDashboardExplicitlyEnabled(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "config.yaml")
+	yamlContent := `dashboard:
+  enabled: true
+providers: []
+combos: []
+`
+	if err := os.WriteFile(p, []byte(yamlContent), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(p)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !cfg.Dashboard.IsEnabled() {
+		t.Fatal("expected dashboard enabled when explicitly true")
+	}
+}
+
 func TestObservabilityMetricsDisabledByDefault(t *testing.T) {
 	cfg := &Config{}
 	if cfg.Observability.MetricsEnabled() {
