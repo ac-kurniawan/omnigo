@@ -16,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ac-kurniawan/omnigo/internal/auth"
 	"github.com/ac-kurniawan/omnigo/internal/quota"
 	prom "github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -36,12 +37,23 @@ const (
 	attrResult   = "result"
 	attrCombo    = "omnigo.combo.name"
 
+	// attrClientKey carries the id of the gateway client key that authenticated
+	// the request, so traffic and outcomes can be grouped per key. The id is
+	// the same short identifier the dashboard lists, never the key material or
+	// its hash.
+	attrClientKey = "api_key_id"
+
 	// Quota label keys. account carries a provider account identifier, never a
 	// secret: it is the ChatGPT account id (a UUID) or the Google subject (a
 	// numeric id), both already present in the dashboard UI.
 	attrAccount = "account"
 	attrWindow  = "window"
 )
+
+// clientKeyNone is the label value for requests that carry no validated client
+// key: dashboard traffic, scrapes, and unauthenticated requests that were
+// rejected before a key was ever matched.
+const clientKeyNone = "none"
 
 // Metrics holds the meter instruments and the Prometheus scrape endpoint.
 type Metrics struct {
@@ -217,19 +229,26 @@ func (m *Metrics) Middleware(next http.Handler) http.Handler {
 		m.activeRequests.Add(context.Background(), 1, activeAttrs)
 		defer m.activeRequests.Add(context.Background(), -1, activeAttrs)
 
+		caller := &auth.Caller{}
 		iw := &instrumentedWriter{ResponseWriter: w, start: start}
+		// Rebind r: ServeMux records the matched pattern on the request it
+		// dispatches, so routePattern below must read that same request.
+		r = r.WithContext(auth.WithCaller(r.Context(), caller))
 		next.ServeHTTP(iw, r)
 
 		route := routePattern(r)
+		keyID := clientKeyLabel(caller.ID())
 		m.requestDuration.Record(context.Background(), time.Since(start).Seconds(), metric.WithAttributes(
 			attribute.String("http.route", route),
 			attribute.String("http.request.method", method),
 			attribute.Int("http.response.status_code", iw.statusCode()),
+			attribute.String(attrClientKey, keyID),
 		))
 		if !iw.firstByte.IsZero() {
 			m.requestTTFB.Record(context.Background(), iw.firstByte.Sub(start).Seconds(), metric.WithAttributes(
 				attribute.String("http.route", route),
 				attribute.String("http.request.method", method),
+				attribute.String(attrClientKey, keyID),
 			))
 		}
 	})
@@ -304,8 +323,8 @@ func (w *instrumentedWriter) statusCode() int {
 // RecordProviderRequest counts a provider dispatch outcome. result is a bounded
 // classifier label. Both provider and model are guarded: the model can arrive
 // from a client-supplied "<provider>/<model>" request, so it never becomes a
-// raw label value.
-func (m *Metrics) RecordProviderRequest(provider, model, result string) {
+// raw label value. The authenticated client key id is read from ctx.
+func (m *Metrics) RecordProviderRequest(ctx context.Context, provider, model, result string) {
 	if !m.Enabled() {
 		return
 	}
@@ -313,17 +332,20 @@ func (m *Metrics) RecordProviderRequest(provider, model, result string) {
 		attribute.String(attrProvider, providerLabel(provider)),
 		attribute.String(attrModel, modelLabel(model)),
 		attribute.String(attrResult, result),
+		attribute.String(attrClientKey, clientKeyLabel(auth.CallerFrom(ctx).ID())),
 	))
 }
 
-// RecordCombinationAttempt counts a combo routing attempt by outcome.
-func (m *Metrics) RecordCombinationAttempt(combo, result string) {
+// RecordCombinationAttempt counts a combo routing attempt by outcome. The
+// authenticated client key id is read from ctx.
+func (m *Metrics) RecordCombinationAttempt(ctx context.Context, combo, result string) {
 	if !m.Enabled() {
 		return
 	}
 	m.comboAttempts.Add(context.Background(), 1, metric.WithAttributes(
 		attribute.String(attrCombo, combo),
 		attribute.String(attrResult, result),
+		attribute.String(attrClientKey, clientKeyLabel(auth.CallerFrom(ctx).ID())),
 	))
 }
 
@@ -352,6 +374,16 @@ func safeLabel(s string) string {
 		}
 	}
 	return s
+}
+
+// clientKeyLabel guards a gateway client key id so an attacker or manual edit
+// in auth.yaml cannot create unbounded series. Unauthenticated traffic
+// collapses to "none".
+func clientKeyLabel(id string) string {
+	if id == "" {
+		return clientKeyNone
+	}
+	return safeLabel(id)
 }
 
 // providerLabel guards a provider name.
