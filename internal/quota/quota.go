@@ -38,6 +38,29 @@ type Window struct {
 	ResetAfter    time.Duration `json:"reset_after,omitempty"`
 }
 
+// Window length constants for the labels below. Codex's two windows are a
+// five-hour burst limit and a seven-day weekly cap.
+const (
+	fiveHourMinutes = 300
+	weeklyMinutes   = 10080
+)
+
+// Label is the operator-facing name for a window. Codex upstream calls its
+// windows "primary" and "secondary", which says nothing about what they bound;
+// the length does, so those two render as "5-hour limit" and "Weekly limit". A
+// provider reporting one bucket per model (Antigravity) keeps the model id, and
+// an unrecognized length falls back to the raw upstream name.
+func (w Window) Label() string {
+	switch w.WindowMinutes {
+	case fiveHourMinutes:
+		return "5-hour limit"
+	case weeklyMinutes:
+		return "Weekly limit"
+	default:
+		return windowName(w)
+	}
+}
+
 // RemainingPercent is the unconsumed fraction of the window, clamped to
 // [0, 100] so a provider reporting >100% used cannot produce a negative
 // remaining figure in the UI.
@@ -114,7 +137,7 @@ func (s AccountSnapshot) Headline(now time.Time) string {
 				parts = append(parts, fmt.Sprintf("+%d more", len(ordered)-maxHeadlineWindows))
 				break
 			}
-			parts = append(parts, fmt.Sprintf("%s %s", windowName(w), formatPercent(w.RemainingPercent())))
+			parts = append(parts, fmt.Sprintf("%s %s", w.Label(), formatPercent(w.RemainingPercent())))
 		}
 		summary := s.Status.String() + " (" + strings.Join(parts, " · ")
 		if reset := nearestReset(s.Windows, now); reset != "" {
@@ -168,9 +191,11 @@ func (s AccountSnapshot) exhaustedDetail(now time.Time) string {
 		if windowName(w) != name {
 			continue
 		}
+		label := w.Label()
 		if remaining := humanDuration(w.ResetAt.Sub(now)); remaining != "" {
-			return name + " resets in " + remaining
+			return label + " resets in " + remaining
 		}
+		return label
 	}
 	return name
 }
