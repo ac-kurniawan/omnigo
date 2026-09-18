@@ -11,6 +11,26 @@ func TestStatusConstants(t *testing.T) {
 	}
 }
 
+// Codex reports the windows as "primary"/"secondary"; the operator-facing name
+// is the window length, which is what the label actually means. A window whose
+// length is unknown (or a per-model bucket) keeps its raw name.
+func TestWindowLabelNamesCodexWindowsByLength(t *testing.T) {
+	for _, tc := range []struct {
+		window Window
+		want   string
+	}{
+		{Window{Name: "primary", WindowMinutes: 300}, "5-hour limit"},
+		{Window{Name: "secondary", WindowMinutes: 10080}, "Weekly limit"},
+		{Window{Name: "gemini-3.7-flash", WindowMinutes: 0}, "gemini-3.7-flash"},
+		{Window{Name: "primary", WindowMinutes: 60}, "primary"},
+		{Window{Name: ""}, "window"},
+	} {
+		if got := tc.window.Label(); got != tc.want {
+			t.Errorf("Window%+v.Label() = %q, want %q", tc.window, got, tc.want)
+		}
+	}
+}
+
 func TestHeadlineAvailableShowsRemainingAndReset(t *testing.T) {
 	now := time.Unix(2_000_000_000, 0)
 	s := AccountSnapshot{

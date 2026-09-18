@@ -166,12 +166,21 @@ func newServer(getCfg func() *config.Config, store *vault.Store, mutate config.M
 		},
 		"accountStatus": func(account vault.ProviderSecret) string {
 			if account.AccessToken == "" && account.RefreshToken == "" {
-				return "reconnect required"
+				return "Reconnect required"
 			}
 			if !account.ExpiresAt.IsZero() && time.Until(account.ExpiresAt) <= 0 && account.RefreshToken == "" {
-				return "expired"
+				return "Expired"
 			}
-			return "ready"
+			return "Ready"
+		},
+		"accountStatusClass": func(account vault.ProviderSecret) string {
+			if account.AccessToken == "" && account.RefreshToken == "" {
+				return "status-pill-error"
+			}
+			if !account.ExpiresAt.IsZero() && time.Until(account.ExpiresAt) <= 0 && account.RefreshToken == "" {
+				return "status-pill-warning"
+			}
+			return "status-pill-neutral"
 		},
 		"drainedCount": func(tr *combo.Tracker) int {
 			if tr == nil {
@@ -199,17 +208,17 @@ func newServer(getCfg func() *config.Config, store *vault.Store, mutate config.M
 			}
 			return snapshot.Headline(time.Now())
 		},
-		"quotaBadgeClass": func(snapshot *quota.AccountSnapshot) string {
+		"quotaStatusClass": func(snapshot *quota.AccountSnapshot) string {
 			if snapshot == nil {
-				return "badge-ghost"
+				return "status-pill-neutral"
 			}
 			switch snapshot.Status {
 			case quota.StatusAvailable:
-				return "badge-success"
+				return "status-pill-success"
 			case quota.StatusExhausted:
-				return "badge-error"
+				return "status-pill-error"
 			default:
-				return "badge-warning"
+				return "status-pill-warning"
 			}
 		},
 		"quotaStatusLabel": func(snapshot *quota.AccountSnapshot) string {
@@ -218,12 +227,15 @@ func newServer(getCfg func() *config.Config, store *vault.Store, mutate config.M
 			}
 			switch snapshot.Status {
 			case quota.StatusAvailable:
-				return "Quota OK"
+				return "Available"
 			case quota.StatusExhausted:
-				return "Quota Exhausted"
+				return "Exhausted"
 			default:
-				return "Quota Unknown"
+				return "Unavailable"
 			}
+		},
+		"quotaWindowLabel": func(w quota.Window) string {
+			return w.Label()
 		},
 		"quotaFormatPercent": func(p float64) string {
 			if p == float64(int(p)) {
