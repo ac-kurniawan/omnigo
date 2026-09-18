@@ -357,7 +357,7 @@ func TestProvidersPartialRendersQuotaAccountsCompletely(t *testing.T) {
 	}
 	body := rr.Body.String()
 	for _, want := range []string{
-		"Quota Exhausted",
+		">Exhausted<",
 		`class="modal"`,
 		"claude-opus-4-6-thinking",
 		"12.5%", // a fractional remaining percent must not abort rendering
@@ -426,6 +426,50 @@ func TestProvidersPartialShowsTopThreeWindowsLowestRemainingFirst(t *testing.T) 
 	}
 	if strings.Contains(bars, ">hidden<") {
 		t.Fatalf("inline card must truncate to three windows: %s", bars)
+	}
+}
+
+func TestProvidersPartialUsesReadableCodexQuotaLabelsAndStatusPills(t *testing.T) {
+	cache := quota.NewCache()
+	identity := "acct:user@example.com"
+	cache.Put(quota.AccountSnapshot{
+		Provider:   "cx",
+		Identity:   identity,
+		Status:     quota.StatusAvailable,
+		ObservedAt: time.Now(),
+		Windows: []quota.Window{
+			{Name: "primary", UsedPercent: 7, WindowMinutes: 300},
+			{Name: "secondary", UsedPercent: 20, WindowMinutes: 10080},
+		},
+	})
+	disabled := false
+	cfg := &config.Config{
+		Dashboard: config.Dashboard{Auth: &disabled},
+		Providers: []config.Provider{{Name: "cx", Type: "codex"}},
+	}
+	v := &vault.Vault{ProviderAccounts: map[string][]vault.ProviderSecret{
+		"cx": {{AccountID: "acct", Email: "user@example.com", RefreshToken: "rt"}},
+	}}
+	h := NewHandlerWithQuota(func() *config.Config { return cfg }, vault.NewMemoryStore(v), nil, cache)
+	rr := httptest.NewRecorder()
+
+	h.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/providers", nil))
+	body := rr.Body.String()
+	for _, want := range []string{
+		">5-hour limit<",
+		">Weekly limit<",
+		">Ready<",
+		">Available<",
+		"status-pill status-pill-success",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("providers partial missing %q", want)
+		}
+	}
+	for _, old := range []string{">primary<", ">secondary<", ">ready<", ">Quota OK<"} {
+		if strings.Contains(body, old) {
+			t.Errorf("providers partial still contains raw label %q", old)
+		}
 	}
 }
 
