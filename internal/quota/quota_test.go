@@ -75,6 +75,36 @@ func TestHeadlineUnknownStatusIsStable(t *testing.T) {
 	}
 }
 
+func TestSortedWindowsOrdersByLowestRemainingWithoutMutatingSnapshot(t *testing.T) {
+	s := AccountSnapshot{Windows: []Window{
+		{Name: "healthy", UsedPercent: 10},
+		{Name: "drained", UsedPercent: 100},
+		{Name: "warning", UsedPercent: 80},
+		{Name: "same-warning", UsedPercent: 80},
+	}}
+
+	got := s.SortedWindows()
+	want := []string{"drained", "warning", "same-warning", "healthy"}
+	for i, name := range want {
+		if got[i].Name != name {
+			t.Fatalf("SortedWindows()[%d].Name = %q, want %q", i, got[i].Name, name)
+		}
+	}
+	if s.Windows[0].Name != "healthy" {
+		t.Fatalf("SortedWindows mutated snapshot order: %+v", s.Windows)
+	}
+}
+
+func TestSortedWindowsReturnsIndependentSlice(t *testing.T) {
+	s := AccountSnapshot{Windows: []Window{{Name: "first"}, {Name: "second"}}}
+	got := s.SortedWindows()
+	got[0].Name = "changed"
+
+	if s.Windows[0].Name != "first" {
+		t.Fatalf("SortedWindows aliases snapshot storage: %+v", s.Windows)
+	}
+}
+
 func contains(haystack, needle string) bool {
 	return len(needle) == 0 || (len(haystack) >= len(needle) && indexOf(haystack, needle) >= 0)
 }

@@ -1,6 +1,7 @@
 package dashboard
 
 import (
+	"bytes"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -320,19 +321,23 @@ func TestKeysRendersUseInPlaygroundAction(t *testing.T) {
 
 // A template execution error truncates the providers partial mid-render: the
 // HTTP status is already 200, so the page silently loses every account after
-// the failure. Guard the whole partial, including the quota badges and detail
+// the failure. Guard the whole partial, including the quota bars and detail
 // modals, so a bad template fails the build rather than production.
 func TestProvidersPartialRendersQuotaAccountsCompletely(t *testing.T) {
 	cache := quota.NewCache()
 	cache.Put(quota.AccountSnapshot{
-		Provider: "agy",
-		Identity: "sub-1:user@example.com",
-		Email:    "user@example.com",
-		Status:   quota.StatusExhausted,
-		Reason:   "claude-opus-4-6-thinking",
+		Provider:   "agy",
+		Identity:   "sub-1:user@example.com",
+		Email:      "user@example.com",
+		Status:     quota.StatusExhausted,
+		Reason:     "claude-opus-4-6-thinking",
+		ObservedAt: time.Now().Add(-90 * time.Minute),
 		Windows: []quota.Window{
 			{Name: "claude-opus-4-6-thinking", UsedPercent: 100, ResetAt: time.Now().Add(48 * time.Hour)},
 			{Name: "gemini-3.8-flash-tiered", UsedPercent: 12.5},
+			{Name: "gemini-3.7-flash", UsedPercent: 64},
+			{Name: "gemini-3.6-pro", UsedPercent: 2},
+			{Name: "gemini-3.5-flash", UsedPercent: 40},
 		},
 	})
 	disabled := false
@@ -355,10 +360,10 @@ func TestProvidersPartialRendersQuotaAccountsCompletely(t *testing.T) {
 		"Quota Exhausted",
 		`class="modal"`,
 		"claude-opus-4-6-thinking",
-		"gemini-3.8-flash-tiered",
 		"12.5%", // a fractional remaining percent must not abort rendering
-		"</tbody>",
-		"</table>",
+		`class="progress progress-error`,
+		"+2 more models",
+		"Observed 1h ago",
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("providers partial missing %q (render truncated?)", want)
@@ -366,5 +371,94 @@ func TestProvidersPartialRendersQuotaAccountsCompletely(t *testing.T) {
 	}
 	if strings.Contains(body, "{{") {
 		t.Fatalf("unrendered template action left in output")
+	}
+}
+
+// The inline card shows the most-constrained windows and hides the rest behind
+// the modal, so an account with many model buckets stays readable. Windows must
+// also be ordered lowest-remaining-first: the whole point is surfacing the
+// binding constraint without opening anything.
+func TestProvidersPartialShowsTopThreeWindowsLowestRemainingFirst(t *testing.T) {
+	cache := quota.NewCache()
+	cache.Put(quota.AccountSnapshot{
+		Provider:   "agy",
+		Identity:   "sub-1:user@example.com",
+		Status:     quota.StatusAvailable,
+		ObservedAt: time.Now(),
+		Windows: []quota.Window{
+			{Name: "healthy", UsedPercent: 20},
+			{Name: "drained", UsedPercent: 100, ResetAt: time.Now().Add(time.Hour)},
+			{Name: "warning", UsedPercent: 85},
+			{Name: "hidden", UsedPercent: 5},
+		},
+	})
+	disabled := false
+	cfg := &config.Config{
+		Dashboard: config.Dashboard{Auth: &disabled},
+		Providers: []config.Provider{{Name: "agy", Type: "antigravity"}},
+	}
+	v := &vault.Vault{ProviderAccounts: map[string][]vault.ProviderSecret{
+		"agy": {{AccountID: "sub-1", Email: "user@example.com", RefreshToken: "rt"}},
+	}}
+	h := NewHandlerWithQuota(func() *config.Config { return cfg }, vault.NewMemoryStore(v), nil, cache)
+	rr := httptest.NewRecorder()
+
+	h.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/providers", nil))
+	body := rr.Body.String()
+
+	if n := strings.Count(body, `class="progress `); n != 7 {
+		t.Fatalf("progress bar count = %d, want 7 (3 inline + 4 in the modal)", n)
+	}
+	// The overflow affordance is what tells the operator that more model
+	// buckets exist than the card shows.
+	if !strings.Contains(body, "+1 more models") {
+		t.Fatalf("card missing overflow affordance")
+	}
+	start := strings.Index(body, "flex flex-col gap-1.5 pt-0.5")
+	if start < 0 {
+		t.Fatal("inline bar list missing")
+	}
+	bars := body[start:]
+	bars = bars[:strings.Index(bars, "<dialog")]
+	if !(strings.Index(bars, ">drained<") < strings.Index(bars, ">warning<") &&
+		strings.Index(bars, ">warning<") < strings.Index(bars, ">healthy<")) {
+		t.Fatalf("inline bars not ordered lowest-remaining-first: %s", bars)
+	}
+	if strings.Contains(bars, ">hidden<") {
+		t.Fatalf("inline card must truncate to three windows: %s", bars)
+	}
+}
+
+// Colour is the only signal that a bar is nearly drained when the table is
+// skimmed, so pin the thresholds independently of the markup.
+func TestQuotaWindowProgressClassThresholds(t *testing.T) {
+	s := newServer(func() *config.Config { return &config.Config{} }, vault.NewMemoryStore(&vault.Vault{}), nil)
+	probe, err := s.tmpl.New("probe").Parse(`{{quotaWindowProgressClass .}}`)
+	if err != nil {
+		t.Fatalf("parse probe: %v", err)
+	}
+	class := func(used float64) string {
+		var buf bytes.Buffer
+		if err := probe.Execute(&buf, quota.Window{UsedPercent: used}); err != nil {
+			t.Fatalf("render probe for used=%v: %v", used, err)
+		}
+		return buf.String()
+	}
+
+	for _, tc := range []struct {
+		used float64
+		want string
+	}{
+		{0, "progress-success"},
+		{69.9, "progress-success"},
+		{70, "progress-warning"},
+		{90, "progress-warning"},
+		{90.1, "progress-error"},
+		{100, "progress-error"},
+		{150, "progress-error"}, // clamped remaining must still read as drained
+	} {
+		if got := class(tc.used); got != tc.want {
+			t.Errorf("used=%v: class = %q, want %q", tc.used, got, tc.want)
+		}
 	}
 }

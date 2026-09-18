@@ -9,6 +9,7 @@ package quota
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 )
@@ -69,6 +70,30 @@ type AccountSnapshot struct {
 	Raw        any       `json:"raw,omitempty"`
 }
 
+// SortedWindows returns the snapshot's windows ordered most-constrained-first
+// (lowest remaining percent), preserving upstream order within ties. The
+// returned slice is a copy, so callers may truncate or reorder it without
+// mutating the cached snapshot.
+func (s AccountSnapshot) SortedWindows() []Window {
+	out := make([]Window, len(s.Windows))
+	copy(out, s.Windows)
+	sort.SliceStable(out, func(i, j int) bool {
+		return out[i].RemainingPercent() < out[j].RemainingPercent()
+	})
+	return out
+}
+
+// TopWindows returns at most n of SortedWindows, or every window when n is not
+// positive. It exists so the headline and the dashboard agree on which windows
+// matter most instead of each applying their own truncation rule.
+func (s AccountSnapshot) TopWindows(n int) []Window {
+	ordered := s.SortedWindows()
+	if n <= 0 || len(ordered) <= n {
+		return ordered
+	}
+	return ordered[:n]
+}
+
 // maxHeadlineWindows caps how many windows the headline lists. Antigravity
 // reports one bucket per model, so an uncapped list would be unusable.
 const maxHeadlineWindows = 3
@@ -82,10 +107,11 @@ func (s AccountSnapshot) Headline(now time.Time) string {
 		if len(s.Windows) == 0 {
 			return "available"
 		}
+		ordered := s.SortedWindows()
 		parts := make([]string, 0, maxHeadlineWindows+1)
-		for i, w := range s.Windows {
+		for i, w := range ordered {
 			if i == maxHeadlineWindows {
-				parts = append(parts, fmt.Sprintf("+%d more", len(s.Windows)-maxHeadlineWindows))
+				parts = append(parts, fmt.Sprintf("+%d more", len(ordered)-maxHeadlineWindows))
 				break
 			}
 			parts = append(parts, fmt.Sprintf("%s %s", windowName(w), formatPercent(w.RemainingPercent())))

@@ -1630,26 +1630,53 @@
           <div class="flex flex-wrap items-center gap-2">
             {{if $accounts}}
               {{range $accounts}}
-                <div class="flex flex-wrap items-center gap-2 rounded-lg border border-base-content/10 bg-base-100 px-3 py-2 text-xs max-w-full">
-                  <span class="size-2 rounded-full {{if accountHealthy .}}bg-success{{else}}bg-error{{end}}"></span>
-                  <span class="font-medium">{{if .Email}}{{.Email}}{{else}}{{.AccountID}}{{end}}</span>
-                  <span class="badge badge-ghost badge-xs">{{accountStatus .}}</span>
-                  {{if and .Email .AccountID}}<span class="font-mono text-base-content/50">{{.AccountID}}</span>{{end}}
-                  {{$q := quotaSnapshot $ $provName .}}
-                  {{$refresh := printf "/internal/refresh-quota/%s/%s" $provName (urlEscape (accountIdentity .))}}
+                {{$q := quotaSnapshot $ $provName .}}
+                {{$refresh := printf "/internal/refresh-quota/%s/%s" $provName (urlEscape (accountIdentity .))}}
+                <div class="flex flex-col gap-2 rounded-xl border border-base-content/10 bg-base-100 p-3 text-xs w-full max-w-full">
+                  <div class="flex flex-wrap items-center justify-between gap-2 border-b border-base-content/5 pb-2">
+                    <div class="flex flex-wrap items-center gap-2">
+                      <span class="size-2 rounded-full {{if accountHealthy .}}bg-success{{else}}bg-error{{end}}"></span>
+                      <span class="font-medium">{{if .Email}}{{.Email}}{{else}}{{.AccountID}}{{end}}</span>
+                      <span class="badge badge-ghost badge-xs">{{accountStatus .}}</span>
+                      {{if and .Email .AccountID}}<span class="font-mono text-base-content/50">{{.AccountID}}</span>{{end}}
+                      {{if $q}}
+                        <button type="button" class="badge {{quotaBadgeClass $q}} badge-xs cursor-pointer" title="{{quotaHeadline $q}}" aria-label="Show full quota detail for {{if .Email}}{{.Email}}{{else}}{{.AccountID}}{{end}}" onclick="document.getElementById('{{quotaModalID $provName (accountIdentity .)}}').showModal()">{{quotaStatusLabel $q}}</button>
+                      {{else}}
+                        <span class="badge badge-ghost badge-xs">Quota not polled</span>
+                      {{end}}
+                    </div>
+                    <div class="flex items-center gap-1">
+                      <button type="button" hx-post="{{$refresh}}" hx-target="#result" hx-swap="innerHTML" hx-on::after-request="htmx.ajax('GET', '/providers', {target:'#providers', swap:'innerHTML'})" class="btn btn-ghost btn-xs" title="Refresh quota now">&#8635;</button>
+                      <a href="/oauth/login/{{$provName}}" target="_blank" class="btn btn-ghost btn-xs min-h-11 focus-visible:ring-2 focus-visible:ring-primary">Reconnect</a>
+                      <button type="button" hx-post="/providers/{{$provName}}/accounts/{{urlEscape (accountIdentity .)}}/delete" hx-target="#providers" hx-swap="innerHTML" hx-confirm="Remove account {{if .Email}}{{.Email}}{{else}}{{.AccountID}}{{end}}?" class="btn btn-error btn-outline btn-xs min-h-11 focus-visible:ring-2 focus-visible:ring-error">Remove</button>
+                    </div>
+                  </div>
                   {{if $q}}
-                    <button type="button" class="badge {{quotaBadgeClass $q}} badge-xs cursor-pointer" title="{{quotaHeadline $q}}" onclick="document.getElementById('{{quotaModalID $provName (accountIdentity .)}}').showModal()">{{quotaStatusLabel $q}}</button>
-                    <span class="text-base-content/50">{{quotaHeadline $q}}</span>
-                  {{else}}
-                    <span class="badge badge-ghost badge-xs">Quota not polled</span>
-                  {{end}}
-                  <button type="button" hx-post="{{$refresh}}" hx-target="#result" hx-swap="innerHTML" hx-on::after-request="htmx.ajax('GET', '/providers', {target:'#providers', swap:'innerHTML'})" class="btn btn-ghost btn-xs" title="Refresh quota now">&#8635;</button>
-                  <a href="/oauth/login/{{$provName}}" target="_blank" class="btn btn-ghost btn-xs min-h-11 focus-visible:ring-2 focus-visible:ring-primary">Reconnect</a>
-                  <button type="button" hx-post="/providers/{{$provName}}/accounts/{{urlEscape (accountIdentity .)}}/delete" hx-target="#providers" hx-swap="innerHTML" hx-confirm="Remove account {{if .Email}}{{.Email}}{{else}}{{.AccountID}}{{end}}?" class="btn btn-error btn-outline btn-xs min-h-11 focus-visible:ring-2 focus-visible:ring-error">Remove</button>
-                  {{if $q}}
-                    <dialog id="{{quotaModalID $provName (accountIdentity .)}}" class="modal">
-                      <div class="modal-box max-w-2xl">
-                        <h3 class="font-bold text-lg">Quota &mdash; {{if .Email}}{{.Email}}{{else}}{{.AccountID}}{{end}}</h3>
+                    {{if $q.Windows}}
+                      <div class="flex flex-col gap-1.5 pt-0.5">
+                        {{range quotaTopWindows $q 3}}
+                          <div class="flex items-center gap-2">
+                            <span class="font-mono text-[11px] text-base-content/70 truncate w-36 sm:w-44 shrink-0" title="{{.Name}}">{{.Name}}</span>
+                            <progress class="progress {{quotaWindowProgressClass .}} flex-1 h-2" value="{{.RemainingPercent}}" max="100" aria-label="{{.Name}} remaining quota"></progress>
+                            <span class="font-mono text-[11px] font-semibold w-12 text-right shrink-0">{{quotaFormatPercent .RemainingPercent}}</span>
+                            {{$rst := quotaResetIn .}}
+                            {{if $rst}}<span class="text-[10px] text-base-content/50 w-16 text-right shrink-0 truncate" title="Resets in {{$rst}}">{{$rst}}</span>{{else}}<span class="w-16 shrink-0"></span>{{end}}
+                          </div>
+                        {{end}}
+                        {{if gt (len $q.Windows) 3}}
+                          <div class="pt-1">
+                            <button type="button" class="btn btn-ghost btn-xs text-primary font-medium px-1.5 h-auto min-h-[1.5rem] gap-1" aria-label="Show all {{len $q.Windows}} model quota windows" onclick="document.getElementById('{{quotaModalID $provName (accountIdentity .)}}').showModal()">
+                              +{{sub (len $q.Windows) 3}} more models &rarr;
+                            </button>
+                          </div>
+                        {{end}}
+                      </div>
+                    {{else}}
+                      <span class="text-base-content/50 italic text-[11px]">No quota window detail reported.</span>
+                    {{end}}
+                    <dialog id="{{quotaModalID $provName (accountIdentity .)}}" class="modal" aria-labelledby="{{quotaModalID $provName (accountIdentity .)}}-title">
+                      <div class="modal-box max-w-3xl">
+                        <h3 id="{{quotaModalID $provName (accountIdentity .)}}-title" class="font-bold text-lg">Quota &mdash; {{if .Email}}{{.Email}}{{else}}{{.AccountID}}{{end}}</h3>
                         <p class="text-xs text-base-content/60 mt-1">
                           Provider <span class="font-mono">{{$provName}}</span>
                           &middot; {{quotaStatusLabel $q}}
@@ -1657,32 +1684,27 @@
                           {{if $q.Reason}}&middot; {{$q.Reason}}{{end}}
                         </p>
                         {{if $q.Windows}}
-                          <div class="overflow-x-auto mt-4">
-                            <table class="table table-sm w-full">
-                              <thead>
-                                <tr class="text-base-content/70 text-xs uppercase tracking-wider">
-                                  <th>Window</th>
-                                  <th class="text-right">Remaining</th>
-                                  <th class="text-right">Used</th>
-                                  <th class="text-right">Resets</th>
-                                </tr>
-                              </thead>
-                              <tbody>
-                                {{range $q.Windows}}
-                                <tr>
-                                  <td class="font-mono text-xs">{{.Name}}</td>
-                                  <td class="text-right">{{quotaFormatPercent .RemainingPercent}}</td>
-                                  <td class="text-right text-base-content/60">{{quotaFormatPercent .UsedPercent}}</td>
-                                  <td class="text-right text-base-content/60">{{quotaResetIn .}}</td>
-                                </tr>
-                                {{end}}
-                              </tbody>
-                            </table>
+                          <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2.5 mt-4 max-h-[60vh] overflow-y-auto pr-1">
+                            {{range quotaSortedWindows $q}}
+                              <div class="flex flex-col gap-1.5 rounded-lg border border-base-content/10 bg-base-200/40 p-2.5">
+                                <div class="flex items-center justify-between gap-1 text-[11px]">
+                                  <span class="font-mono font-medium truncate" title="{{.Name}}">{{.Name}}</span>
+                                  <span class="font-mono font-semibold">{{quotaFormatPercent .RemainingPercent}}</span>
+                                </div>
+                                <progress class="progress {{quotaWindowProgressClass .}} w-full h-2" value="{{.RemainingPercent}}" max="100" aria-label="{{.Name}} remaining quota"></progress>
+                                <div class="flex items-center justify-between text-[10px] text-base-content/60">
+                                  <span>Used: {{quotaFormatPercent .UsedPercent}}</span>
+                                  {{$rst := quotaResetIn .}}
+                                  {{if $rst}}<span>Resets: {{$rst}}</span>{{end}}
+                                </div>
+                              </div>
+                            {{end}}
                           </div>
                         {{else}}
                           <p class="text-sm text-base-content/60 mt-4">No window detail reported for this account.</p>
                         {{end}}
-                        <p class="text-[11px] text-base-content/40 mt-3">Observed {{quotaHeadline $q}}</p>
+                        {{$ago := quotaObservedAgo $q}}
+                        <p class="text-[11px] text-base-content/40 mt-4">{{if $ago}}Observed {{$ago}}{{else}}Observed at {{$q.ObservedAt.Format "15:04:05"}}{{end}}</p>
                         <div class="modal-action">
                           <form method="dialog">
                             <button class="btn btn-sm">Close</button>
