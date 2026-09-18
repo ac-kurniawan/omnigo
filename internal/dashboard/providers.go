@@ -2,6 +2,7 @@ package dashboard
 
 import (
 	"fmt"
+	"log"
 	"net/http"
 
 	"github.com/ac-kurniawan/omnigo/internal/config"
@@ -200,6 +201,13 @@ func (s *Server) renderProviders(w http.ResponseWriter) {
 		Providers: s.getCfg().Providers,
 		Secrets:   snapshot.ProviderSecrets,
 		Accounts:  snapshot.ProviderAccounts,
+		Tracker:   s.tracker,
+		Quota:     s.quotaCache,
 	}
-	_ = s.tmpl.ExecuteTemplate(w, "providers", data)
+	if err := s.tmpl.ExecuteTemplate(w, "providers", data); err != nil {
+		// A template error after headers are sent cannot change the status, so
+		// log it: silently truncating the page hides the failure from the
+		// operator entirely.
+		log.Printf("dashboard: render providers: %v", err)
+	}
 }

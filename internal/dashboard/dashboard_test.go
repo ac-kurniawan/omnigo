@@ -5,8 +5,10 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ac-kurniawan/omnigo/internal/config"
+	"github.com/ac-kurniawan/omnigo/internal/quota"
 	"github.com/ac-kurniawan/omnigo/internal/vault"
 )
 
@@ -313,5 +315,56 @@ func TestKeysRendersUseInPlaygroundAction(t *testing.T) {
 	}
 	if !strings.Contains(body, "Use in Playground") {
 		t.Errorf("renderKeys missing 'Use in Playground' text, got: %s", body)
+	}
+}
+
+// A template execution error truncates the providers partial mid-render: the
+// HTTP status is already 200, so the page silently loses every account after
+// the failure. Guard the whole partial, including the quota badges and detail
+// modals, so a bad template fails the build rather than production.
+func TestProvidersPartialRendersQuotaAccountsCompletely(t *testing.T) {
+	cache := quota.NewCache()
+	cache.Put(quota.AccountSnapshot{
+		Provider: "agy",
+		Identity: "sub-1:user@example.com",
+		Email:    "user@example.com",
+		Status:   quota.StatusExhausted,
+		Reason:   "claude-opus-4-6-thinking",
+		Windows: []quota.Window{
+			{Name: "claude-opus-4-6-thinking", UsedPercent: 100, ResetAt: time.Now().Add(48 * time.Hour)},
+			{Name: "gemini-3.8-flash-tiered", UsedPercent: 12.5},
+		},
+	})
+	disabled := false
+	cfg := &config.Config{
+		Dashboard: config.Dashboard{Auth: &disabled},
+		Providers: []config.Provider{{Name: "agy", Type: "antigravity"}},
+	}
+	v := &vault.Vault{ProviderAccounts: map[string][]vault.ProviderSecret{
+		"agy": {{AccountID: "sub-1", Email: "user@example.com"}},
+	}}
+	h := NewHandlerWithQuota(func() *config.Config { return cfg }, vault.NewMemoryStore(v), nil, cache)
+
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/providers", nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d", rr.Code)
+	}
+	body := rr.Body.String()
+	for _, want := range []string{
+		"Quota Exhausted",
+		`class="modal"`,
+		"claude-opus-4-6-thinking",
+		"gemini-3.8-flash-tiered",
+		"12.5%", // a fractional remaining percent must not abort rendering
+		"</tbody>",
+		"</table>",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("providers partial missing %q (render truncated?)", want)
+		}
+	}
+	if strings.Contains(body, "{{") {
+		t.Fatalf("unrendered template action left in output")
 	}
 }

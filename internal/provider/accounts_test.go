@@ -232,3 +232,51 @@ func (s *plainTestStore) Put(c Credentials) error {
 	s.creds = c
 	return nil
 }
+
+func TestMarkQuotaDrainedExcludesOnlyNamedIdentity(t *testing.T) {
+	now := time.Unix(1_000, 0)
+	pool := AccountPool{}
+	pool.SetClock(func() time.Time { return now })
+	store := &accountTestStore{accounts: []Credentials{{AccountID: "one", Email: "one@example.com"}, {AccountID: "two", Email: "two@example.com"}}}
+
+	pool.MarkQuotaDrained("one:one@example.com", 10*time.Minute, "claude-opus-4-6-thinking")
+
+	accounts, reason := pool.AvailableWithError(store)
+	if len(accounts) != 1 || accounts[0].AccountID != "two" {
+		t.Fatalf("healthy accounts = %+v, want only the undrained account", accounts)
+	}
+	if reason == nil || reason.Error() != "claude-opus-4-6-thinking" {
+		t.Fatalf("reason = %v, want the quota reason", reason)
+	}
+	drainable, ok := reason.(interface{ Drainable() bool })
+	if !ok || !drainable.Drainable() {
+		t.Fatalf("quota drain reason = %T, want a drainable error so combos fail over", reason)
+	}
+}
+
+func TestMarkQuotaDrainedExpiresWithCooldown(t *testing.T) {
+	now := time.Unix(1_000, 0)
+	pool := AccountPool{}
+	pool.SetClock(func() time.Time { return now })
+	store := &accountTestStore{accounts: []Credentials{{AccountID: "one", Email: "one@example.com"}}}
+
+	pool.MarkQuotaDrained("one:one@example.com", 5*time.Minute, "exhausted")
+	if got := pool.Available(store); len(got) != 0 {
+		t.Fatalf("accounts while drained = %+v, want none", got)
+	}
+
+	now = now.Add(5*time.Minute + time.Second)
+	if got := pool.Available(store); len(got) != 1 {
+		t.Fatalf("accounts after cooldown = %+v, want the account back", got)
+	}
+}
+
+func TestMarkQuotaDrainedIgnoresInvalidInput(t *testing.T) {
+	pool := AccountPool{}
+	store := &accountTestStore{accounts: []Credentials{{AccountID: "one"}}}
+	pool.MarkQuotaDrained("one", 0, "zero cooldown")
+	pool.MarkQuotaDrained("", time.Hour, "no identity")
+	if got := pool.Available(store); len(got) != 1 {
+		t.Fatalf("accounts = %+v, want the account untouched", got)
+	}
+}
