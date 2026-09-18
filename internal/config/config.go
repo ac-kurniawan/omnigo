@@ -143,10 +143,60 @@ func (d Dashboard) AuthEnabled() bool {
 	return d.Auth == nil || *d.Auth
 }
 
+type Quota struct {
+	// Enabled controls background polling and live quota visibility.
+	// Default: true (when Enabled is nil or explicitly true).
+	Enabled *bool `yaml:"enabled,omitempty"`
+	// Interval is the polling frequency. Valid: >= 1m. Default: 5m.
+	Interval string `yaml:"interval,omitempty"`
+	// AutoDrain controls whether exhausted quota drains the account in AccountPool.
+	// Default: false (opt-in routing effect).
+	AutoDrain *bool `yaml:"auto_drain,omitempty"`
+	// MaxCooldown caps the duration an account can be drained. Default: 30m.
+	MaxCooldown string `yaml:"max_cooldown,omitempty"`
+}
+
+// IsEnabled returns whether quota collection and visibility are active.
+// Default: true.
+func (q Quota) IsEnabled() bool {
+	return q.Enabled == nil || *q.Enabled
+}
+
+// AutoDrainEnabled returns whether quota exhaustion causes an account drain.
+// Default: false.
+func (q Quota) AutoDrainEnabled() bool {
+	return q.AutoDrain != nil && *q.AutoDrain
+}
+
+// ParsedInterval returns the configured interval, falling back to 5m.
+func (q Quota) ParsedInterval() time.Duration {
+	if q.Interval == "" {
+		return 5 * time.Minute
+	}
+	d, err := time.ParseDuration(q.Interval)
+	if err != nil || d < time.Minute {
+		return 5 * time.Minute
+	}
+	return d
+}
+
+// ParsedMaxCooldown returns the cooldown ceiling, falling back to 30m.
+func (q Quota) ParsedMaxCooldown() time.Duration {
+	if q.MaxCooldown == "" {
+		return 30 * time.Minute
+	}
+	d, err := time.ParseDuration(q.MaxCooldown)
+	if err != nil || d <= 0 {
+		return 30 * time.Minute
+	}
+	return d
+}
+
 type Config struct {
 	Server        Server        `yaml:"server"`
 	Dashboard     Dashboard     `yaml:"dashboard,omitempty"`
 	Observability Observability `yaml:"observability,omitempty"`
+	Quota         Quota         `yaml:"quota,omitempty"`
 	Providers     []Provider    `yaml:"providers"`
 	Combos        []Combo       `yaml:"combos"`
 	Timeout       string        `yaml:"timeout,omitempty"`
@@ -247,6 +297,21 @@ func (c *Config) Validate() error {
 			if err != nil || d <= 0 {
 				return fmt.Errorf("combo %q: invalid drain_ttl %q", cb.Name, cb.DrainTTL)
 			}
+		}
+	}
+	if c.Quota.Interval != "" {
+		d, err := time.ParseDuration(c.Quota.Interval)
+		if err != nil {
+			return fmt.Errorf("quota: invalid interval %q: %w", c.Quota.Interval, err)
+		}
+		if d < time.Minute {
+			return fmt.Errorf("quota: interval %q below minimum 1m", c.Quota.Interval)
+		}
+	}
+	if c.Quota.MaxCooldown != "" {
+		d, err := time.ParseDuration(c.Quota.MaxCooldown)
+		if err != nil || d <= 0 {
+			return fmt.Errorf("quota: invalid max_cooldown %q", c.Quota.MaxCooldown)
 		}
 	}
 	return nil

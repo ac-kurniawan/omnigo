@@ -6,15 +6,44 @@ import (
 	"github.com/ac-kurniawan/omnigo/internal/auth"
 	"github.com/ac-kurniawan/omnigo/internal/combo"
 	"github.com/ac-kurniawan/omnigo/internal/config"
+	"github.com/ac-kurniawan/omnigo/internal/quota"
 	"github.com/ac-kurniawan/omnigo/internal/vault"
 )
 
 // NewRouter builds the gateway mux. m may be nil, in which case a no-op
-// recorder is used.
-func NewRouter(getCfg func() *config.Config, store *vault.Store, mutate config.MutateFunc, tracker *combo.Tracker, version string, m Metrics) http.Handler {
-	m = orNoop(m)
+// recorder is used. quotaCache is optional: when omitted, the quota endpoints
+// answer 404, matching an unregistered path.
+func NewRouter(getCfg func() *config.Config, store *vault.Store, mutate config.MutateFunc, tracker *combo.Tracker, version string, m Metrics, quotaCache ...*quota.Cache) http.Handler {
+	var cache *quota.Cache
+	if len(quotaCache) > 0 {
+		cache = quotaCache[0]
+	}
 	registry := newProviderRegistry(store)
+	registry.quotaCache = cache
 	registry.ensure(getCfg())
+	return routerWith(getCfg, store, mutate, tracker, version, m, registry, cache)
+}
+
+// NewRouterWithQuota builds the gateway mux together with the ProviderRuntime
+// that owns its provider instances.
+//
+// The dashboard's quota refresh and the background syncer both route through
+// the returned runtime, so they reuse the exact provider instances that serve
+// traffic. That sharing is required for Codex: each instance owns per-account
+// token managers, and a second instance polling in parallel would run a
+// competing refresh cycle against the same rotating refresh token.
+func NewRouterWithQuota(getCfg func() *config.Config, store *vault.Store, mutate config.MutateFunc, tracker *combo.Tracker, version string, m Metrics, cache *quota.Cache) (http.Handler, *ProviderRuntime) {
+	registry := newProviderRegistry(store)
+	registry.quotaCache = cache
+	registry.ensure(getCfg())
+	runtime := &ProviderRuntime{registry: registry, cache: cache}
+	return routerWith(getCfg, store, mutate, tracker, version, m, registry, cache), runtime
+}
+
+// routerWith assembles the mux around an existing registry, so both
+// constructors share one wiring definition.
+func routerWith(getCfg func() *config.Config, store *vault.Store, mutate config.MutateFunc, tracker *combo.Tracker, version string, m Metrics, registry *providerRegistry, cache *quota.Cache) http.Handler {
+	m = orNoop(m)
 	mux := http.NewServeMux()
 	authed := auth.Middleware(store.Get)
 
@@ -28,8 +57,24 @@ func NewRouter(getCfg func() *config.Config, store *vault.Store, mutate config.M
 
 	mux.Handle("POST /internal/refresh-models/{provider}", dashboardEnabled(getCfg, auth.DashboardMiddleware(handleRefreshModels(getCfg, registry, mutate))))
 	mux.Handle("POST /internal/test/{provider}", dashboardEnabled(getCfg, auth.DashboardMiddleware(handleTestProvider(getCfg, registry))))
+	mux.Handle("GET /internal/quota", dashboardEnabled(getCfg, quotaEnabled(getCfg, auth.DashboardMiddleware(handleGetQuota(cache)))))
+	mux.Handle("POST /internal/refresh-quota/{provider}/{identity}", dashboardEnabled(getCfg, quotaEnabled(getCfg, auth.DashboardMiddleware(handleRefreshQuota(getCfg, registry, cache)))))
 
 	return mux
+}
+
+// quotaEnabled gates the quota endpoints on quota.enabled, mirroring the
+// metrics and dashboard gates: while polling is off the paths answer 404,
+// matching an unregistered path. The flag is read from the live config on
+// every request so a reload applies without a restart.
+func quotaEnabled(getCfg func() *config.Config, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if cfg := getCfg(); cfg != nil && !cfg.Quota.IsEnabled() {
+			http.NotFound(w, r)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 // dashboardEnabled gates the dashboard's /internal/* helpers on

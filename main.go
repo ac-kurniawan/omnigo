@@ -19,6 +19,7 @@ import (
 	"github.com/ac-kurniawan/omnigo/internal/config"
 	"github.com/ac-kurniawan/omnigo/internal/dashboard"
 	"github.com/ac-kurniawan/omnigo/internal/observability"
+	"github.com/ac-kurniawan/omnigo/internal/quota"
 	"github.com/ac-kurniawan/omnigo/internal/vault"
 	"github.com/ac-kurniawan/omnigo/internal/version"
 )
@@ -103,16 +104,16 @@ func (s *appState) mutate(fn func(*config.Config) error) error {
 	return s.reload()
 }
 
-func newApp(getCfg func() *config.Config, store *vault.Store, mutate config.MutateFunc, tracker *combo.Tracker, metrics *observability.Metrics) http.Handler {
-	apiHandler := api.NewRouter(getCfg, store, mutate, tracker, version.Value, metrics)
+func newApp(getCfg func() *config.Config, store *vault.Store, mutate config.MutateFunc, tracker *combo.Tracker, metrics *observability.Metrics, quotaCache *quota.Cache) (http.Handler, *api.ProviderRuntime) {
+	apiHandler, runtime := api.NewRouterWithQuota(getCfg, store, mutate, tracker, version.Value, metrics, quotaCache)
 
 	root := http.NewServeMux()
 	root.Handle("/health", apiHandler)
 	root.Handle("/actuator/", apiHandler)
 	root.Handle("/v1/", apiHandler)
 	root.Handle("/internal/", apiHandler)
-	root.Handle("/", dashboard.NewHandler(getCfg, store, mutate, tracker))
-	return metrics.Middleware(root)
+	root.Handle("/", dashboard.NewHandlerWithQuota(getCfg, store, mutate, quotaCache, tracker))
+	return metrics.Middleware(root), runtime
 }
 
 // Server lifecycle bounds are transport concerns, independent of the
@@ -185,6 +186,29 @@ func main() {
 	defer cancel()
 	go state.watch(ctx, 2*time.Second, metrics)
 
+	// Quota state is collected by a background syncer that polls each
+	// provider's quota endpoint and, when auto_drain is enabled, pre-drains an
+	// exhausted account before traffic reaches it. The syncer reuses the
+	// router's provider instances, so polling and serving share one set of
+	// per-account token managers.
+	quotaCache := quota.NewCache()
+	app, runtime := newApp(state.getCfg, state.store, state.mutate, tracker, metrics, quotaCache)
+	quotaSyncer := quota.NewSyncer(quota.Options{
+		Cache:   quotaCache,
+		Targets: runtime.QuotaTargets(state.getCfg),
+		Fetch:   runtime.QuotaFetch(state.getCfg),
+		Drainer: runtime.QuotaDrainer(state.getCfg),
+		Sink:    metrics,
+		// Read live so a config reload applies on the next cycle.
+		Interval:    func() time.Duration { return state.getCfg().Quota.ParsedInterval() },
+		MaxCooldown: func() time.Duration { return state.getCfg().Quota.ParsedMaxCooldown() },
+		AutoDrain:   func() bool { return state.getCfg().Quota.AutoDrainEnabled() },
+	})
+	if state.getCfg().Quota.IsEnabled() {
+		go quotaSyncer.Run(ctx)
+		log.Printf("quota polling every %s (auto-drain: %v)", state.getCfg().Quota.ParsedInterval(), state.getCfg().Quota.AutoDrainEnabled())
+	}
+
 	addr := state.getCfg().Server.Host + ":" + strconv.Itoa(state.getCfg().Server.Port)
 	log.Printf("OmniGo %s listening on http://%s (config: %s)", version.Value, addr, paths.Config)
 	if state.getCfg().Observability.MetricsEnabled() {
@@ -192,7 +216,7 @@ func main() {
 	}
 	srv := &http.Server{
 		Addr:              addr,
-		Handler:           newApp(state.getCfg, state.store, state.mutate, tracker, metrics),
+		Handler:           app,
 		ReadHeaderTimeout: 10 * time.Second,
 		IdleTimeout:       idleTimeout,
 	}

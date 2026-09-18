@@ -9,11 +9,14 @@ package observability
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"net/http"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/ac-kurniawan/omnigo/internal/quota"
 	prom "github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"go.opentelemetry.io/otel/attribute"
@@ -32,6 +35,12 @@ const (
 	attrModel    = "gen_ai.request.model"
 	attrResult   = "result"
 	attrCombo    = "omnigo.combo.name"
+
+	// Quota label keys. account carries a provider account identifier, never a
+	// secret: it is the ChatGPT account id (a UUID) or the Google subject (a
+	// numeric id), both already present in the dashboard UI.
+	attrAccount = "account"
+	attrWindow  = "window"
 )
 
 // Metrics holds the meter instruments and the Prometheus scrape endpoint.
@@ -48,6 +57,10 @@ type Metrics struct {
 	providerRequests metric.Int64Counter
 	comboAttempts    metric.Int64Counter
 	configReloads    metric.Int64Counter
+
+	quotaRemainingRatio metric.Float64Gauge
+	quotaStatus         metric.Int64Gauge
+	quotaResetsIn       metric.Float64Gauge
 }
 
 // New builds the metrics instruments. enabled reports whether recording and
@@ -133,6 +146,24 @@ func (m *Metrics) init(provider *sdkmetric.MeterProvider) error {
 	if m.configReloads, err = meter.Int64Counter(
 		"omnigo.config.reloads",
 		metric.WithDescription("Config reload attempts by outcome"),
+	); err != nil {
+		return err
+	}
+	if m.quotaRemainingRatio, err = meter.Float64Gauge(
+		"omnigo.provider.quota.remaining_ratio",
+		metric.WithDescription("Fraction of provider quota still available, per account and window"),
+	); err != nil {
+		return err
+	}
+	if m.quotaStatus, err = meter.Int64Gauge(
+		"omnigo.provider.quota.status",
+		metric.WithDescription("Provider quota status per account: 1 available, 0 exhausted, -1 unavailable"),
+	); err != nil {
+		return err
+	}
+	if m.quotaResetsIn, err = meter.Float64Gauge(
+		"omnigo.provider.quota.resets_in_seconds",
+		metric.WithDescription("Seconds until the provider quota window resets"),
 	); err != nil {
 		return err
 	}
@@ -340,6 +371,72 @@ func methodLabel(method string) string {
 	default:
 		return labelFallback
 	}
+}
+
+// quotaAccountLabel guards a provider account identifier.
+//
+// The label must stay unique per credential. Two logins into one ChatGPT
+// workspace share an AccountID, so labelling by AccountID would merge their
+// series and let one account's exhaustion overwrite another's availability;
+// the credential Identity is therefore the label source.
+//
+// Values longer than the label budget are truncated with a short digest of the
+// whole value rather than collapsed to "other", because collapsing would merge
+// every overlong account into one misleading series.
+func quotaAccountLabel(account string) string {
+	if account == "" {
+		return labelFallback
+	}
+	// Replace @ with _at_ so emails remain readable in Prometheus; all other
+	// out-of-alphabet bytes map to _ so the label is always safe for metrics.
+	account = strings.ReplaceAll(account, "@", "_at_")
+	normalized := make([]byte, len(account))
+	for i := range len(account) {
+		c := account[i]
+		switch {
+		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9':
+			normalized[i] = c
+		case c == '-', c == '_', c == '.', c == ':':
+			normalized[i] = c
+		default:
+			normalized[i] = '_'
+		}
+	}
+	label := string(normalized)
+	if len(label) <= maxLabelLen {
+		return label
+	}
+	sum := sha256.Sum256([]byte(account))
+	suffix := hex.EncodeToString(sum[:4])
+	room := maxLabelLen - len(suffix) - 1
+	if room < 0 {
+		room = 0
+	}
+	return label[:room] + "-" + suffix
+}
+
+// RecordQuotaSample implements quota.SampleSink. Each gauge records a single
+// observation per account/window, so Prometheus holds the latest value rather
+// than an ever-growing history.
+//
+// A sample without a window carries account-level status only: emitting a
+// ratio for it would invent a window and report a fabricated 0% remaining.
+func (m *Metrics) RecordQuotaSample(sample quota.Sample) {
+	if !m.Enabled() {
+		return
+	}
+	base := []attribute.KeyValue{
+		attribute.String(attrProvider, providerLabel(sample.Provider)),
+		attribute.String(attrAccount, quotaAccountLabel(sample.Account)),
+	}
+	ctx := context.Background()
+	m.quotaStatus.Record(ctx, sample.Status, metric.WithAttributes(base...))
+	if sample.Window == "" {
+		return
+	}
+	withWindow := metric.WithAttributes(append(base, attribute.String(attrWindow, modelLabel(sample.Window)))...)
+	m.quotaRemainingRatio.Record(ctx, sample.RemainingRatio, withWindow)
+	m.quotaResetsIn.Record(ctx, sample.ResetsInSecond, withWindow)
 }
 
 // RecordConfigReload counts a config reload by outcome.

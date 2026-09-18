@@ -1635,8 +1635,63 @@
                   <span class="font-medium">{{if .Email}}{{.Email}}{{else}}{{.AccountID}}{{end}}</span>
                   <span class="badge badge-ghost badge-xs">{{accountStatus .}}</span>
                   {{if and .Email .AccountID}}<span class="font-mono text-base-content/50">{{.AccountID}}</span>{{end}}
+                  {{$q := quotaSnapshot $ $provName .}}
+                  {{$refresh := printf "/internal/refresh-quota/%s/%s" $provName (urlEscape (accountIdentity .))}}
+                  {{if $q}}
+                    <button type="button" class="badge {{quotaBadgeClass $q}} badge-xs cursor-pointer" title="{{quotaHeadline $q}}" onclick="document.getElementById('{{quotaModalID $provName (accountIdentity .)}}').showModal()">{{quotaStatusLabel $q}}</button>
+                    <span class="text-base-content/50">{{quotaHeadline $q}}</span>
+                  {{else}}
+                    <span class="badge badge-ghost badge-xs">Quota not polled</span>
+                  {{end}}
+                  <button type="button" hx-post="{{$refresh}}" hx-target="#result" hx-swap="innerHTML" hx-on::after-request="htmx.ajax('GET', '/providers', {target:'#providers', swap:'innerHTML'})" class="btn btn-ghost btn-xs" title="Refresh quota now">&#8635;</button>
                   <a href="/oauth/login/{{$provName}}" target="_blank" class="btn btn-ghost btn-xs min-h-11 focus-visible:ring-2 focus-visible:ring-primary">Reconnect</a>
                   <button type="button" hx-post="/providers/{{$provName}}/accounts/{{urlEscape (accountIdentity .)}}/delete" hx-target="#providers" hx-swap="innerHTML" hx-confirm="Remove account {{if .Email}}{{.Email}}{{else}}{{.AccountID}}{{end}}?" class="btn btn-error btn-outline btn-xs min-h-11 focus-visible:ring-2 focus-visible:ring-error">Remove</button>
+                  {{if $q}}
+                    <dialog id="{{quotaModalID $provName (accountIdentity .)}}" class="modal">
+                      <div class="modal-box max-w-2xl">
+                        <h3 class="font-bold text-lg">Quota &mdash; {{if .Email}}{{.Email}}{{else}}{{.AccountID}}{{end}}</h3>
+                        <p class="text-xs text-base-content/60 mt-1">
+                          Provider <span class="font-mono">{{$provName}}</span>
+                          &middot; {{quotaStatusLabel $q}}
+                          {{if $q.PlanType}}&middot; plan <span class="font-mono">{{$q.PlanType}}</span>{{end}}
+                          {{if $q.Reason}}&middot; {{$q.Reason}}{{end}}
+                        </p>
+                        {{if $q.Windows}}
+                          <div class="overflow-x-auto mt-4">
+                            <table class="table table-sm w-full">
+                              <thead>
+                                <tr class="text-base-content/70 text-xs uppercase tracking-wider">
+                                  <th>Window</th>
+                                  <th class="text-right">Remaining</th>
+                                  <th class="text-right">Used</th>
+                                  <th class="text-right">Resets</th>
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {{range $q.Windows}}
+                                <tr>
+                                  <td class="font-mono text-xs">{{.Name}}</td>
+                                  <td class="text-right">{{quotaFormatPercent .RemainingPercent}}</td>
+                                  <td class="text-right text-base-content/60">{{quotaFormatPercent .UsedPercent}}</td>
+                                  <td class="text-right text-base-content/60">{{quotaResetIn .}}</td>
+                                </tr>
+                                {{end}}
+                              </tbody>
+                            </table>
+                          </div>
+                        {{else}}
+                          <p class="text-sm text-base-content/60 mt-4">No window detail reported for this account.</p>
+                        {{end}}
+                        <p class="text-[11px] text-base-content/40 mt-3">Observed {{quotaHeadline $q}}</p>
+                        <div class="modal-action">
+                          <form method="dialog">
+                            <button class="btn btn-sm">Close</button>
+                          </form>
+                        </div>
+                      </div>
+                      <form method="dialog" class="modal-backdrop"><button>close</button></form>
+                    </dialog>
+                  {{end}}
                 </div>
               {{end}}
             {{else}}
