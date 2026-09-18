@@ -136,11 +136,11 @@ func TestRecordProviderOutcomes(t *testing.T) {
 	}
 	defer func() { _ = m.Shutdown(context.Background()) }()
 
-	m.RecordProviderRequest("agy", "gemini-flash", "success")
-	m.RecordProviderRequest("agy", "gemini-flash", "backpressure")
-	m.RecordProviderRequest("agy", "gemini-flash", "upstream_stall")
-	m.RecordCombinationAttempt("auto", "success")
-	m.RecordCombinationAttempt("auto", "failure")
+	m.RecordProviderRequest(context.Background(), "agy", "gemini-flash", "success")
+	m.RecordProviderRequest(context.Background(), "agy", "gemini-flash", "backpressure")
+	m.RecordProviderRequest(context.Background(), "agy", "gemini-flash", "upstream_stall")
+	m.RecordCombinationAttempt(context.Background(), "auto", "success")
+	m.RecordCombinationAttempt(context.Background(), "auto", "failure")
 	m.RecordConfigReload(true)
 	m.RecordConfigReload(false)
 
@@ -157,6 +157,30 @@ func TestRecordProviderOutcomes(t *testing.T) {
 		if !strings.Contains(body, want) {
 			t.Errorf("scrape missing %q\n---\n%s", want, body)
 		}
+	}
+}
+
+// The label must stay bounded whoever supplies the id: an operator-edited
+// auth.yaml can hold arbitrary characters, and a rejected request carries no id
+// at all. Only validated ids reach the sink, so unknown keys cannot mint
+// series, and overlong ids must not collapse distinct keys together.
+func TestClientKeyLabelGuard(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{name: "empty is unattributed", input: "", want: clientKeyNone},
+		{name: "generated hex id", input: "a1b2c3d4e5f60718", want: "a1b2c3d4e5f60718"},
+		{name: "unsupported chars fall back", input: "key with spaces", want: labelFallback},
+		{name: "overlong falls back", input: strings.Repeat("a", 65), want: labelFallback},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := clientKeyLabel(tt.input); got != tt.want {
+				t.Fatalf("clientKeyLabel(%q) = %q, want %q", tt.input, got, tt.want)
+			}
+		})
 	}
 }
 

@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"time"
@@ -12,17 +13,21 @@ import (
 // Metrics records gateway outcomes for observability. Implementations must be
 // safe for concurrent use. NewRouter normalizes a nil Metrics to a no-op, so
 // call sites never guard against nil.
+//
+// The request context is passed through so an implementation can read the
+// authenticated client key from it: the instrumentation middleware installs the
+// identity before the handler runs.
 type Metrics interface {
 	// RecordProviderRequest counts a provider dispatch by outcome.
-	RecordProviderRequest(provider, model, result string)
+	RecordProviderRequest(ctx context.Context, provider, model, result string)
 	// RecordCombinationAttempt counts a combo routing attempt by outcome.
-	RecordCombinationAttempt(combo, result string)
+	RecordCombinationAttempt(ctx context.Context, combo, result string)
 }
 
 type noopMetrics struct{}
 
-func (noopMetrics) RecordProviderRequest(string, string, string) {}
-func (noopMetrics) RecordCombinationAttempt(string, string)      {}
+func (noopMetrics) RecordProviderRequest(context.Context, string, string, string) {}
+func (noopMetrics) RecordCombinationAttempt(context.Context, string, string)      {}
 
 // Bounded dispatch result labels. Cardinality is fixed by this set, never by
 // client input.

@@ -73,7 +73,7 @@ func handleChat(getCfg func() *config.Config, registry *providerRegistry, tracke
 		// already on the wire and the object would be parsed as a bad frame.
 		tracked := &commitTracker{ResponseWriter: w}
 		providerErr := p.ChatCompletion(r.Context(), req, tracked)
-		metrics.RecordProviderRequest(provName, knownModelLabel(cfg, provName, model), classifyProviderError(providerErr, tracked.committed, r.Context().Err() != nil))
+		metrics.RecordProviderRequest(r.Context(), provName, knownModelLabel(cfg, provName, model), classifyProviderError(providerErr, tracked.committed, r.Context().Err() != nil))
 		if providerErr != nil && !tracked.committed {
 			writeProviderError(w, providerErr)
 		}
@@ -140,12 +140,12 @@ func runCombo(w http.ResponseWriter, r *http.Request, cfg *config.Config, regist
 	_, err := c.Run(r.Context(), func(ctx context.Context, t combo.Target) error {
 		p, ok := providerForName(cfg, registry, t.Provider)
 		if !ok {
-			metrics.RecordProviderRequest(t.Provider, t.Model, resultUnavailable)
+			metrics.RecordProviderRequest(ctx, t.Provider, t.Model, resultUnavailable)
 			return fmt.Errorf("unknown provider: %s", t.Provider)
 		}
 		for _, pc := range cfg.Providers {
 			if pc.Name == t.Provider && pc.IsModelDisabled(t.Model) {
-				metrics.RecordProviderRequest(t.Provider, t.Model, resultUnavailable)
+				metrics.RecordProviderRequest(ctx, t.Provider, t.Model, resultUnavailable)
 				return fmt.Errorf("model %q is disabled on provider %q", t.Model, t.Provider)
 			}
 		}
@@ -160,24 +160,24 @@ func runCombo(w http.ResponseWriter, r *http.Request, cfg *config.Config, regist
 			// upstream fault, so the target stays healthy. A stalled upstream leaves
 			// the request context alive and is still drained.
 			clientGone := r.Context().Err() != nil
-			metrics.RecordProviderRequest(t.Provider, t.Model, classifyProviderError(err, true, clientGone))
+			metrics.RecordProviderRequest(ctx, t.Provider, t.Model, classifyProviderError(err, true, clientGone))
 			if tracker != nil && cb.Strategy != "priority" && !clientGone {
 				tracker.MarkDrained(t, cb.ParsedDrainTTL(), sanitizeFailure(err))
 			}
 			return nil
 		}
 		if err != nil {
-			metrics.RecordProviderRequest(t.Provider, t.Model, classifyProviderError(err, false, false))
+			metrics.RecordProviderRequest(ctx, t.Provider, t.Model, classifyProviderError(err, false, false))
 			return sanitizedError{err: err, message: sanitizeFailure(err)}
 		}
-		metrics.RecordProviderRequest(t.Provider, t.Model, resultSuccess)
+		metrics.RecordProviderRequest(ctx, t.Provider, t.Model, resultSuccess)
 		return nil
 	})
 	attemptResult := resultSuccess
 	if err != nil {
 		attemptResult = resultFailure
 	}
-	metrics.RecordCombinationAttempt(cb.Name, attemptResult)
+	metrics.RecordCombinationAttempt(r.Context(), cb.Name, attemptResult)
 	if err != nil && !responseCommitted {
 		writeProviderError(w, err)
 	}
