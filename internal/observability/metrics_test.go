@@ -6,6 +6,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/ac-kurniawan/omnigo/internal/quota"
 )
 
 // scrape renders the Prometheus exposition for m, as a scrape would.
@@ -171,5 +173,135 @@ func TestResourceCarriesServiceName(t *testing.T) {
 	}
 	if !strings.Contains(body, `service_version="v9.9.9"`) {
 		t.Errorf("scrape missing service_version\n---\n%s", body)
+	}
+}
+
+func TestQuotaMetricLabelSanitization(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{name: "email", input: "user@example.com", want: "user_at_example.com"},
+		{name: "uuid account id", input: "fb88ebc3-79ae-45ff-b8b1-2313efa099b4", want: "fb88ebc3-79ae-45ff-b8b1-2313efa099b4"},
+		{name: "numeric google subject", input: "105124432875589731973", want: "105124432875589731973"},
+		{name: "empty", input: "", want: labelFallback},
+		// Overlong is tested separately in TestQuotaLabelBoundedForOverlongIdentity.
+		{name: "unsupported chars", input: "weird value!", want: "weird_value_"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := quotaAccountLabel(tt.input); got != tt.want {
+				t.Fatalf("quotaAccountLabel(%q) = %q, want %q", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestQuotaMetricsExported(t *testing.T) {
+	m, err := New(func() bool { return true }, "test-version")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = m.Shutdown(context.Background()) }()
+
+	m.RecordQuotaSample(quota.Sample{
+		Provider:       "cx",
+		Account:        "fb88ebc3-79ae-45ff-b8b1-2313efa099b4",
+		Window:         "primary",
+		RemainingRatio: 0.93,
+		Status:         1,
+		ResetsInSecond: 14134,
+	})
+
+	body := scrape(t, m)
+	for _, want := range []string{
+		"omnigo_provider_quota_remaining_ratio",
+		"omnigo_provider_quota_status",
+		"omnigo_provider_quota_resets_in_seconds",
+		"gen_ai_system=\"cx\"",
+		"account=\"fb88ebc3-79ae-45ff-b8b1-2313efa099b4\"",
+		"window=\"primary\"",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("scrape missing %q\n%s", want, body)
+		}
+	}
+}
+
+func TestQuotaEmailAccountLabelNotCollapsedToOther(t *testing.T) {
+	m, err := New(func() bool { return true }, "test-version")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = m.Shutdown(context.Background()) }()
+
+	m.RecordQuotaSample(quota.Sample{Provider: "agy", Account: "user@example.com", Window: "gemini-3.8-flash-tiered", RemainingRatio: 0.5, Status: 1})
+
+	body := scrape(t, m)
+	if !strings.Contains(body, `account="user_at_example.com"`) {
+		t.Fatalf("email account label was collapsed; scrape:\n%s", body)
+	}
+	if strings.Contains(body, `account="other"`) {
+		t.Fatalf("email account collapsed to the fallback label; scrape:\n%s", body)
+	}
+}
+
+func TestDisabledMetricsRecordsNoQuota(t *testing.T) {
+	m := Disabled()
+	m.RecordQuotaSample(quota.Sample{Provider: "cx", Account: "a", Window: "primary", RemainingRatio: 1, Status: 1})
+	// Disabled() must not panic and must not expose the endpoint; the gauge
+	// unavailability is covered by TestDisabledMetricsServes404.
+}
+
+// Two distinct logins into one ChatGPT workspace share an AccountID. Labelling
+// by AccountID would merge their series, so one account's exhaustion would
+// silently overwrite the other's availability. Identity is the unique key.
+func TestQuotaLabelKeepsSameAccountIDAccountsDistinct(t *testing.T) {
+	first := "fb88ebc3-79ae-45ff-b8b1-2313efa099b4:20110460+networkhr@utc2eduvn.onmicrosoft.com"
+	second := "fb88ebc3-79ae-45ff-b8b1-2313efa099b4:user-XTokGp1fOniGFSYxMyTub64g"
+	a, b := quotaAccountLabel(first), quotaAccountLabel(second)
+	if a == b {
+		t.Fatalf("distinct accounts collapsed to the same label %q", a)
+	}
+	if a == labelFallback || b == labelFallback {
+		t.Fatalf("labels fell back to %q (a=%q b=%q)", labelFallback, a, b)
+	}
+}
+
+func TestQuotaLabelBoundedForOverlongIdentity(t *testing.T) {
+	long := strings.Repeat("a", 200) + "@example.com"
+	got := quotaAccountLabel(long)
+	if got == labelFallback {
+		t.Fatalf("overlong identity collapsed to %q instead of a bounded unique label", labelFallback)
+	}
+	if len(got) > maxLabelLen {
+		t.Fatalf("label length %d exceeds max %d", len(got), maxLabelLen)
+	}
+	if other := quotaAccountLabel(strings.Repeat("a", 200) + "@example.org"); other == got {
+		t.Fatal("two overlong identities produced the same label")
+	}
+}
+
+// An unavailable read has no windows; emitting a ratio for a synthetic window
+// would report a fabricated 0% for a window that does not exist.
+func TestUnavailableSnapshotEmitsStatusWithoutRatioSeries(t *testing.T) {
+	m, err := New(func() bool { return true }, "test-version")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = m.Shutdown(context.Background()) }()
+
+	m.RecordQuotaSample(quota.Sample{Provider: "cx", Account: "acct", Status: -1})
+
+	body := scrape(t, m)
+	if !strings.Contains(body, "omnigo_provider_quota_status") {
+		t.Fatalf("status series missing:\n%s", body)
+	}
+	if strings.Contains(body, "omnigo_provider_quota_remaining_ratio{") {
+		t.Fatalf("ratio series emitted for a windowless snapshot:\n%s", body)
+	}
+	if strings.Contains(body, `window="other"`) {
+		t.Fatalf("synthetic window label leaked into the scrape:\n%s", body)
 	}
 }

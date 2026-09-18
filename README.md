@@ -126,6 +126,48 @@ dashboard:
   enabled: false
 ```
 
+### Quota (optional)
+
+OmniGo polls each OAuth provider's quota endpoint in the background and shows
+per-account quota in the dashboard, on the provider's account cards.
+
+```yaml
+quota:
+  enabled: true      # default: true
+  interval: 5m       # default: 5m, minimum 1m
+  auto_drain: false  # default: false
+  max_cooldown: 30m  # default: 30m
+```
+
+- **`enabled`** turns background polling on or off. While off, no quota
+  requests are made and the dashboard shows no quota badges.
+- **`interval`** is the polling period. It has a minimum of `1m`: polling
+  faster than that would add the upstream pressure the quota data exists to
+  avoid. Each cycle is jittered so pooled accounts do not poll in lockstep, and
+  an account that keeps failing is retried with backoff.
+- **`auto_drain`** is opt-in. When true, an exhausted account is cooled in the
+  account pool *before* a request fails, so a combo skips it on the next
+  attempt. Draining is per account, so the provider and its combo targets stay
+  routable through any remaining healthy accounts. Off by default, so enabling
+  quota polling changes no routing behaviour.
+- **`max_cooldown`** caps how long a quota drain lasts. Upstream can report a
+  reset days away (Codex's secondary window is seven days); the cap keeps a
+  stale or misreported value from parking a healthy account indefinitely.
+
+Three rules keep quota from removing capacity it should not:
+
+1. A failed or unparseable quota read is reported as **unavailable** and never
+   drains an account. Only an explicit upstream exhaustion signal drains.
+2. Codex exhaustion follows `rate_limit.allowed`/`limit_reached`, **not**
+   `used_percent`. An account can serve normally with a window at 100%.
+3. Antigravity reports one bucket per model; a bucket at zero remaining with no
+   reset time is treated as unknown rather than drained for an arbitrary
+   period.
+
+Quota data is held in memory only and never written to disk. Quota endpoints
+for both providers are private upstream interfaces and may change without
+notice; when they do, the affected account reports **unavailable**.
+
 ### Metrics (optional)
 
 Set `observability.metrics: true` in `config.yaml` to expose Prometheus-format
@@ -147,6 +189,9 @@ Recorded series:
 | `omnigo_provider_requests_total` | counter | `gen_ai_system`, `gen_ai_request_model`, `result` |
 | `omnigo_combo_attempts_total` | counter | `omnigo_combo_name`, `result` |
 | `omnigo_config_reloads_total` | counter | `result` |
+| `omnigo_provider_quota_remaining_ratio` | gauge | `gen_ai_system`, `account`, `window` |
+| `omnigo_provider_quota_status` | gauge | `gen_ai_system`, `account` |
+| `omnigo_provider_quota_resets_in_seconds` | gauge | `gen_ai_system`, `account`, `window` |
 
 Every label is bounded, because a client able to mint one label value per
 request can grow series without limit:
@@ -160,6 +205,30 @@ request can grow series without limit:
 - `result` is a fixed set (`success`, `failure`, `client_abort`,
   `upstream_stall`, `backpressure`, `rate_limited`, `stream_failed`,
   `upstream_error`, `unavailable`).
+- `account` is a provider credential identity, not a client-supplied value, so
+  its cardinality is bounded by the number of configured accounts. Characters
+  outside the Prometheus identifier alphabet are replaced (`@` becomes `_at_`),
+  and an identity longer than 64 characters is truncated with a short digest
+  suffix so distinct accounts never collapse into one series.
+- `window` is a quota window name: `primary`/`secondary` for Codex, or a model
+  id for Antigravity. A sample with no window records only the status gauge.
+
+#### Quota metrics
+
+The three `omnigo_provider_quota_*` gauges report per-account quota for the
+Codex and Antigravity OAuth providers. They are recorded only when background
+polling is active (see [Quota](#quota-optional) below).
+
+- `remaining_ratio` is the fraction of the window still available (`1` is
+  full, `0` is empty).
+- `status` is `1` available, `0` exhausted, `-1` unavailable. `unavailable`
+  means the quota read failed or could not be parsed; it is display-only and
+  never drains an account.
+- `resets_in_seconds` is the countdown to the window reset.
+
+For Codex, a window at `used_percent: 100` is **not** exhaustion: upstream
+reports `rate_limit.allowed`/`limit_reached` separately, and an account can
+keep serving at 100% of a window. `status` follows those explicit signals.
 
 A reference template is available at [`config.example.yaml`](./config.example.yaml).
 

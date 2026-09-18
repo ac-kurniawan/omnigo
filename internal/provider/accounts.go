@@ -87,6 +87,25 @@ func (p *AccountPool) MarkFailed(account Credentials, err error) {
 	p.mu.Unlock()
 }
 
+// MarkQuotaDrained cools one credential because its upstream quota is now
+// exhausted, before any request has had to fail with a 429.
+//
+// The identity must match Credentials.Identity() of a stored account; the
+// drain is dropped otherwise. Callers MUST bound cooldown: a quota drain is
+// derived from upstream metadata that can be stale or misreported, so an
+// unbounded drain could park a healthy account.
+func (p *AccountPool) MarkQuotaDrained(identity string, cooldown time.Duration, reason string) {
+	if cooldown <= 0 || identity == "" {
+		return
+	}
+	p.mu.Lock()
+	if p.drains == nil {
+		p.drains = make(map[string]accountDrain)
+	}
+	p.drains[identity] = accountDrain{until: p.currentTimeLocked().Add(cooldown), reason: reason}
+	p.mu.Unlock()
+}
+
 // isClientError reports whether an upstream failure is the caller's fault (a
 // malformed or unsupported request) rather than the provider's. Such failures
 // must not drain a combo target.

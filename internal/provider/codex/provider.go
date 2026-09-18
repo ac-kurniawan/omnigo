@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/ac-kurniawan/omnigo/internal/provider"
+	"github.com/ac-kurniawan/omnigo/internal/quota"
 )
 
 const (
@@ -32,6 +33,7 @@ var DefaultModels = []string{"gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra", "gpt
 type Provider struct {
 	name          string
 	responsesURL  string
+	quotaURL      string
 	modelsURL     string
 	client        *http.Client
 	stream        *http.Client
@@ -40,6 +42,9 @@ type Provider struct {
 	store         provider.CredStore
 	pool          provider.AccountPool
 	tokens        sync.Map
+	quotaMu       sync.RWMutex
+	quotaObserver func(quota.AccountSnapshot)
+	capturedQuota map[string]quota.AccountSnapshot
 }
 type streamState struct {
 	id             string
@@ -88,12 +93,14 @@ func New(cfg provider.Config, store provider.CredStore) provider.Provider {
 	return &Provider{
 		name:          cfg.Name,
 		responsesURL:  responsesURL,
+		quotaURL:      quotaURLFor(cfg.BaseURL),
 		modelsURL:     DefaultModelsURL,
 		client:        client,
 		stream:        provider.StreamClient(client),
 		idle:          timeout,
 		streamTimeout: cfg.StreamTimeout,
 		store:         store,
+		capturedQuota: make(map[string]quota.AccountSnapshot),
 	}
 }
 
@@ -242,6 +249,10 @@ func (p *Provider) chatWithAccount(ctx context.Context, req provider.ChatRequest
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
 		return provider.NewHTTPStatusError(resp.StatusCode, fmt.Sprintf("codex: upstream status %d", resp.StatusCode))
 	}
+	// A successful inference response carries quota metadata; push it so the
+	// syncer can refresh the snapshot from live traffic. Headers are read
+	// only, never mutated.
+	p.observeQuota(account, resp.Header)
 	reader := guard.Wrap(resp.Body)
 	if req.Stream {
 		return p.streamResponse(ctx, reader, req.Model, w)
