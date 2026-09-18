@@ -434,6 +434,60 @@ func TestProviderRefreshesOnceOnUnauthorized(t *testing.T) {
 	}
 }
 
+// Auto-refresh is proactive as well as reactive: an expired access token must
+// be renewed before the first inference request, not only after a 401.
+func TestProviderRefreshesExpiredTokenBeforeFirstRequest(t *testing.T) {
+	oldURL := tokenURL
+	t.Cleanup(func() { tokenURL = oldURL })
+	var tokenCalls atomic.Int32
+	var inferenceCalls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/token" {
+			tokenCalls.Add(1)
+			_ = json.NewEncoder(w).Encode(map[string]any{"access_token": "proactive", "refresh_token": "rotated", "expires_in": 3600})
+			return
+		}
+		inferenceCalls.Add(1)
+		if got := r.Header.Get("Authorization"); got != "Bearer proactive" {
+			t.Fatalf("authorization = %q, want the refreshed token", got)
+		}
+		_, _ = io.WriteString(w, event("response.completed", map[string]any{"response": map[string]any{"status": "completed"}}))
+	}))
+	defer server.Close()
+	tokenURL = server.URL + "/token"
+	store := &memoryCredStore{creds: provider.Credentials{AccessToken: "stale", RefreshToken: "refresh-old", AccountID: "account", ExpiresAt: time.Now().Add(-time.Hour)}}
+	p := New(provider.Config{Name: "codex", BaseURL: server.URL + "/responses", Timeout: time.Second}, store)
+	if err := p.ChatCompletion(context.Background(), provider.ChatRequest{Model: "gpt", Raw: []byte(`{"messages":[{"role":"user","content":"hi"}]}`)}, httptest.NewRecorder()); err != nil {
+		t.Fatal(err)
+	}
+	if tokenCalls.Load() != 1 || inferenceCalls.Load() != 1 {
+		t.Fatalf("token calls = %d, inference calls = %d", tokenCalls.Load(), inferenceCalls.Load())
+	}
+}
+
+// Test is the dashboard's connection check, so it must not report a healthy
+// provider while the stored token is expired and unrenewed.
+func TestProviderTestRefreshesExpiredToken(t *testing.T) {
+	oldURL := tokenURL
+	t.Cleanup(func() { tokenURL = oldURL })
+	var tokenCalls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		tokenCalls.Add(1)
+		_ = json.NewEncoder(w).Encode(map[string]any{"access_token": "fresh", "expires_in": 3600})
+	}))
+	defer server.Close()
+	tokenURL = server.URL
+	store := &memoryCredStore{creds: provider.Credentials{AccessToken: "stale", RefreshToken: "refresh-old", AccountID: "account", ExpiresAt: time.Now().Add(-time.Hour)}}
+	p := New(provider.Config{Name: "codex"}, store)
+	result := p.Test(context.Background())
+	if !result.OK {
+		t.Fatalf("result = %+v", result)
+	}
+	if tokenCalls.Load() != 1 || store.Get().AccessToken != "fresh" {
+		t.Fatalf("token calls = %d, creds = %+v", tokenCalls.Load(), store.Get())
+	}
+}
+
 func TestProviderConcurrentUnauthorizedUsesOneRefresh(t *testing.T) {
 	oldURL := tokenURL
 	t.Cleanup(func() { tokenURL = oldURL })
