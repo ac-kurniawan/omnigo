@@ -1870,6 +1870,7 @@
       <tr class="text-base-content/70 text-xs uppercase tracking-wider border-b border-base-content/10">
         <th class="py-3 px-4">Key Name</th>
         <th class="py-3 px-4">Key Prefix</th>
+        <th class="py-3 px-4">Key ID</th>
         <th class="py-3 px-4">Issued</th>
         <th class="py-3 px-4">Status</th>
         <th class="py-3 px-4 text-right">Actions</th>
@@ -1878,7 +1879,7 @@
     <tbody class="divide-y divide-base-content/5">
       {{if not .Keys}}
       <tr>
-        <td colspan="5" class="text-center py-12 text-base-content/40 italic">
+        <td colspan="6" class="text-center py-12 text-base-content/40 italic">
           No client keys issued yet. Generate one above to authenticate with /v1 endpoints.
         </td>
       </tr>
@@ -1887,6 +1888,7 @@
       <tr class="hover:bg-base-200/40 transition-colors">
         <td class="font-bold text-base-content py-3.5 px-4 text-sm">{{if .Name}}{{.Name}}{{else}}<span class="text-base-content/40 italic">unnamed</span>{{end}}</td>
         <td class="py-3.5 px-4"><code class="text-primary font-mono text-xs bg-base-200/80 px-2.5 py-1 rounded-md border border-base-content/10">{{.Prefix}}…</code></td>
+        <td class="py-3.5 px-4"><code class="text-base-content/70 font-mono text-xs" title="Matches the api_key_id metric label">{{.ID}}</code></td>
         <td class="text-xs text-base-content/70 font-mono py-3.5 px-4">{{.CreatedAt.Format "2006-01-02 15:04"}}</td>
         <td class="py-3.5 px-4">
           <span class="badge badge-success badge-sm font-mono px-2.5 py-1">active</span>

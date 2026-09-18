@@ -183,11 +183,11 @@ Recorded series:
 
 | Metric | Type | Labels |
 | ------ | ---- | ------ |
-| `http_server_request_duration_seconds` | histogram | `http_route`, `http_request_method`, `http_response_status_code` |
-| `http_server_request_time_to_first_byte_seconds` | histogram | `http_route`, `http_request_method` |
+| `http_server_request_duration_seconds` | histogram | `http_route`, `http_request_method`, `http_response_status_code`, `api_key_id` |
+| `http_server_request_time_to_first_byte_seconds` | histogram | `http_route`, `http_request_method`, `api_key_id` |
 | `http_server_active_requests` | up/down counter | `http_request_method` |
-| `omnigo_provider_requests_total` | counter | `gen_ai_system`, `gen_ai_request_model`, `result` |
-| `omnigo_combo_attempts_total` | counter | `omnigo_combo_name`, `result` |
+| `omnigo_provider_requests_total` | counter | `gen_ai_system`, `gen_ai_request_model`, `result`, `api_key_id` |
+| `omnigo_combo_attempts_total` | counter | `omnigo_combo_name`, `result`, `api_key_id` |
 | `omnigo_config_reloads_total` | counter | `result` |
 | `omnigo_provider_quota_remaining_ratio` | gauge | `gen_ai_system`, `account`, `window` |
 | `omnigo_provider_quota_status` | gauge | `gen_ai_system`, `account` |
@@ -205,6 +205,14 @@ request can grow series without limit:
 - `result` is a fixed set (`success`, `failure`, `client_abort`,
   `upstream_stall`, `backpressure`, `rate_limited`, `stream_failed`,
   `upstream_error`, `unavailable`).
+- `api_key_id` is the id of the gateway client key that authenticated the
+  request, as listed in the dashboard's **API Keys** panel: group by it to
+  attribute traffic, errors, and latency to a key. It is the short public
+  identifier, never the key material or its hash. Requests with no validated
+  key (dashboard, health, scrapes, rejected 401s) report `none`, and an id
+  outside the identifier alphabet reports `other`; a client-supplied key never
+  becomes a label. `http_server_active_requests` has no `api_key_id`: it is
+  incremented before authentication runs.
 - `account` is a provider credential identity, not a client-supplied value, so
   its cardinality is bounded by the number of configured accounts. Characters
   outside the Prometheus identifier alphabet are replaced (`@` becomes `_at_`),
