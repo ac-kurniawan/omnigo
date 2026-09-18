@@ -8,6 +8,7 @@ import (
 	"html/template"
 	"net/http"
 	"net/url"
+	"strings"
 	"sync"
 	"time"
 
@@ -16,6 +17,7 @@ import (
 	"github.com/ac-kurniawan/omnigo/internal/config"
 	"github.com/ac-kurniawan/omnigo/internal/provider/antigravity"
 	"github.com/ac-kurniawan/omnigo/internal/provider/codex"
+	"github.com/ac-kurniawan/omnigo/internal/quota"
 	"github.com/ac-kurniawan/omnigo/internal/vault"
 	"github.com/ac-kurniawan/omnigo/internal/version"
 )
@@ -36,6 +38,7 @@ type viewData struct {
 	CSRFToken string
 	Tracker   *combo.Tracker
 	Version   string
+	Quota     *quota.Cache
 }
 
 type oauthPendingState struct {
@@ -52,6 +55,10 @@ type Server struct {
 	tracker *combo.Tracker
 	version string
 
+	// quotaCache backs the per-account quota badges. It is optional: without
+	// it the providers view renders exactly as before.
+	quotaCache *quota.Cache
+
 	// exchange/discover are injectable OAuth seams (defaults to the
 	// antigravity package); tests override them with fakes.
 	exchange         func(r *http.Request, code, redirectURI string) (*antigravity.Token, error)
@@ -67,14 +74,29 @@ type Server struct {
 }
 
 func NewHandler(getCfg func() *config.Config, store *vault.Store, mutate config.MutateFunc, tracker ...*combo.Tracker) http.Handler {
+	return dashboardHandler(getCfg, store, mutate, nil, tracker...)
+}
+
+// NewHandlerWithQuota is NewHandler plus the shared quota cache, which backs
+// the per-account quota badges. Passing a nil cache is equivalent to
+// NewHandler.
+func NewHandlerWithQuota(getCfg func() *config.Config, store *vault.Store, mutate config.MutateFunc, cache *quota.Cache, tracker ...*combo.Tracker) http.Handler {
+	return dashboardHandler(getCfg, store, mutate, cache, tracker...)
+}
+
+// dashboardHandler wires the dashboard surface once, so both constructors
+// share one definition of the enabled gate and the basic-auth wrapper.
+func dashboardHandler(getCfg func() *config.Config, store *vault.Store, mutate config.MutateFunc, cache *quota.Cache, tracker ...*combo.Tracker) http.Handler {
 	var tr *combo.Tracker
 	if len(tracker) > 0 {
 		tr = tracker[0]
 	}
+	server := newServer(getCfg, store, mutate, tr)
+	server.quotaCache = cache
 	inner := auth.DashboardBasicAuth(func() bool {
 		cfg := getCfg()
 		return cfg == nil || cfg.Dashboard.AuthEnabled()
-	})(newServer(getCfg, store, mutate, tr).routes())
+	})(server.routes())
 
 	// The enabled gate is read from the live config on every request, so
 	// toggling dashboard.enabled in config.yaml takes effect on reload without
@@ -157,6 +179,81 @@ func newServer(getCfg func() *config.Config, store *vault.Store, mutate config.M
 			}
 			return tr.DrainedCount()
 		},
+		// quotaSnapshot returns the cached quota for one credential, or nil
+		// when no poll has completed yet. The template renders a badge only
+		// when a snapshot exists, so an unpolled account shows no state rather
+		// than a misleading "available".
+		"quotaSnapshot": func(v viewData, provider string, account vault.ProviderSecret) *quota.AccountSnapshot {
+			if v.Quota == nil {
+				return nil
+			}
+			snapshot, ok := v.Quota.Get(provider, account.Identity())
+			if !ok {
+				return nil
+			}
+			return &snapshot
+		},
+		"quotaHeadline": func(snapshot *quota.AccountSnapshot) string {
+			if snapshot == nil {
+				return ""
+			}
+			return snapshot.Headline(time.Now())
+		},
+		"quotaBadgeClass": func(snapshot *quota.AccountSnapshot) string {
+			if snapshot == nil {
+				return "badge-ghost"
+			}
+			switch snapshot.Status {
+			case quota.StatusAvailable:
+				return "badge-success"
+			case quota.StatusExhausted:
+				return "badge-error"
+			default:
+				return "badge-warning"
+			}
+		},
+		"quotaStatusLabel": func(snapshot *quota.AccountSnapshot) string {
+			if snapshot == nil {
+				return ""
+			}
+			switch snapshot.Status {
+			case quota.StatusAvailable:
+				return "Quota OK"
+			case quota.StatusExhausted:
+				return "Quota Exhausted"
+			default:
+				return "Quota Unknown"
+			}
+		},
+		"quotaFormatPercent": func(p float64) string {
+			if p == float64(int(p)) {
+				return fmt.Sprintf("%d%%", int(p))
+			}
+			return fmt.Sprintf("%.1f%%", p)
+		},
+		"quotaResetIn": func(w quota.Window) string {
+			if w.ResetAt.IsZero() {
+				return ""
+			}
+			rem := time.Until(w.ResetAt).Round(time.Minute)
+			if rem <= 0 {
+				return "now"
+			}
+			h := int(rem.Hours())
+			m := int(rem.Minutes()) % 60
+			if h > 24 {
+				return fmt.Sprintf("%dd%dh", h/24, h%24)
+			}
+			if h > 0 {
+				return fmt.Sprintf("%dh%dm", h, m)
+			}
+			return fmt.Sprintf("%dm", m)
+		},
+		"quotaModalID": func(provider, identity string) string {
+			// Derive a stable HTML-safe ID for the modal dialog.
+			safe := strings.NewReplacer(":", "-", "@", "-", "+", "-", ".", "-").Replace(provider + "-" + identity)
+			return "quota-modal-" + safe
+		},
 	}).ParseFS(templatesFS, "templates/*.html"))
 
 	s := &Server{
@@ -226,6 +323,7 @@ func (s *Server) index(w http.ResponseWriter, r *http.Request) {
 		CSRFToken: token,
 		Tracker:   s.tracker,
 		Version:   s.version,
+		Quota:     s.quotaCache,
 	}
 	_ = s.tmpl.ExecuteTemplate(w, "index.html", data)
 }

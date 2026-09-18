@@ -7,6 +7,7 @@ import (
 
 	"github.com/ac-kurniawan/omnigo/internal/config"
 	"github.com/ac-kurniawan/omnigo/internal/provider"
+	"github.com/ac-kurniawan/omnigo/internal/quota"
 	"github.com/ac-kurniawan/omnigo/internal/vault"
 )
 
@@ -19,6 +20,10 @@ type providerRegistry struct {
 	mu        sync.RWMutex
 	cfg       *config.Config
 	providers map[string]registryEntry
+
+	// quotaCache receives snapshots observed on live inference responses.
+	// It is optional; when nil the observer is not installed.
+	quotaCache *quota.Cache
 }
 
 type registryEntry struct {
@@ -90,8 +95,29 @@ func (r *providerRegistry) ensure(cfg *config.Config) {
 		if err != nil {
 			continue
 		}
+		r.observeQuota(p)
 		entries[pc.Name] = registryEntry{typ: pc.Type, baseURL: pc.BaseURL, timeout: timeout, streamTimeout: streamTimeout, maxConcurrency: pc.MaxConcurrency, p: p}
 	}
 	r.providers = entries
 	r.cfg = cfg
+}
+
+// observeQuota installs the quota cache as the provider's snapshot sink, so a
+// snapshot observed on an ordinary inference response reaches the dashboard
+// and the registry without waiting for the next poll.
+//
+// The observer is push-based and holds no reference to the registry, so a
+// provider instance that survives a config reload keeps feeding the same
+// cache.
+func (r *providerRegistry) observeQuota(p provider.Provider) {
+	if r.quotaCache == nil {
+		return
+	}
+	observer, ok := p.(interface {
+		SetQuotaObserver(func(quota.AccountSnapshot))
+	})
+	if !ok {
+		return
+	}
+	observer.SetQuotaObserver(r.quotaCache.Put)
 }

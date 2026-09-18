@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"net/http"
 	"time"
+
+	"github.com/ac-kurniawan/omnigo/internal/quota"
 )
 
 type Message struct {
@@ -121,6 +123,22 @@ type Provider interface {
 	ChatCompletion(ctx context.Context, req ChatRequest, w http.ResponseWriter) error
 	Models(ctx context.Context) ([]Model, error)
 	Test(ctx context.Context) TestResult
+}
+
+// QuotaFetcher is implemented by providers whose upstream exposes remaining
+// quota for a credential. Providers without such an endpoint (for example
+// openai with a plain API key) simply do not implement it, and the syncer
+// skips them.
+type QuotaFetcher interface {
+	FetchQuota(ctx context.Context, account Credentials) (quota.AccountSnapshot, error)
+}
+
+// QuotaHeaderSource is implemented by providers that also observe quota on
+// ordinary inference responses. It lets the syncer refresh a snapshot from
+// live traffic without waiting for the next poll. ok is false when the
+// response carried no quota metadata at all.
+type QuotaHeaderSource interface {
+	QuotaFromHeaders(account Credentials, h http.Header) (quota.AccountSnapshot, bool)
 }
 
 type Factory func(cfg Config, store CredStore) Provider
