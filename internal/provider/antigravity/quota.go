@@ -50,7 +50,7 @@ func (p *Provider) FetchQuota(ctx context.Context, account provider.Credentials)
 		ObservedAt: time.Now(),
 	}
 
-	c, err := p.ensureFreshTokenFrom(ctx, provider.ScopedStore(p.store, account))
+	c, err := p.tokenManager(account).EnsureFreshToken(ctx)
 	if err != nil {
 		snap.Status = quota.StatusUnavailable
 		snap.Reason = "token refresh failed"

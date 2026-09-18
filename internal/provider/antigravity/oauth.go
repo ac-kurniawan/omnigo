@@ -3,7 +3,9 @@ package antigravity
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"strings"
@@ -27,6 +29,32 @@ type Token struct {
 	AccessToken  string
 	RefreshToken string
 	ExpiresAt    time.Time
+}
+
+type tokenEndpointError struct {
+	status      int
+	code        string
+	description string
+}
+
+func (e *tokenEndpointError) Error() string {
+	return fmt.Sprintf("token exchange: status %d", e.status)
+}
+
+func (e *tokenEndpointError) Unrecoverable() bool {
+	if e.status != http.StatusBadRequest && e.status != http.StatusUnauthorized {
+		return false
+	}
+	value := strings.ToLower(e.code + " " + e.description)
+	return strings.Contains(value, "invalid_grant") ||
+		strings.Contains(value, "refresh_token_reused") ||
+		strings.Contains(value, "expired_token") ||
+		strings.Contains(value, "revoked_token") ||
+		strings.Contains(value, "token_expired") ||
+		strings.Contains(value, "token_revoked") ||
+		strings.Contains(value, "refresh token expired") ||
+		strings.Contains(value, "refresh token revoked") ||
+		strings.Contains(value, "token has been expired or revoked")
 }
 
 func BuildAuthorizeURL(redirectURI, state string) string {
@@ -134,7 +162,7 @@ func exchange(ctx context.Context, form url.Values) (*Token, error) {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("token exchange: status %d", resp.StatusCode)
+		return nil, decodeTokenEndpointError(resp)
 	}
 	var out struct {
 		AccessToken  string `json:"access_token"`
@@ -149,4 +177,39 @@ func exchange(ctx context.Context, form url.Values) (*Token, error) {
 		tok.ExpiresAt = time.Now().Add(time.Duration(out.ExpiresIn) * time.Second)
 	}
 	return tok, nil
+}
+
+func decodeTokenEndpointError(resp *http.Response) error {
+	endpointErr := &tokenEndpointError{status: resp.StatusCode}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 32<<10))
+	if err != nil {
+		return endpointErr
+	}
+	var out struct {
+		Error            any    `json:"error"`
+		Code             string `json:"code"`
+		ErrorDescription string `json:"error_description"`
+	}
+	if json.Unmarshal(body, &out) != nil {
+		return endpointErr
+	}
+	endpointErr.code = out.Code
+	endpointErr.description = out.ErrorDescription
+	switch value := out.Error.(type) {
+	case string:
+		endpointErr.code = value
+	case map[string]any:
+		if code, ok := value["code"].(string); ok {
+			endpointErr.code = code
+		}
+		if description, ok := value["message"].(string); ok {
+			endpointErr.description = description
+		}
+	}
+	return endpointErr
+}
+
+func isUnrecoverableRefreshError(err error) bool {
+	var endpointErr *tokenEndpointError
+	return errors.As(err, &endpointErr) && endpointErr.Unrecoverable()
 }
