@@ -184,8 +184,84 @@ func TestOpenAITimeoutConfigured(t *testing.T) {
 	// Default when unset or <= 0
 	p2 := NewOpenAI(Config{Name: "openai", BaseURL: "https://example.com"}, store)
 	op2, ok := p2.(*openAIProvider)
-	if !ok || op2.client.Timeout != 30*time.Second {
-		t.Fatalf("client.Timeout = %v, want default 30s", op2.client.Timeout)
+	if !ok || op2.client.Timeout != 20*time.Second {
+		t.Fatalf("client.Timeout = %v, want default 20s", op2.client.Timeout)
+	}
+}
+
+// A stream that keeps producing bytes never trips the idle bound, so without a
+// budget a trickling upstream can hold the generation open forever.
+func TestOpenAIStreamBudgetEndsTricklingStream(t *testing.T) {
+	release := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		flusher, _ := w.(http.Flusher)
+		for {
+			select {
+			case <-release:
+				return
+			default:
+			}
+			_, _ = w.Write([]byte("data: chunk\n\n"))
+			if flusher != nil {
+				flusher.Flush()
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+	}))
+	defer srv.Close()
+	defer close(release)
+
+	p := NewOpenAI(Config{
+		Name:          "openai",
+		BaseURL:       srv.URL,
+		Timeout:       5 * time.Second,
+		StreamTimeout: 150 * time.Millisecond,
+	}, staticStore{Credentials{APIKey: "sk-test"}})
+	rec := httptest.NewRecorder()
+	done := make(chan error, 1)
+	go func() {
+		done <- p.ChatCompletion(context.Background(), ChatRequest{Model: "gpt-4o", Stream: true}, rec)
+	}()
+
+	select {
+	case err := <-done:
+		if !errors.Is(err, ErrUpstreamStall) {
+			t.Fatalf("err = %v, want ErrUpstreamStall for the exhausted stream budget", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("trickling stream was not ended by its budget")
+	}
+}
+
+// A budget of zero is the explicit opt-out: generated text may run as long as
+// it keeps producing bytes.
+func TestOpenAIStreamBudgetZeroIsUnbounded(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		flusher, _ := w.(http.Flusher)
+		for i := 0; i < 6; i++ {
+			_, _ = w.Write([]byte("data: chunk\n\n"))
+			if flusher != nil {
+				flusher.Flush()
+			}
+			time.Sleep(30 * time.Millisecond)
+		}
+	}))
+	defer srv.Close()
+
+	p := NewOpenAI(Config{
+		Name:    "openai",
+		BaseURL: srv.URL,
+		Timeout: 50 * time.Millisecond,
+	}, staticStore{Credentials{APIKey: "sk-test"}})
+
+	rec := httptest.NewRecorder()
+	if err := p.ChatCompletion(context.Background(), ChatRequest{Model: "gpt-4o", Stream: true}, rec); err != nil {
+		t.Fatalf("unbounded stream failed: %v", err)
+	}
+	if !strings.Contains(rec.Body.String(), "chunk") {
+		t.Fatalf("stream body = %q", rec.Body.String())
 	}
 }
 
