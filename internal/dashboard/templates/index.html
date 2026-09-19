@@ -813,6 +813,17 @@
             evt.detail.target.innerHTML = '';
             const count = data.models.length;
             showToast('info', `Discovered and cached ${count} model${count === 1 ? '' : 's'}.`, `Models Synced for ${data.provider}`);
+          } else if (data.status !== undefined && data.provider !== undefined) {
+            evt.detail.target.innerHTML = '';
+            const who = data.email || data.account_id || data.identity || data.provider;
+            if (data.status === 'available') {
+              const used = (data.windows || []).map(w => `${w.name} ${Math.round(w.used_percent)}%`).join(' · ');
+              showToast('success', used || 'Quota is available.', `Quota Refreshed for ${who}`);
+            } else if (data.status === 'exhausted') {
+              showToast('warning', data.reason || 'Quota is exhausted.', `Quota Refreshed for ${who}`);
+            } else {
+              showToast('error', data.reason || 'Quota could not be read.', `Quota Refresh Failed for ${who}`);
+            }
           }
         } catch (e) {}
       }
