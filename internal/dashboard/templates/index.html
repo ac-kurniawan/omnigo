@@ -360,50 +360,9 @@
                   </div>
 
                   <!-- Models List grouped by Provider -->
-                  <div class="py-2 max-h-80 overflow-y-auto space-y-3" id="combo-picker-providers-list">
-                    {{if not .Providers}}
-                      <div class="text-xs text-base-content/40 italic py-6 text-center">
-                        No providers configured. Please add an upstream provider first.
-                      </div>
-                    {{end}}
-                    {{range .Providers}}
-                      {{$provName := .Name}}
-                      {{$provType := .Type}}
-                      {{$provDisabled := .Disabled}}
-                      <div class="picker-provider-group border border-base-content/10 rounded-xl p-3 bg-base-200/30 space-y-2" data-provider="{{$provName}}">
-                        <div class="flex items-center justify-between border-b border-base-content/5 pb-2">
-                          <div class="flex items-center gap-2">
-                            <span class="font-bold text-xs font-mono text-primary">{{$provName}}</span>
-                            <span class="badge badge-ghost badge-xs font-mono">{{$provType}}</span>
-                            {{if $provDisabled}}
-                              <span class="badge badge-ghost badge-xs text-warning">disabled</span>
-                            {{end}}
-                          </div>
-                          {{if .Models}}
-                            <label class="normal-case font-normal text-xs text-base-content/70 flex items-center gap-1.5 cursor-pointer">
-                              <input type="checkbox" class="checkbox checkbox-xs checkbox-primary picker-select-all" data-provider="{{$provName}}" onchange="toggleProviderAllInPicker('{{$provName}}', this.checked)">
-                              <span>Select all</span>
-                            </label>
-                          {{end}}
-                        </div>
-                        {{if not .Models}}
-                          <div class="text-[11px] text-base-content/40 italic py-1">No active cached models for this provider.</div>
-                        {{else}}
-                          <div class="grid grid-cols-1 gap-1.5">
-                            {{range .Models}}
-                              <label class="picker-model-item flex items-center justify-between p-2 rounded-lg bg-base-100 hover:bg-base-200/80 cursor-pointer font-mono text-xs border border-base-content/5 transition-colors" data-search="{{$provName}} {{.}}">
-                                <div class="flex items-center gap-2.5 min-w-0">
-                                  <input type="checkbox" class="checkbox checkbox-xs checkbox-primary picker-model-checkbox" data-target="{{$provName}}/{{.}}" data-provider="{{$provName}}" data-model="{{.}}" onchange="updatePickerCounter()">
-                                  <span class="font-medium text-base-content truncate">{{.}}</span>
-                                </div>
-                                <span class="text-[10px] text-base-content/40 font-mono shrink-0 ml-2">{{$provName}}/{{.}}</span>
-                              </label>
-                            {{end}}
-                          </div>
-                        {{end}}
-                      </div>
-                    {{end}}
-                  </div>
+                <div class="py-2 max-h-80 overflow-y-auto space-y-3" id="combo-picker-providers-list">
+                  {{template "combo-picker-models" .}}
+                </div>
 
                   <!-- Modal Action Footer -->
                   <div class="modal-action border-t border-base-content/10 pt-3 flex items-center justify-between">
@@ -418,6 +377,51 @@
                 </div>
                 <form method="dialog" class="modal-backdrop"><button>close</button></form>
               </dialog>
+
+        {{define "combo-picker-models"}}
+          {{if not .Providers}}
+            <div class="text-xs text-base-content/40 italic py-6 text-center">
+              No providers configured. Please add an upstream provider first.
+            </div>
+          {{end}}
+          {{range .Providers}}
+            {{$provName := .Name}}
+            {{$provType := .Type}}
+            {{$provDisabled := .Disabled}}
+            <div class="picker-provider-group border border-base-content/10 rounded-xl p-3 bg-base-200/30 space-y-2" data-provider="{{$provName}}">
+              <div class="flex items-center justify-between border-b border-base-content/5 pb-2">
+                <div class="flex items-center gap-2">
+                  <span class="font-bold text-xs font-mono text-primary">{{$provName}}</span>
+                  <span class="badge badge-ghost badge-xs font-mono">{{$provType}}</span>
+                  {{if $provDisabled}}
+                    <span class="badge badge-ghost badge-xs text-warning">disabled</span>
+                  {{end}}
+                </div>
+                {{if .Models}}
+                  <label class="normal-case font-normal text-xs text-base-content/70 flex items-center gap-1.5 cursor-pointer">
+                    <input type="checkbox" class="checkbox checkbox-xs checkbox-primary picker-select-all" data-provider="{{$provName}}" onchange="toggleProviderAllInPicker('{{$provName}}', this.checked)">
+                    <span>Select all</span>
+                  </label>
+                {{end}}
+              </div>
+              {{if not .Models}}
+                <div class="text-[11px] text-base-content/40 italic py-1">No active cached models for this provider.</div>
+              {{else}}
+                <div class="grid grid-cols-1 gap-1.5">
+                  {{range .Models}}
+                    <label class="picker-model-item flex items-center justify-between p-2 rounded-lg bg-base-100 hover:bg-base-200/80 cursor-pointer font-mono text-xs border border-base-content/5 transition-colors" data-search="{{$provName}} {{.}}">
+                      <div class="flex items-center gap-2.5 min-w-0">
+                        <input type="checkbox" class="checkbox checkbox-xs checkbox-primary picker-model-checkbox" data-target="{{$provName}}/{{.}}" data-provider="{{$provName}}" data-model="{{.}}" onchange="updatePickerCounter()">
+                        <span class="font-medium text-base-content truncate">{{.}}</span>
+                      </div>
+                      <span class="text-[10px] text-base-content/40 font-mono shrink-0 ml-2">{{$provName}}/{{.}}</span>
+                    </label>
+                  {{end}}
+                </div>
+              {{end}}
+            </div>
+          {{end}}
+        {{end}}
 
           <!-- Combo Edit Modal -->
           <dialog id="combo-edit-modal" class="modal modal-bottom sm:modal-middle">
@@ -823,11 +827,16 @@
     }
 
     function showComboModelPicker() {
-      const selected = CHAINS[pickerContext].get();
-      document.querySelectorAll('.picker-model-checkbox').forEach(cb => {
-        cb.checked = selected.includes(cb.dataset.target);
+      // Pull the current model catalog so models refreshed after page load are visible.
+      htmx.ajax('GET', '/combo-picker/models', { target: '#combo-picker-providers-list', swap: 'innerHTML' }).then(() => {
+        const selected = CHAINS[pickerContext].get();
+        document.querySelectorAll('.picker-model-checkbox').forEach(cb => {
+          cb.checked = selected.includes(cb.dataset.target);
+        });
+        updatePickerCounter();
+        const search = document.getElementById('combo-picker-search');
+        if (search && search.value) filterComboPickerModels(search.value);
       });
-      updatePickerCounter();
       document.getElementById('combo-model-picker-modal')?.showModal();
     }
 

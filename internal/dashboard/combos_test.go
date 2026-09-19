@@ -475,3 +475,26 @@ func TestDeleteCombo(t *testing.T) {
 		t.Fatalf("expected empty combos, got %+v", cfg.Combos)
 	}
 }
+
+func TestComboPickerModelsReflectRefreshedCatalog(t *testing.T) {
+	cfg := &config.Config{
+		Providers: []config.Provider{{Name: "agy", Type: "antigravity", Models: []string{"gemini-3.7-flash"}}},
+	}
+	store := vault.NewMemoryStore(&vault.Vault{})
+	s := newServer(func() *config.Config { return cfg }, store, nil, nil)
+
+	// Simulates the provider Refresh button updating the cached model list
+	// after the dashboard page was first rendered.
+	cfg.Providers[0].Models = append(cfg.Providers[0].Models, "gemini-3.8-ultra")
+
+	rr := httptest.NewRecorder()
+	s.routes().ServeHTTP(rr, httptest.NewRequest("GET", "/combo-picker/models", nil))
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rr.Code, rr.Body.String())
+	}
+	body := rr.Body.String()
+	if !strings.Contains(body, `data-target="agy/gemini-3.8-ultra"`) {
+		t.Fatalf("picker missing refreshed model: %s", body)
+	}
+}
