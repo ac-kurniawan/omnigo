@@ -167,10 +167,10 @@ func (s *Server) finishCodexLogin(w http.ResponseWriter, r *http.Request, name, 
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	_, _ = w.Write([]byte(`
-		<div class="alert alert-success shadow-md flex items-center justify-between my-2">
-			<div class="flex items-center gap-2">
+		<div class="alert alert-success shadow-lg flex items-center justify-between p-4 rounded-xl border border-success/30">
+			<div class="flex items-center gap-2.5">
 				<svg xmlns="http://www.w3.org/2000/svg" class="size-5 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
-				<span><strong>Codex Connected!</strong> Account authorized</span>
+				<span class="text-sm"><strong>Codex Connected!</strong> Account authorized</span>
 			</div>
 			<button class="btn btn-ghost btn-xs" onclick="this.closest('.alert').remove()">✕</button>
 		</div>
@@ -255,10 +255,10 @@ func (s *Server) oauthPasteCallback(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	_, _ = w.Write([]byte(`
-		<div class="alert alert-success shadow-md flex items-center justify-between my-2">
-			<div class="flex items-center gap-2">
+		<div class="alert alert-success shadow-lg flex items-center justify-between p-4 rounded-xl border border-success/30">
+			<div class="flex items-center gap-2.5">
 				<svg xmlns="http://www.w3.org/2000/svg" class="size-5 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
-				<span><strong>Antigravity Connected!</strong> Account authorized (Project: ` + html.EscapeString(projectID) + `)</span>
+				<span class="text-sm"><strong>Antigravity Connected!</strong> Account authorized (Project: ` + html.EscapeString(projectID) + `)</span>
 			</div>
 			<button class="btn btn-ghost btn-xs" onclick="this.closest('.alert').remove()">✕</button>
 		</div>
