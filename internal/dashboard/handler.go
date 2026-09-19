@@ -41,6 +41,16 @@ type viewData struct {
 	Quota     *quota.Cache
 }
 
+// accountHealthy reports whether an OAuth account has usable credentials: a
+// token must exist, and if the access token has expired a refresh token must
+// be available. It backs both the per-account status dot and healthyCount.
+func accountHealthy(account vault.ProviderSecret) bool {
+	if account.AccessToken == "" && account.RefreshToken == "" {
+		return false
+	}
+	return account.ExpiresAt.IsZero() || account.RefreshToken != "" || time.Until(account.ExpiresAt) > 0
+}
+
 type oauthPendingState struct {
 	provider  string
 	verifier  string
@@ -158,11 +168,15 @@ func newServer(getCfg func() *config.Config, store *vault.Store, mutate config.M
 		"urlEscape": func(s string) string {
 			return url.PathEscape(s)
 		},
-		"accountHealthy": func(account vault.ProviderSecret) bool {
-			if account.AccessToken == "" && account.RefreshToken == "" {
-				return false
+		"accountHealthy": accountHealthy,
+		"healthyCount": func(accounts []vault.ProviderSecret) int {
+			n := 0
+			for _, account := range accounts {
+				if accountHealthy(account) {
+					n++
+				}
 			}
-			return account.ExpiresAt.IsZero() || account.RefreshToken != "" || time.Until(account.ExpiresAt) > 0
+			return n
 		},
 		"accountStatus": func(account vault.ProviderSecret) string {
 			if account.AccessToken == "" && account.RefreshToken == "" {

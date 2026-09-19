@@ -1425,8 +1425,9 @@
           <div class="flex items-center gap-3">
             {{if eq .Type "antigravity"}}
               {{if or $accounts (and $sec (or $sec.RefreshToken $sec.AccessToken))}}
-                <div class="tooltip tooltip-right inline-flex items-center" data-tip="Connected{{if $sec.ProjectID}} (Project: {{$sec.ProjectID}}){{end}}">
+                <div class="tooltip tooltip-right inline-flex items-center gap-1.5" data-tip="{{if $accounts}}{{healthyCount $accounts}} healthy of {{len $accounts}} registered{{else}}Connected{{end}}{{if $sec.ProjectID}} (Project: {{$sec.ProjectID}}){{end}}">
                   <span class="size-2.5 rounded-full bg-success ring-4 ring-success/20 shrink-0"></span>
+                  {{if $accounts}}<span class="text-[11px] font-mono text-base-content/70 leading-none">{{healthyCount $accounts}}/{{len $accounts}} connected</span>{{end}}
                 </div>
               {{else}}
                 <div class="tooltip tooltip-right inline-flex items-center" data-tip="Not Connected — Click Connect Google">
@@ -1435,8 +1436,9 @@
               {{end}}
             {{else if eq .Type "codex"}}
               {{if or $accounts (and $sec (or $sec.RefreshToken $sec.AccessToken))}}
-                <div class="tooltip tooltip-right inline-flex items-center" data-tip="Connected{{if $sec.Email}} ({{$sec.Email}}){{end}}{{if $sec.AccountID}} — Workspace: {{$sec.AccountID}}{{end}}">
+                <div class="tooltip tooltip-right inline-flex items-center gap-1.5" data-tip="{{if $accounts}}{{healthyCount $accounts}} healthy of {{len $accounts}} registered{{else}}Connected{{end}}{{if $sec.Email}} ({{$sec.Email}}){{end}}{{if $sec.AccountID}} — Workspace: {{$sec.AccountID}}{{end}}">
                   <span class="size-2.5 rounded-full bg-success ring-4 ring-success/20 shrink-0"></span>
+                  {{if $accounts}}<span class="text-[11px] font-mono text-base-content/70 leading-none">{{healthyCount $accounts}}/{{len $accounts}} connected</span>{{end}}
                 </div>
               {{else}}
                 <div class="tooltip tooltip-right inline-flex items-center" data-tip="Not Connected — Click Connect ChatGPT">
@@ -1684,6 +1686,18 @@
       {{if or (eq .Type "antigravity") (eq .Type "codex")}}
       <tr class="bg-base-200/20">
         <td colspan="4" class="px-4 py-3">
+          <div class="collapse collapse-arrow accounts-collapse border border-base-content/10 rounded-xl bg-base-100/40">
+            <input type="checkbox" class="min-h-0" aria-label="Toggle OAuth account connections for {{$provName}}" />
+            <div class="collapse-title min-h-0 py-1.5 text-xs font-semibold text-base-content/70 flex items-center gap-2">
+              <svg xmlns="http://www.w3.org/2000/svg" class="size-3.5 text-success" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1"/></svg>
+              Connections
+              {{if $accounts}}
+                <span class="font-mono font-normal text-base-content/60">{{healthyCount $accounts}}/{{len $accounts}} connected</span>
+              {{else}}
+                <span class="font-normal text-base-content/50">none</span>
+              {{end}}
+            </div>
+            <div class="collapse-content px-0">
           <div class="flex flex-wrap items-center gap-2">
             {{if $accounts}}
               {{range $accounts}}
@@ -1777,6 +1791,8 @@
               <span class="text-xs text-base-content/50">No OAuth accounts registered.</span>
             {{end}}
             <button type="button" class="btn btn-success btn-outline btn-xs min-h-11 focus-visible:ring-2 focus-visible:ring-success" onclick="document.getElementById('modal-{{$provName}}').showModal()">Connect Another</button>
+          </div>
+            </div>
           </div>
         </td>
       </tr>
