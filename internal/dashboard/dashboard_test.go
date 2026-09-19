@@ -145,6 +145,22 @@ func TestIndexRendersOAuthPoolAccordionWithHealthyCount(t *testing.T) {
 	}
 }
 
+func TestCollapseArrowChevronVerticallyCentered(t *testing.T) {
+	h := testHandler(t, &config.Config{}, &vault.Vault{})
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/", nil))
+	body := rr.Body.String()
+
+	// daisyUI 4 pins the collapse-arrow chevron at a fixed top: 1.9rem with
+	// translateY(-100%), tuned for the default 4rem title. Our titles are
+	// shorter (py-1.5 / min-h-0), so the chevron overflows below the header
+	// and overlaps the content. The override must re-anchor it to the title's
+	// vertical center (top: 50% + translateY(-50%)).
+	if !strings.Contains(body, ".collapse-arrow > .collapse-title::after { top: 50%; --tw-translate-y: -50%; }") {
+		t.Fatalf("missing chevron centering override for collapse-title::after")
+	}
+}
+
 func TestServesStaticHtmx(t *testing.T) {
 	cfg := &config.Config{}
 	h := testHandler(t, cfg, &vault.Vault{})

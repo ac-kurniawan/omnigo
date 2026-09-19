@@ -105,6 +105,12 @@
     .status-pill-warning { color: oklch(var(--bc) / 0.92); background: oklch(var(--wa) / 0.12); border-color: oklch(var(--wa) / 0.3); }
     .status-pill-error { color: oklch(var(--bc) / 0.92); background: oklch(var(--er) / 0.12); border-color: oklch(var(--er) / 0.3); }
     .status-pill-neutral { color: oklch(var(--bc) / 0.82); background: oklch(var(--bc) / 0.07); border-color: oklch(var(--bc) / 0.14); }
+    /* daisyUI 4 pins the collapse-arrow chevron at a fixed top: 1.9rem with
+       --tw-translate-y: -100% (tuned for the default 4rem title). Our titles
+       are shorter (py-1.5/min-h-0), so the chevron overflows below the header
+       and overlaps the content. Re-anchor to the title's vertical center; the
+       open-state rule (225deg + translateY(-50%)) still rotates it in place. */
+    .collapse-arrow > .collapse-title::after { top: 50%; --tw-translate-y: -50%; }
   </style>
 </head>
 <body class="bg-base-200/50 min-h-screen text-base-content antialiased flex flex-col justify-between">
