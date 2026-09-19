@@ -152,7 +152,7 @@
 
     <main class="max-w-6xl mx-auto px-4 py-8 space-y-8">
       <!-- Live Toast / Notification Container -->
-      <div id="result" class="transition-all duration-300"></div>
+      <div id="result" class="toast toast-top toast-end z-50 max-w-sm"></div>
 
       <!-- Quick Metrics Bar -->
       <div class="grid grid-cols-2 lg:grid-cols-4 gap-4">
@@ -643,15 +643,6 @@
             </div>
           </div>
 
-          <!-- Error Alert Banner -->
-          <div id="playground-error-banner" class="alert alert-error text-xs shadow-md hidden flex items-start gap-2.5 p-3 rounded-xl border border-error/30">
-            <svg xmlns="http://www.w3.org/2000/svg" class="size-5 shrink-0 text-error-content" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" /></svg>
-            <div class="flex-1 overflow-hidden">
-              <div class="font-bold">Upstream Error / Rejection</div>
-              <div id="playground-error-text" class="font-mono text-[11px] mt-0.5 whitespace-pre-wrap break-words"></div>
-            </div>
-          </div>
-
           <!-- Inspector Output Tabs -->
           <div class="space-y-2">
             <div class="tabs tabs-bordered">
@@ -757,41 +748,71 @@
   </footer>
 
   <script>
-    // Format JSON responses from /internal/test and /internal/refresh-models into DaisyUI alerts
+    // --- Toast notifications ---
+    // Toasts stack in the #result container (toast toast-top toast-end) and
+    // auto-dismiss after 6s; the ✕ button closes them manually.
+    const TOAST_TIMEOUT_MS = 6000;
+    // Static whitelist so the Tailwind CDN JIT scanner emits these classes.
+    const TOAST_LEVELS = ['success', 'info', 'warning', 'error'];
+
+    function scheduleToastDismiss(el) {
+      setTimeout(() => { el.remove(); }, TOAST_TIMEOUT_MS);
+    }
+
+    // Observe #result so server-rendered alert fragments (HTMX swaps from
+    // /oauth/.../paste-callback) also auto-dismiss.
+    const toastContainer = document.getElementById('result');
+    if (toastContainer) {
+      new MutationObserver((mutations) => {
+        for (const m of mutations) {
+          for (const node of m.addedNodes) {
+            if (node.nodeType === Node.ELEMENT_NODE && node.classList.contains('alert')) {
+              scheduleToastDismiss(node);
+            }
+          }
+        }
+      }).observe(toastContainer, { childList: true });
+    }
+
+    function showToast(level, message, heading) {
+      const container = document.getElementById('result');
+      if (!container) return;
+      const el = document.createElement('div');
+      el.className = `alert alert-${TOAST_LEVELS.includes(level) ? level : 'info'} shadow-lg flex items-start gap-2.5 p-4 rounded-xl border border-${TOAST_LEVELS.includes(level) ? level : 'info'}/30 text-xs`;
+      const text = document.createElement('div');
+      text.className = 'flex-1 overflow-hidden';
+      const title = document.createElement('div');
+      title.className = 'font-bold';
+      title.innerText = heading || { success: 'Success', info: 'Info', warning: 'Warning', error: 'Error' }[level] || 'Notice';
+      const body = document.createElement('div');
+      body.className = 'font-mono text-[11px] mt-0.5 whitespace-pre-wrap break-words';
+      body.innerText = message;
+      const close = document.createElement('button');
+      close.className = 'btn btn-ghost btn-xs shrink-0';
+      close.innerText = '✕';
+      close.onclick = () => el.remove();
+      text.append(title, body);
+      el.append(text, close);
+      container.appendChild(el);
+      scheduleToastDismiss(el);
+    }
+
+    // Format JSON responses from /internal/test and /internal/refresh-models into toasts
     document.body.addEventListener('htmx:afterRequest', function(evt) {
       if (evt.detail.target && evt.detail.target.id === 'result') {
         try {
           const data = JSON.parse(evt.detail.xhr.responseText);
           if (data.ok !== undefined) {
+            evt.detail.target.innerHTML = '';
             if (data.ok) {
-              evt.detail.target.innerHTML = `
-                <div class="alert alert-success shadow-lg flex items-center justify-between p-4 my-2 rounded-xl border border-success/30">
-                  <div class="flex items-center gap-2.5">
-                    <svg xmlns="http://www.w3.org/2000/svg" class="size-5 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
-                    <span class="text-sm"><strong>Connection Successful!</strong> Roundtrip Latency: ${data.latency_ms}ms</span>
-                  </div>
-                  <button class="btn btn-ghost btn-xs text-base-content/70 hover:text-base-content" onclick="this.closest('.alert').remove()">✕</button>
-                </div>`;
+              showToast('success', `Roundtrip Latency: ${data.latency_ms}ms`, 'Connection Successful!');
             } else {
-              evt.detail.target.innerHTML = `
-                <div class="alert alert-error shadow-lg flex items-center justify-between p-4 my-2 rounded-xl border border-error/30">
-                  <div class="flex items-center gap-2.5">
-                    <svg xmlns="http://www.w3.org/2000/svg" class="size-5 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2m7-2a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
-                    <span class="text-sm"><strong>Connection Failed:</strong> ${data.error || 'Provider did not respond'} (${data.latency_ms}ms)</span>
-                  </div>
-                  <button class="btn btn-ghost btn-xs text-base-content/70 hover:text-base-content" onclick="this.closest('.alert').remove()">✕</button>
-                </div>`;
+              showToast('error', `${data.error || 'Provider did not respond'} (${data.latency_ms}ms)`, 'Connection Failed');
             }
           } else if (data.models !== undefined) {
+            evt.detail.target.innerHTML = '';
             const count = data.models.length;
-            evt.detail.target.innerHTML = `
-              <div class="alert alert-info shadow-lg flex items-center justify-between p-4 my-2 rounded-xl border border-info/30">
-                <div class="flex items-center gap-2.5">
-                  <svg xmlns="http://www.w3.org/2000/svg" class="size-5 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
-                  <span class="text-sm"><strong>Models Synced for ${data.provider}:</strong> Discovered and cached ${count} model${count === 1 ? '' : 's'}.</span>
-                </div>
-                <button class="btn btn-ghost btn-xs text-base-content/70 hover:text-base-content" onclick="this.closest('.alert').remove()">✕</button>
-              </div>`;
+            showToast('info', `Discovered and cached ${count} model${count === 1 ? '' : 's'}.`, `Models Synced for ${data.provider}`);
           }
         } catch (e) {}
       }
@@ -1152,8 +1173,6 @@
       const promptEl = document.getElementById('playground-prompt');
       const sendBtn = document.getElementById('playground-send-btn');
       const abortBtn = document.getElementById('playground-abort-btn');
-      const errorBanner = document.getElementById('playground-error-banner');
-      const errorText = document.getElementById('playground-error-text');
       const outputContainer = document.getElementById('playground-output-container');
       const rawSSE = document.getElementById('playground-raw-sse');
       const requestJSON = document.getElementById('playground-request-json');
@@ -1192,8 +1211,6 @@
       if (requestJSON) requestJSON.innerText = JSON.stringify(payload, null, 2);
 
       // Reset state
-      errorBanner?.classList.add('hidden');
-      if (errorText) errorText.innerText = '';
       if (outputContainer) outputContainer.innerHTML = '';
       if (rawSSE) rawSSE.innerText = '';
       if (chunkCountEl) chunkCountEl.innerText = '0';
@@ -1266,10 +1283,7 @@
               displayErr = errObj.error.message;
             }
           } catch (_) {}
-          if (errorBanner && errorText) {
-            errorText.innerText = `[${resp.status}] ${displayErr}`;
-            errorBanner.classList.remove('hidden');
-          }
+          showToast('error', `Upstream Error / Rejection\n[${resp.status}] ${displayErr}`);
           if (outputContainer) {
             outputContainer.innerText = `[HTTP Error ${resp.status}]\n${displayErr}`;
           }
@@ -1340,10 +1354,7 @@
         } else {
           statusEl.innerText = 'Failed';
           statusEl.className = 'font-mono font-bold text-error';
-          if (errorBanner && errorText) {
-            errorText.innerText = `Network/Fetch Error: ${err.message}`;
-            errorBanner.classList.remove('hidden');
-          }
+          showToast('error', `Network/Fetch Error: ${err.message}`);
         }
         const dur = ((performance.now() - t0) / 1000).toFixed(2);
         durationEl.innerText = `${dur}s`;
