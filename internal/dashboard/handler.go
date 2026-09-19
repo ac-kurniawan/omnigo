@@ -341,7 +341,7 @@ func newServer(getCfg func() *config.Config, store *vault.Store, mutate config.M
 
 func (s *Server) routes() http.Handler {
 	mux := http.NewServeMux()
-	mux.Handle("GET /static/", http.FileServer(http.FS(staticFS)))
+	mux.Handle("GET /static/", noCache(http.FileServer(http.FS(staticFS))))
 	mux.HandleFunc("GET /{$}", s.index)
 	mux.HandleFunc("GET /oauth/login/{provider}", s.oauthLogin)
 	mux.HandleFunc("GET /oauth/callback", s.oauthCallback)
@@ -368,7 +368,19 @@ func (s *Server) routes() http.Handler {
 	return mux
 }
 
+// noCache marks a response so browsers revalidate on every load instead of
+// restoring a stale copy from disk cache after an upgrade. "no-cache" keeps
+// the copy cacheable (revalidated via the CSRF-cookie round trip) rather than
+// forbidding storage outright.
+func noCache(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "no-cache, must-revalidate")
+		next.ServeHTTP(w, r)
+	})
+}
+
 func (s *Server) index(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-cache, must-revalidate")
 	cfg := s.getCfg()
 	snapshot := s.store.Get()
 	token := randomHex(32)
