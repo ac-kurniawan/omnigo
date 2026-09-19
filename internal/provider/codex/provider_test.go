@@ -472,13 +472,21 @@ func TestProviderTestRefreshesExpiredToken(t *testing.T) {
 	t.Cleanup(func() { tokenURL = oldURL })
 	var tokenCalls atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/codex/usage" {
+			if r.Header.Get("Authorization") != "Bearer fresh" {
+				w.WriteHeader(http.StatusUnauthorized)
+				return
+			}
+			_, _ = w.Write([]byte(liveUsagePayload))
+			return
+		}
 		tokenCalls.Add(1)
 		_ = json.NewEncoder(w).Encode(map[string]any{"access_token": "fresh", "expires_in": 3600})
 	}))
 	defer server.Close()
 	tokenURL = server.URL
 	store := &memoryCredStore{creds: provider.Credentials{AccessToken: "stale", RefreshToken: "refresh-old", AccountID: "account", ExpiresAt: time.Now().Add(-time.Hour)}}
-	p := New(provider.Config{Name: "codex"}, store)
+	p := New(provider.Config{Name: "codex", BaseURL: server.URL + "/responses", Timeout: time.Second}, store)
 	result := p.Test(context.Background())
 	if !result.OK {
 		t.Fatalf("result = %+v", result)
@@ -729,6 +737,103 @@ func TestProviderTestRequiresCompleteCredentials(t *testing.T) {
 	p := New(provider.Config{Name: "codex"}, store)
 	result := p.Test(context.Background())
 	if result.OK || result.Error != "codex: account ID is missing" {
+		t.Fatalf("result = %+v", result)
+	}
+}
+
+// Test is the dashboard's connection check, so a fresh stored token must still
+// be probed against the upstream: 0ms latency without a roundtrip proves
+// nothing about whether the credential is accepted.
+func TestProviderTestProbesUpstreamWithFreshToken(t *testing.T) {
+	var probed atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		probed.Add(1)
+		if r.URL.Path != "/api/codex/usage" {
+			t.Fatalf("probe path = %s", r.URL.Path)
+		}
+		wantHeaders := map[string]string{
+			"Authorization":      "Bearer access-token",
+			"chatgpt-account-id": "account-1",
+		}
+		for key, want := range wantHeaders {
+			if got := r.Header.Get(key); got != want {
+				t.Fatalf("header %s = %q, want %q", key, got, want)
+			}
+		}
+		_, _ = w.Write([]byte(liveUsagePayload))
+	}))
+	defer server.Close()
+	store := &memoryCredStore{creds: provider.Credentials{AccessToken: "access-token", AccountID: "account-1", ExpiresAt: time.Now().Add(time.Hour)}}
+	p := New(provider.Config{Name: "codex", BaseURL: server.URL + "/responses", Timeout: time.Second}, store)
+	result := p.Test(context.Background())
+	if !result.OK {
+		t.Fatalf("result = %+v", result)
+	}
+	if probed.Load() != 1 {
+		t.Fatalf("probe calls = %d, want a live roundtrip", probed.Load())
+	}
+}
+
+// A revoked token must fail the test even while its local expiry is fresh:
+// the probe sees the upstream 401, refreshes once, and retries.
+func TestProviderTestRefreshesRejectedToken(t *testing.T) {
+	oldURL := tokenURL
+	t.Cleanup(func() { tokenURL = oldURL })
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/token":
+			_ = json.NewEncoder(w).Encode(map[string]any{"access_token": "fresh", "expires_in": 3600})
+		case "/api/codex/usage":
+			if r.Header.Get("Authorization") != "Bearer fresh" {
+				w.WriteHeader(http.StatusUnauthorized)
+				return
+			}
+			_, _ = w.Write([]byte(liveUsagePayload))
+		default:
+			t.Fatalf("request = %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	defer server.Close()
+	tokenURL = server.URL + "/token"
+	store := &memoryCredStore{creds: provider.Credentials{AccessToken: "revoked", RefreshToken: "refresh-old", AccountID: "account-1", ExpiresAt: time.Now().Add(time.Hour)}}
+	p := New(provider.Config{Name: "codex", BaseURL: server.URL + "/responses", Timeout: time.Second}, store)
+	result := p.Test(context.Background())
+	if !result.OK {
+		t.Fatalf("result = %+v", result)
+	}
+	if store.Get().AccessToken != "fresh" {
+		t.Fatalf("creds = %+v", store.Get())
+	}
+}
+
+// The dashboard error must stay a fixed status string: raw upstream bodies can
+// carry credential detail.
+func TestProviderTestReportsUpstreamStatus(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = io.WriteString(w, "upstream-secret-detail")
+	}))
+	defer server.Close()
+	store := &memoryCredStore{creds: provider.Credentials{AccessToken: "access-token", AccountID: "account-1", ExpiresAt: time.Now().Add(time.Hour)}}
+	p := New(provider.Config{Name: "codex", BaseURL: server.URL + "/responses", Timeout: time.Second}, store)
+	result := p.Test(context.Background())
+	if result.OK || result.Error != "codex: probe status 500" {
+		t.Fatalf("result = %+v", result)
+	}
+	if strings.Contains(result.Error, "upstream-secret-detail") {
+		t.Fatalf("error leaks upstream body: %q", result.Error)
+	}
+}
+
+// An unreachable upstream is a failed connection, not an OK with 0ms.
+func TestProviderTestReportsUnreachableUpstream(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	baseURL := server.URL + "/responses"
+	server.Close()
+	store := &memoryCredStore{creds: provider.Credentials{AccessToken: "access-token", AccountID: "account-1", ExpiresAt: time.Now().Add(time.Hour)}}
+	p := New(provider.Config{Name: "codex", BaseURL: baseURL, Timeout: time.Second}, store)
+	result := p.Test(context.Background())
+	if result.OK || result.Error != "codex: probe request failed" {
 		t.Fatalf("result = %+v", result)
 	}
 }
