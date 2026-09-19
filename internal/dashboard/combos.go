@@ -139,6 +139,13 @@ func (s *Server) getCombos(w http.ResponseWriter, r *http.Request) {
 	s.renderCombos(w)
 }
 
+// getComboPickerModels re-renders the picker's provider/model list from the
+// current config so a model catalog refreshed after page load is visible
+// without a full page reload.
+func (s *Server) getComboPickerModels(w http.ResponseWriter, r *http.Request) {
+	_ = s.tmpl.ExecuteTemplate(w, "combo-picker-models", viewData{Providers: s.getCfg().Providers})
+}
+
 func (s *Server) resetDrain(w http.ResponseWriter, r *http.Request) {
 	provider := r.FormValue("provider")
 	model := r.FormValue("model")
