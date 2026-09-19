@@ -105,6 +105,46 @@ func TestIndexRendersOAuthAccountPoolActions(t *testing.T) {
 	}
 }
 
+func TestIndexRendersOAuthPoolAccordionWithHealthyCount(t *testing.T) {
+	cfg := &config.Config{Providers: []config.Provider{
+		{Name: "agy", Type: "antigravity"},
+		{Name: "cx", Type: "codex"},
+	}}
+	v := &vault.Vault{ProviderAccounts: map[string][]vault.ProviderSecret{
+		"agy": {
+			{RefreshToken: "rt-1", AccountID: "google-1", Email: "one@example.com"},
+			{AccountID: "google-2", Email: "dead@example.com"},
+			{RefreshToken: "rt-3", AccountID: "google-3", Email: "three@example.com"},
+		},
+		"cx": {
+			{RefreshToken: "rt-1", AccountID: "ws-1", Email: "cx-one@example.com"},
+		},
+	}}
+	rr := httptest.NewRecorder()
+	testHandler(t, cfg, v).ServeHTTP(rr, httptest.NewRequest("GET", "/", nil))
+	body := rr.Body.String()
+
+	// Count badge next to the status dot: healthy/registered per provider.
+	for _, want := range []string{"2/3 connected", "1/1 connected"} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("dashboard missing count badge %q", want)
+		}
+	}
+
+	// Account pool must be collapsed by default: the accordion checkbox must
+	// not carry a checked attribute. Two OAuth providers -> two accordions.
+	opens := strings.Count(body, `collapse-arrow accounts-collapse`)
+	if opens != 2 {
+		t.Fatalf("expected 2 account-pool accordions, got %d", opens)
+	}
+
+	for _, frag := range strings.Split(body, "\n") {
+		if strings.Contains(frag, "accounts-collapse") && strings.Contains(frag, "checked") {
+			t.Fatalf("accordion checkbox must not be checked by default: %s", frag)
+		}
+	}
+}
+
 func TestServesStaticHtmx(t *testing.T) {
 	cfg := &config.Config{}
 	h := testHandler(t, cfg, &vault.Vault{})
