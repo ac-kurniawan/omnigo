@@ -797,6 +797,15 @@
       scheduleToastDismiss(el);
     }
 
+    // Mirrors quota.Window.Label(): Codex's 5h/7d windows get operator-facing
+    // names; anything else (per-model buckets, unknown lengths) keeps the raw
+    // upstream name.
+    function quotaWindowLabel(w) {
+      if (w.window_minutes === 300) return '5-hour limit';
+      if (w.window_minutes === 10080) return 'Weekly limit';
+      return w.name || 'window';
+    }
+
     // Format JSON responses from /internal/test and /internal/refresh-models into toasts
     document.body.addEventListener('htmx:afterRequest', function(evt) {
       if (evt.detail.target && evt.detail.target.id === 'result') {
@@ -817,8 +826,8 @@
             evt.detail.target.innerHTML = '';
             const who = data.email || data.account_id || data.identity || data.provider;
             if (data.status === 'available') {
-              const used = (data.windows || []).map(w => `${w.name} ${Math.round(w.used_percent)}%`).join(' · ');
-              showToast('success', used || 'Quota is available.', `Quota Refreshed for ${who}`);
+              const left = (data.windows || []).map(w => `${quotaWindowLabel(w)} ${Math.round(100 - w.used_percent)}% left`).join(' · ');
+              showToast('success', left || 'Quota is available.', `Quota Refreshed for ${who}`);
             } else if (data.status === 'exhausted') {
               showToast('warning', data.reason || 'Quota is exhausted.', `Quota Refreshed for ${who}`);
             } else {
