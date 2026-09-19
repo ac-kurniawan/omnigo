@@ -159,25 +159,80 @@ func fallbackModels() []provider.Model {
 	return models
 }
 
+// Test is the dashboard's connection check. Ensuring a stored token is merely
+// unexpired proves nothing about whether the upstream accepts it, so each
+// candidate account is probed with a real authenticated roundtrip against the
+// quota endpoint — the same authenticated surface ChatCompletion depends on.
+// Failures do not MarkFailed the pool: a manual probe must not cool an
+// account that live traffic may still serve.
 func (p *Provider) Test(ctx context.Context) provider.TestResult {
 	start := time.Now()
 	accounts := p.pool.Available(p.store)
 	var lastErr error
 	for _, account := range accounts {
-		creds, err := p.tokenManager(account).EnsureFreshToken(ctx)
-		if err == nil && creds.AccountID == "" {
-			err = fmt.Errorf("codex: account ID is missing")
-		}
-		if err == nil {
+		lastErr = p.probe(ctx, account)
+		if lastErr == nil {
 			return provider.TestResult{OK: true, LatencyMS: time.Since(start).Milliseconds()}
 		}
-		lastErr = err
-		p.pool.MarkFailed(account, err)
 	}
 	if lastErr == nil {
 		lastErr = fmt.Errorf("codex: not authenticated")
 	}
 	return provider.TestResult{LatencyMS: time.Since(start).Milliseconds(), Error: lastErr.Error()}
+}
+
+// probe performs one authenticated GET against the quota endpoint. A 401/403
+// means the upstream rejects the stored credential, so the token is refreshed
+// once and the probe retried — the same recovery ChatCompletion applies.
+// Errors are fixed strings: raw upstream bodies can carry credential detail.
+func (p *Provider) probe(ctx context.Context, account provider.Credentials) error {
+	tokens := p.tokenManager(account)
+	creds, err := tokens.EnsureFreshToken(ctx)
+	if err == nil && creds.AccountID == "" {
+		err = fmt.Errorf("codex: account ID is missing")
+	}
+	if err != nil {
+		return err
+	}
+	status, err := p.probeQuota(ctx, creds)
+	if err != nil {
+		return err
+	}
+	if status == http.StatusUnauthorized || status == http.StatusForbidden {
+		creds, err = tokens.ForceRefreshToken(ctx, creds.AccessToken)
+		if err != nil {
+			return err
+		}
+		status, err = p.probeQuota(ctx, creds)
+		if err != nil {
+			return err
+		}
+	}
+	if status < http.StatusOK || status >= http.StatusMultipleChoices {
+		return fmt.Errorf("codex: probe status %d", status)
+	}
+	return nil
+}
+
+func (p *Provider) probeQuota(ctx context.Context, creds provider.Credentials) (int, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, p.quotaURL, nil)
+	if err != nil {
+		return 0, fmt.Errorf("codex: create probe request: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+creds.AccessToken)
+	req.Header.Set("chatgpt-account-id", creds.AccountID)
+	req.Header.Set("Version", ClientVersion)
+	req.Header.Set("originator", Originator)
+	req.Header.Set("User-Agent", UserAgent)
+	req.Header.Set("OpenAI-Beta", BetaVersion)
+	req.Header.Set("Accept", "application/json")
+	resp, err := p.client.Do(req)
+	if err != nil {
+		return 0, fmt.Errorf("codex: probe request failed")
+	}
+	defer resp.Body.Close()
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, maxUsageBytes))
+	return resp.StatusCode, nil
 }
 
 func (p *Provider) ChatCompletion(ctx context.Context, req provider.ChatRequest, w http.ResponseWriter) error {
