@@ -54,13 +54,19 @@ func ToEnvelope(projectID, model string, req provider.ChatRequest) (map[string]a
 		})
 	}
 	return map[string]any{
-		"project":     projectID,
-		"requestId":   newRequestID(),
-		"request":     map[string]any{"contents": contents},
-		"model":       model,
-		"userAgent":   "antigravity/ide/0.0.0 darwin/arm64",
-		"requestType": "agent",
+		"project":   projectID,
+		"requestId": newRequestID(),
+		"request":   map[string]any{"contents": contents},
+		"model":     model,
+		"userAgent": "antigravity/ide/0.0.0 darwin/arm64",
 	}, nil
+}
+
+// geminiFrame is one SSE frame. The daily-cloudcode-pa host wraps the payload
+// in "response"; the legacy host sends it bare. Both decode into Candidates.
+type geminiFrame struct {
+	Response *geminiChunk `json:"response"`
+	geminiChunk
 }
 
 type geminiChunk struct {
@@ -75,9 +81,13 @@ type geminiChunk struct {
 
 func geminiChunkText(chunk []byte) (string, error) {
 	payload := strings.TrimSpace(strings.TrimPrefix(string(chunk), "data: "))
-	var body geminiChunk
-	if err := json.Unmarshal([]byte(payload), &body); err != nil {
+	var frame geminiFrame
+	if err := json.Unmarshal([]byte(payload), &frame); err != nil {
 		return "", fmt.Errorf("parse gemini chunk: %w", err)
+	}
+	body := frame.geminiChunk
+	if frame.Response != nil {
+		body = *frame.Response
 	}
 	if len(body.Candidates) == 0 {
 		return "", nil

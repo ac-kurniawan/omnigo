@@ -1,8 +1,12 @@
 package antigravity
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"io"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -56,6 +60,35 @@ func (s *mutableStore) Get() provider.Credentials { return s.c }
 func (s *mutableStore) Put(c provider.Credentials) error {
 	s.c = c
 	return nil
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) { return f(req) }
+
+type closeTrackingBody struct {
+	io.Reader
+	closed atomic.Bool
+}
+
+func (b *closeTrackingBody) Close() error {
+	b.closed.Store(true)
+	return nil
+}
+
+func TestChatCompletionClosesUpstreamResponseBody(t *testing.T) {
+	body := &closeTrackingBody{Reader: strings.NewReader(`data: {"candidates":[{"content":{"parts":[{"text":"ok"}]}}]}` + "\n\n")}
+	transport := roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: body}, nil
+	})
+	p := New(provider.Config{Name: "agy", BaseURL: "https://example.invalid", Transport: transport}, staticStore{provider.Credentials{AccessToken: "token", ProjectID: "p", ExpiresAt: time.Now().Add(time.Hour)}})
+	err := p.ChatCompletion(context.Background(), provider.ChatRequest{Model: "gemini", Messages: []provider.Message{{Role: "user", Content: "hi"}}}, httptest.NewRecorder())
+	if err != nil {
+		t.Fatalf("ChatCompletion: %v", err)
+	}
+	if !body.closed.Load() {
+		t.Fatal("upstream response body was not closed")
+	}
 }
 
 func TestDiscoverProject(t *testing.T) {
@@ -374,11 +407,108 @@ func TestRateLimitCooldown(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			headers := make(http.Header)
 			headers.Set("Retry-After", tt.retryAfter)
-			err := newRateLimitError(headers).(*rateLimitError)
+			err := newRateLimitError(headers, "").(*rateLimitError)
 			if err.Cooldown() != tt.want {
 				t.Fatalf("cooldown = %s, want %s", err.Cooldown(), tt.want)
 			}
 		})
+	}
+}
+
+func TestRateLimitErrorPassesThrough429(t *testing.T) {
+	headers := make(http.Header)
+	headers.Set("Retry-After", "120")
+	err := newRateLimitError(headers, "")
+
+	var status interface{ HTTPStatus() int }
+	if !errors.As(err, &status) || status.HTTPStatus() != http.StatusTooManyRequests {
+		t.Fatalf("HTTPStatus missing or wrong on %T", err)
+	}
+	var retry interface{ RetryAfter() time.Duration }
+	if !errors.As(err, &retry) || retry.RetryAfter() != 2*time.Minute {
+		t.Fatalf("RetryAfter missing or wrong on %T: %v", err, err)
+	}
+}
+
+func TestRateLimitErrorExposesOnlyStructuredIdentifiers(t *testing.T) {
+	secret := "ya29.secret-token-value"
+	err := newRateLimitError(make(http.Header), `[{"error":{"message":"quota: `+secret+` hit","status":"RESOURCE_EXHAUSTED","errors":[{"reason":"rateLimitExceeded"}]}}]`)
+	if strings.Contains(err.Error(), secret) || strings.Contains(err.Error(), "quota:") {
+		t.Fatalf("error exposes upstream message: %v", err)
+	}
+	if !strings.Contains(err.Error(), "RESOURCE_EXHAUSTED (reason: rateLimitExceeded)") {
+		t.Fatalf("error drops safe upstream identifiers: %v", err)
+	}
+	if err.(*rateLimitError).DrainReason() != err.Error() {
+		t.Fatalf("drain reason = %q, want %q", err.(*rateLimitError).DrainReason(), err.Error())
+	}
+}
+
+func TestRateLimitErrorRejectsUnknownStructuredIdentifiers(t *testing.T) {
+	secret := "ya29.secret-token-value"
+	err := newRateLimitError(make(http.Header), `[{"error":{"status":"`+secret+`","errors":[{"reason":"`+secret+`"}]}}]`)
+	if strings.Contains(err.Error(), secret) || err.Error() != "antigravity: rate limited" {
+		t.Fatalf("error exposes unknown upstream identifier: %v", err)
+	}
+}
+
+func TestRateLimitErrorEmptyBodyKeepsBaseMessage(t *testing.T) {
+	err := newRateLimitError(make(http.Header), "")
+	if err.Error() != "antigravity: rate limited" {
+		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestRetryAfterLabelRejectsUntrustedHeaderText(t *testing.T) {
+	headers := make(http.Header)
+	headers.Set("Retry-After", "bad\nforged-log-entry")
+	if got := retryAfterLabel(headers); got != "invalid" {
+		t.Fatalf("label = %q, want invalid", got)
+	}
+}
+
+func TestChatRateLimitedLogsUpstreamDetail(t *testing.T) {
+	var buf bytes.Buffer
+	old := log.Writer()
+	log.SetOutput(&buf)
+	t.Cleanup(func() { log.SetOutput(old) })
+
+	upstreamSecret := "upstream-secret-value-XYZ"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Retry-After", "42")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte(`[{"error":{"message":"Resource has been exhausted","status":"RESOURCE_EXHAUSTED","errors":[{"reason":"rateLimitExceeded"}],"token":"` + upstreamSecret + `"}}]`))
+	}))
+	defer srv.Close()
+
+	accessToken := "access-secret-value-XYZ"
+	store := staticStore{provider.Credentials{AccessToken: accessToken, AccountID: "google-1", ProjectID: "p", ExpiresAt: time.Now().Add(time.Hour)}}
+	p := New(provider.Config{Name: "agy", BaseURL: srv.URL}, store)
+	req := provider.ChatRequest{Model: "gemini-3.8-flash-tiered", Messages: []provider.Message{{Role: "user", Content: "hi"}}}
+
+	err := p.ChatCompletion(context.Background(), req, httptest.NewRecorder())
+	if err == nil || !strings.Contains(err.Error(), "RESOURCE_EXHAUSTED") {
+		t.Fatalf("error = %v, want upstream detail", err)
+	}
+	out := buf.String()
+	for _, want := range []string{"agy", "google-1", "gemini-3.8-flash-tiered", "retry-after=42s", "RESOURCE_EXHAUSTED"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("log missing %q, got: %s", want, out)
+		}
+	}
+	for _, secret := range []string{accessToken, upstreamSecret} {
+		if strings.Contains(out, secret) || strings.Contains(err.Error(), secret) {
+			t.Fatalf("rate-limit diagnostics leak secret %q: log=%s err=%v", secret, out, err)
+		}
+	}
+}
+
+func TestRateLimitAccountLabelNeverUsesEmail(t *testing.T) {
+	if got := rateLimitAccountLabel(provider.Credentials{Email: "private@example.com"}); got != "configured-account" {
+		t.Fatalf("label = %q, want non-PII fallback", got)
+	}
+	if got := rateLimitAccountLabel(provider.Credentials{AccountID: "account-1", Email: "private@example.com"}); got != "account-1" {
+		t.Fatalf("label = %q, want account ID", got)
 	}
 }
 
