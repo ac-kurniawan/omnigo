@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"net/http"
-	"time"
 
 	"github.com/ac-kurniawan/omnigo/internal/config"
 	"github.com/ac-kurniawan/omnigo/internal/provider"
@@ -91,9 +90,9 @@ func classifyProviderError(err error, committed, clientGone bool) string {
 	if errors.Is(err, provider.ErrUpstreamStall) {
 		return resultUpstreamStall
 	}
-	// Local concurrency saturation (429 with Retry-After) is gateway-side
-	// backpressure, distinct from an upstream rate limit.
-	var busy interface{ RetryAfter() time.Duration }
+	// ProviderBusyError is local concurrency saturation. Upstream 429 errors
+	// may also advertise Retry-After, but remain rate-limited outcomes.
+	var busy *provider.ProviderBusyError
 	if errors.As(err, &busy) {
 		return resultBackpressure
 	}

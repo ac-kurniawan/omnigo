@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ac-kurniawan/omnigo/internal/auth"
 	"github.com/ac-kurniawan/omnigo/internal/config"
@@ -159,6 +160,12 @@ func TestDirectPathRecordsProviderOutcome(t *testing.T) {
 	}
 }
 
+type upstreamRateLimitError struct{}
+
+func (upstreamRateLimitError) Error() string             { return "upstream rate limit" }
+func (upstreamRateLimitError) HTTPStatus() int           { return http.StatusTooManyRequests }
+func (upstreamRateLimitError) RetryAfter() time.Duration { return time.Minute }
+
 func TestClassifyProviderError(t *testing.T) {
 	tests := []struct {
 		name      string
@@ -172,6 +179,7 @@ func TestClassifyProviderError(t *testing.T) {
 		{name: "wrapped stall", err: wrappedErr{provider.ErrUpstreamStall}, want: resultUpstreamStall},
 		{name: "backpressure", err: &provider.ProviderBusyError{Limit: 2}, want: resultBackpressure},
 		{name: "upstream 429", err: provider.NewHTTPStatusError(http.StatusTooManyRequests, ""), want: resultRateLimited},
+		{name: "upstream 429 with retry after", err: upstreamRateLimitError{}, want: resultRateLimited},
 		{name: "upstream 500", err: provider.NewHTTPStatusError(http.StatusInternalServerError, ""), want: resultUpstreamError},
 		{name: "committed failure", err: errResponseCommitted, committed: true, want: resultStreamFailed},
 		{name: "client abort wins", err: context.Canceled, committed: true, client: true, want: resultClientAbort},

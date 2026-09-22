@@ -12,32 +12,57 @@ import (
 	"github.com/ac-kurniawan/omnigo/internal/quota"
 )
 
-// quotaPathSuffix is the Cloud Code endpoint that reports per-model remaining
-// quota. It is POSTed with the resolved GCP project id, and answers with one
-// bucket per model the account can call.
-const quotaPathSuffix = "/v1internal:retrieveUserQuota"
+// quotaPathSuffix is the Cloud Code endpoint the Antigravity CLI uses for its
+// /usage view. Unlike retrieveUserQuota, which reports a bucket per model, this
+// answers with two model groups (Gemini, Claude+GPT) that each carry a weekly
+// and a five-hour window. Those windows are the ones a 429 actually consumes,
+// so they are what the dashboard must show.
+const quotaPathSuffix = "/v1internal:retrieveUserQuotaSummary"
 
-// quotaBucket is one model-scoped bucket of the retrieveUserQuota response.
+// quotaBucket is one window of a group in the summary response.
 //
 // RemainingFraction is a pointer so an absent field is distinguishable from a
-// genuine 0: upstream reports 0 only for a drained model, and treating a
-// missing field as 0 would drain an account on malformed data.
+// genuine 0: upstream reports 0 only for a drained window, and treating a
+// missing field as 0 would mark an account exhausted on malformed data.
 type quotaBucket struct {
-	TokenType         string   `json:"tokenType"`
-	ModelID           string   `json:"modelId"`
+	BucketID          string   `json:"bucketId"`
+	DisplayName       string   `json:"displayName"`
+	Window            string   `json:"window"`
 	RemainingFraction *float64 `json:"remainingFraction"`
 	ResetTime         string   `json:"resetTime"`
 }
 
+type quotaGroup struct {
+	DisplayName string        `json:"displayName"`
+	Description string        `json:"description"`
+	Buckets     []quotaBucket `json:"buckets"`
+}
+
 type quotaResponse struct {
-	Buckets []quotaBucket `json:"buckets"`
+	Groups      []quotaGroup `json:"groups"`
+	Description string       `json:"description"`
+}
+
+// windowMinutes maps an upstream window label to the operator-facing window
+// length. An unrecognized label yields 0, which leaves the raw bucket display
+// name as the label rather than inventing a length.
+func windowMinutes(window string) int {
+	switch window {
+	case "weekly":
+		return 10080
+	case "5h":
+		return 300
+	default:
+		return 0
+	}
 }
 
 // FetchQuota reports the remaining quota for a single account by calling the
-// Antigravity Cloud Code quota endpoint.
+// Antigravity Cloud Code quota-summary endpoint, the same source as the
+// Antigravity CLI's usage view.
 //
 // Classification follows the tri-state contract in internal/quota: only an
-// explicit upstream signal (a bucket at exactly 0 remaining *with* a usable
+// explicit upstream signal (a window at exactly 0 remaining *with* a usable
 // reset time) yields StatusExhausted. Everything else that cannot be read is
 // StatusUnavailable, which never drains an account, so a failed quota read can
 // never black out routing.
@@ -88,48 +113,75 @@ func (p *Provider) FetchQuota(ctx context.Context, account provider.Credentials)
 	}
 	snap.Raw = payload
 
-	if len(payload.Buckets) == 0 {
+	if len(payload.Groups) == 0 {
 		snap.Status = quota.StatusUnavailable
-		snap.Reason = "no quota buckets"
-		return snap, fmt.Errorf("antigravity: quota: no quota buckets")
+		snap.Reason = "no quota groups"
+		return snap, fmt.Errorf("antigravity: quota: no quota groups")
 	}
 
-	snap.Windows = make([]quota.Window, 0, len(payload.Buckets))
-	for _, b := range payload.Buckets {
-		if b.RemainingFraction == nil {
-			snap.Status = quota.StatusUnavailable
-			snap.Reason = fmt.Sprintf("bucket %s has no remaining fraction", b.ModelID)
-			return snap, nil
-		}
-		remaining := *b.RemainingFraction
-		window := quota.Window{
-			Name:        b.ModelID,
-			UsedPercent: (1 - remaining) * 100,
-		}
-		if b.ResetTime != "" {
-			if resetAt, err := time.Parse(time.RFC3339, b.ResetTime); err == nil {
-				window.ResetAt = resetAt
-			}
-		}
-		if remaining == 0 {
-			if window.ResetAt.IsZero() {
-				// A drained bucket with no reset time cannot be distinguished
-				// from a malformed read, so report unknown rather than exhausted.
-				snap.Windows = append(snap.Windows, window)
+	snap.Groups = make([]quota.Group, 0, len(payload.Groups))
+	snap.Windows = make([]quota.Window, 0, 4)
+	for _, group := range payload.Groups {
+		built := quota.Group{Name: group.DisplayName, Description: group.Description}
+		built.Windows = make([]quota.Window, 0, len(group.Buckets))
+		for _, b := range group.Buckets {
+			if b.RemainingFraction == nil {
 				snap.Status = quota.StatusUnavailable
-				snap.Reason = fmt.Sprintf("bucket %s exhausted without reset time", b.ModelID)
+				snap.Reason = fmt.Sprintf("bucket %s has no remaining fraction", bucketLabel(group, b))
 				return snap, nil
 			}
-			if snap.Status != quota.StatusExhausted {
-				snap.Status = quota.StatusExhausted
-				snap.Reason = b.ModelID
+			remaining := *b.RemainingFraction
+			name := b.BucketID
+			if name == "" {
+				name = group.DisplayName + "-" + b.Window
 			}
+			window := quota.Window{
+				Name:          name,
+				Display:       group.DisplayName,
+				UsedPercent:   (1 - remaining) * 100,
+				WindowMinutes: windowMinutes(b.Window),
+			}
+			if b.ResetTime != "" {
+				if resetAt, err := time.Parse(time.RFC3339, b.ResetTime); err == nil {
+					window.ResetAt = resetAt
+				}
+			}
+			if remaining == 0 {
+				if window.ResetAt.IsZero() {
+					// A drained window with no reset time cannot be
+					// distinguished from a malformed read, so report unknown
+					// rather than exhausted.
+					built.Windows = append(built.Windows, window)
+					snap.Windows = append(snap.Windows, window)
+					snap.Status = quota.StatusUnavailable
+					snap.Reason = fmt.Sprintf("bucket %s exhausted without reset time", bucketLabel(group, b))
+					return snap, nil
+				}
+				if snap.Status != quota.StatusExhausted {
+					snap.Status = quota.StatusExhausted
+					snap.Reason = window.Label()
+				}
+			}
+			built.Windows = append(built.Windows, window)
+			snap.Windows = append(snap.Windows, window)
 		}
-		snap.Windows = append(snap.Windows, window)
+		snap.Groups = append(snap.Groups, built)
 	}
 
 	if snap.Status != quota.StatusExhausted {
 		snap.Status = quota.StatusAvailable
 	}
 	return snap, nil
+}
+
+// bucketLabel names a bucket for operator-facing reasons, preferring the
+// upstream display name and falling back to the bucket id.
+func bucketLabel(group quotaGroup, b quotaBucket) string {
+	if b.DisplayName != "" {
+		return group.DisplayName + " " + b.DisplayName
+	}
+	if b.BucketID != "" {
+		return group.DisplayName + " " + b.BucketID
+	}
+	return group.DisplayName
 }

@@ -43,6 +43,19 @@ func TestToEnvelopeMapsRolesAndParts(t *testing.T) {
 	}
 }
 
+func TestToEnvelopeOmitsRequestTypeAgent(t *testing.T) {
+	// PR #4229 / oh-my-pi #11742: official Antigravity omits requestType on
+	// consumer Cloud Code; sending "agent" buckets the request into false 429s.
+	req := provider.ChatRequest{Model: "gemini", Messages: []provider.Message{{Role: "user", Content: "hi"}}}
+	env, err := ToEnvelope("p", req.Model, req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v, exists := env["requestType"]; exists {
+		t.Fatalf("requestType = %v, want omitted", v)
+	}
+}
+
 func TestToEnvelopeExtractsMultimodalTextParts(t *testing.T) {
 	req := provider.ChatRequest{
 		Model: "gemini-3.7-flash-medium",
@@ -101,6 +114,27 @@ func TestTranslateSSEDelta(t *testing.T) {
 	}
 	if !strings.HasPrefix(string(out), "data: ") {
 		t.Fatalf("out = %s", out)
+	}
+}
+
+// The daily-cloudcode-pa host wraps every SSE frame in {"response":{...}};
+// the legacy host sends bare {"candidates":...}. Both must parse.
+func TestGeminiChunkTextAcceptsResponseWrapper(t *testing.T) {
+	wrapped := []byte(`data: {"response":{"candidates":[{"content":{"role":"model","parts":[{"text":"hello"}]}}]}}`)
+	got, err := geminiChunkText(wrapped)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "hello" {
+		t.Fatalf("text = %q, want hello", got)
+	}
+	bare := []byte(`data: {"candidates":[{"content":{"role":"model","parts":[{"text":"hi"}]}}]}`)
+	got, err = geminiChunkText(bare)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "hi" {
+		t.Fatalf("text = %q, want hi", got)
 	}
 }
 

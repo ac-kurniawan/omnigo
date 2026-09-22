@@ -7,7 +7,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -35,7 +37,7 @@ var sseBufferPool = sync.Pool{
 
 func New(cfg provider.Config, store provider.CredStore) provider.Provider {
 	if base := strings.TrimRight(cfg.BaseURL, "/"); base != "" {
-		baseURL = base
+		baseURL = normalizeBaseURL(base)
 	}
 	timeout := cfg.Timeout
 	if timeout <= 0 {
@@ -50,6 +52,17 @@ func New(cfg provider.Config, store provider.CredStore) provider.Provider {
 		idle:          timeout,
 		streamTimeout: cfg.StreamTimeout,
 	}
+}
+
+// normalizeBaseURL redirects the legacy cloudcode-pa host to the daily host
+// the official Antigravity CLI uses. Existing user configs seeded with the
+// legacy host otherwise keep hitting the endpoint that 429s consumer accounts.
+func normalizeBaseURL(base string) string {
+	const legacy = "https://cloudcode-pa.googleapis.com"
+	if strings.TrimRight(base, "/") == legacy {
+		return defaultBaseURL
+	}
+	return base
 }
 
 func (p *Provider) Name() string { return p.name }
@@ -150,8 +163,13 @@ func (p *Provider) chatWithAccount(ctx context.Context, req provider.ChatRequest
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode == http.StatusTooManyRequests {
-		return newRateLimitError(resp.Header)
+		snippet := readUpstreamSnippet(resp.Body)
+		err := newRateLimitError(resp.Header, snippet)
+		log.Printf("[rate-limited] provider=%q account=%q model=%q retry-after=%s cooldown=%s upstream=%q",
+			p.name, rateLimitAccountLabel(account), req.Model, retryAfterLabel(resp.Header), err.(*rateLimitError).Cooldown().Round(time.Second), err.(*rateLimitError).detail)
+		return err
 	}
+
 	if resp.StatusCode != http.StatusOK {
 		return provider.NewHTTPStatusError(resp.StatusCode, fmt.Sprintf("antigravity: status %d", resp.StatusCode))
 	}
@@ -160,6 +178,42 @@ func (p *Provider) chatWithAccount(ctx context.Context, req provider.ChatRequest
 		return p.completeToOpenAI(body, req.Model, w)
 	}
 	return p.streamToOpenAI(ctx, body, w)
+}
+
+// maxUpstreamSnippetBytes caps how much of a 429 body is read for diagnostics.
+// The error text is a small JSON status; a larger read only risks a hostile
+// upstream filling memory on an error path.
+const maxUpstreamSnippetBytes = 4096
+
+// readUpstreamSnippet drains a bounded prefix of an error body for logging and
+// for the client-facing rate-limit message.
+func readUpstreamSnippet(r io.Reader) string {
+	raw, err := io.ReadAll(io.LimitReader(r, maxUpstreamSnippetBytes))
+	if err != nil {
+		return ""
+	}
+	return string(raw)
+}
+
+func retryAfterLabel(headers http.Header) string {
+	raw := strings.TrimSpace(headers.Get("Retry-After"))
+	if seconds, err := strconv.ParseInt(raw, 10, 64); err == nil && seconds > 0 {
+		return (time.Duration(seconds) * time.Second).String()
+	}
+	if raw == "" {
+		return "absent"
+	}
+	return "invalid"
+}
+
+func rateLimitAccountLabel(account provider.Credentials) string {
+	if account.AccountID != "" {
+		return account.AccountID
+	}
+	if account.UserID != "" {
+		return account.UserID
+	}
+	return "configured-account"
 }
 
 func (p *Provider) sendStreamRequest(ctx context.Context, c provider.Credentials, req provider.ChatRequest) (*http.Response, error) {
