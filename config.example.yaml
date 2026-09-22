@@ -19,12 +19,10 @@ dashboard:
 #   metrics: true  # expose Prometheus metrics at /actuator/metrics (default: false)
 
 # Per-account quota polling, shown on the dashboard's provider cards.
-# polling on, auto-drain opt-in: enabling this changes no routing behaviour.
+# Display only: an exhausted reading never removes an account from rotation.
 # quota:
 #   enabled: true      # poll provider quota endpoints (default: true)
 #   interval: 5m       # minimum 1m (default: 5m)
-#   auto_drain: false  # pre-drain an exhausted account so combos skip it (default: false)
-#   max_cooldown: 30m  # cap on a quota drain, in case upstream reports a reset days away (default: 30m)
 
 providers:
   # Antigravity provider (Google Gemini Code Assist)

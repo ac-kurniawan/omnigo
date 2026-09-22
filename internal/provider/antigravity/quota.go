@@ -113,9 +113,8 @@ func (p *Provider) FetchQuota(ctx context.Context, account provider.Credentials)
 		}
 		if remaining == 0 {
 			if window.ResetAt.IsZero() {
-				// A drained bucket with no reset target cannot be bounded by the
-				// 30m cooldown ceiling, so its exhaustion is unactionable:
-				// report unknown rather than draining on a guess.
+				// A drained bucket with no reset time cannot be distinguished
+				// from a malformed read, so report unknown rather than exhausted.
 				snap.Windows = append(snap.Windows, window)
 				snap.Status = quota.StatusUnavailable
 				snap.Reason = fmt.Sprintf("bucket %s exhausted without reset time", b.ModelID)
@@ -133,12 +132,4 @@ func (p *Provider) FetchQuota(ctx context.Context, account provider.Credentials)
 		snap.Status = quota.StatusAvailable
 	}
 	return snap, nil
-}
-
-// MarkQuotaDrained cools one credential in this provider's account pool
-// because its upstream quota is exhausted. It lets the syncer pre-drain an
-// account through the same pool the request path uses, without exposing the
-// pool itself.
-func (p *Provider) MarkQuotaDrained(identity string, cooldown time.Duration, reason string) {
-	p.pool.MarkQuotaDrained(identity, cooldown, reason)
 }
