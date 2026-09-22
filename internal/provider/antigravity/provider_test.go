@@ -251,13 +251,12 @@ func TestChatAccountPoolFallsBackOnPreCommitFailure(t *testing.T) {
 	}
 }
 
-func TestChatAccountPoolFallsBackAfter429AndRespectsRetryAfter(t *testing.T) {
-	now := time.Unix(2_000_000_000, 0)
+func TestChatAccountPoolRetriesLimitedAccountOnNextRequest(t *testing.T) {
 	var calls []string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
 		calls = append(calls, token)
-		if token == "first" {
+		if token == "first" && len(calls) == 1 {
 			w.Header().Set("Retry-After", "120")
 			w.WriteHeader(http.StatusTooManyRequests)
 			return
@@ -271,8 +270,7 @@ func TestChatAccountPoolFallsBackAfter429AndRespectsRetryAfter(t *testing.T) {
 		{AccessToken: "first", AccountID: "google-1", ProjectID: "p", ExpiresAt: time.Now().Add(time.Hour)},
 		{AccessToken: "second", AccountID: "google-2", ProjectID: "p", ExpiresAt: time.Now().Add(time.Hour)},
 	}}
-	p := New(provider.Config{Name: "agy", BaseURL: srv.URL}, store).(*Provider)
-	p.pool.SetClock(func() time.Time { return now })
+	p := New(provider.Config{Name: "agy", BaseURL: srv.URL}, store)
 	req := provider.ChatRequest{Model: "gemini", Messages: []provider.Message{{Role: "user", Content: "hi"}}}
 	for range 2 {
 		rr := httptest.NewRecorder()
@@ -282,20 +280,19 @@ func TestChatAccountPoolFallsBackAfter429AndRespectsRetryAfter(t *testing.T) {
 		if !strings.Contains(rr.Body.String(), "success") {
 			t.Fatalf("body = %s", rr.Body.String())
 		}
-		now = now.Add(61 * time.Second)
 	}
-	if len(calls) != 3 || calls[0] != "first" || calls[1] != "second" || calls[2] != "second" {
+	// The 429 fails over inside the first request, then the next request tries
+	// the previously limited account again instead of remembering the cooldown.
+	if len(calls) != 3 || calls[0] != "first" || calls[1] != "second" || calls[2] != "first" {
 		t.Fatalf("calls = %v", calls)
 	}
 }
 
-func TestChatAllAccountsCoolingReturnsRateLimitUntilCooldownExpires(t *testing.T) {
-	start := time.Unix(2_000_000_000, 0)
-	now := start
+func TestChatAllAccountsRateLimitedFailsOverEachRequest(t *testing.T) {
 	var calls atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls.Add(1)
-		if now.Equal(start) {
+		if calls.Load() <= 2 {
 			w.Header().Set("Retry-After", "60")
 			w.WriteHeader(http.StatusTooManyRequests)
 			return
@@ -309,31 +306,28 @@ func TestChatAllAccountsCoolingReturnsRateLimitUntilCooldownExpires(t *testing.T
 		{AccessToken: "first", AccountID: "google-1", ProjectID: "p", ExpiresAt: time.Now().Add(time.Hour)},
 		{AccessToken: "second", AccountID: "google-2", ProjectID: "p", ExpiresAt: time.Now().Add(time.Hour)},
 	}}
-	p := New(provider.Config{Name: "agy", BaseURL: srv.URL}, store).(*Provider)
-	p.pool.SetClock(func() time.Time { return now })
+	p := New(provider.Config{Name: "agy", BaseURL: srv.URL}, store)
 	req := provider.ChatRequest{Model: "gemini", Messages: []provider.Message{{Role: "user", Content: "hi"}}}
 
-	for range 2 {
-		err := p.ChatCompletion(context.Background(), req, httptest.NewRecorder())
-		if err == nil || err.Error() != "antigravity: rate limited" {
-			t.Fatalf("ChatCompletion error = %v", err)
-		}
+	if err := p.ChatCompletion(context.Background(), req, httptest.NewRecorder()); err == nil || err.Error() != "antigravity: rate limited" {
+		t.Fatalf("first request error = %v", err)
 	}
 	if calls.Load() != 2 {
-		t.Fatalf("calls during cooldown = %d, want 2", calls.Load())
+		t.Fatalf("first request upstream calls = %d, want one per account", calls.Load())
 	}
 
-	now = now.Add(time.Minute + time.Second)
+	// The next request starts over: the previously limited accounts are tried
+	// again, so a transient 429 cannot hide the pool.
 	rr := httptest.NewRecorder()
 	if err := p.ChatCompletion(context.Background(), req, rr); err != nil {
-		t.Fatalf("ChatCompletion after cooldown: %v", err)
+		t.Fatalf("second request: %v", err)
 	}
 	if calls.Load() != 3 || !strings.Contains(rr.Body.String(), "success") {
 		t.Fatalf("calls = %d, body = %q", calls.Load(), rr.Body.String())
 	}
 }
 
-func TestChatSingleAccountCoolingReturnsRateLimit(t *testing.T) {
+func TestChatSingleAccount429RetriesOnNextRequest(t *testing.T) {
 	var calls atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls.Add(1)
@@ -342,7 +336,7 @@ func TestChatSingleAccountCoolingReturnsRateLimit(t *testing.T) {
 	defer srv.Close()
 
 	store := staticStore{provider.Credentials{AccessToken: "token", ProjectID: "p", ExpiresAt: time.Now().Add(time.Hour)}}
-	p := New(provider.Config{Name: "agy", BaseURL: srv.URL}, store).(*Provider)
+	p := New(provider.Config{Name: "agy", BaseURL: srv.URL}, store)
 	req := provider.ChatRequest{Model: "gemini", Messages: []provider.Message{{Role: "user", Content: "hi"}}}
 	for range 2 {
 		err := p.ChatCompletion(context.Background(), req, httptest.NewRecorder())
@@ -350,8 +344,8 @@ func TestChatSingleAccountCoolingReturnsRateLimit(t *testing.T) {
 			t.Fatalf("ChatCompletion error = %v", err)
 		}
 	}
-	if calls.Load() != 1 {
-		t.Fatalf("calls = %d, want 1", calls.Load())
+	if calls.Load() != 2 {
+		t.Fatalf("calls = %d, want 2 (no remembered cooldown)", calls.Load())
 	}
 }
 

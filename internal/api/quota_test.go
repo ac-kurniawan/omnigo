@@ -3,7 +3,6 @@ package api
 import (
 	"context"
 	"testing"
-	"time"
 
 	"github.com/ac-kurniawan/omnigo/internal/config"
 	"github.com/ac-kurniawan/omnigo/internal/provider"
@@ -15,18 +14,10 @@ type quotaTestProvider struct {
 	fakeProvider
 	snapshot quota.AccountSnapshot
 	err      error
-	drains   map[string]time.Duration
 }
 
 func (q *quotaTestProvider) FetchQuota(ctx context.Context, account provider.Credentials) (quota.AccountSnapshot, error) {
 	return q.snapshot, q.err
-}
-
-func (q *quotaTestProvider) MarkQuotaDrained(identity string, cooldown time.Duration, reason string) {
-	if q.drains == nil {
-		q.drains = make(map[string]time.Duration)
-	}
-	q.drains[identity] = cooldown
 }
 
 func TestQuotaTargetsListsOnlyQuotaCapableProviders(t *testing.T) {
@@ -83,22 +74,6 @@ func TestQuotaFetchReusesCachedProviderInstance(t *testing.T) {
 	}
 	if snap.Status != quota.StatusAvailable {
 		t.Fatalf("status = %s", snap.Status)
-	}
-}
-
-func TestQuotaDrainerCoolsAccount(t *testing.T) {
-	store := vault.NewMemoryStore(&vault.Vault{})
-	reg := newProviderRegistry(store)
-	cfg := &config.Config{Providers: []config.Provider{{Name: "cx", Type: "codex"}}}
-	qp := &quotaTestProvider{}
-	reg.providers["cx"] = registryEntry{p: qp}
-	reg.cfg = cfg
-
-	drain := reg.quotaDrainer(func() *config.Config { return cfg })
-	drain("cx", "acct-1", 10*time.Minute, "quota")
-
-	if got := qp.drains["acct-1"]; got != 10*time.Minute {
-		t.Fatalf("drains = %+v, want 10m on acct-1", qp.drains)
 	}
 }
 

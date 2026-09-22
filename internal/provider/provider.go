@@ -160,7 +160,11 @@ func (e *HTTPStatusError) HTTPStatus() int {
 }
 
 func (e *HTTPStatusError) Drainable() bool {
-	return !isClientError(e)
+	switch e.StatusCode {
+	case http.StatusBadRequest, http.StatusNotFound, http.StatusUnprocessableEntity:
+		return false
+	}
+	return true
 }
 
 func (e *HTTPStatusError) DrainReason() string {
