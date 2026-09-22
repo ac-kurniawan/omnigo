@@ -16,7 +16,7 @@ const DefaultConfigYAML = `server:
 providers:
   - name: agy
     type: antigravity
-    base_url: https://cloudcode-pa.googleapis.com
+    base_url: https://daily-cloudcode-pa.googleapis.com
     models:
       - gemini-3.7-flash-medium
       - claude-sonnet-4-6

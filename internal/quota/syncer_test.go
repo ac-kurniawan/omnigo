@@ -124,6 +124,35 @@ func TestSyncerRecordsSamplesForWindows(t *testing.T) {
 	}
 }
 
+// A provider may report one window name per group with several windows, so the
+// exported window label must stay unique per window or the series overwrite
+// each other and drop quota signal for the whole account.
+func TestSyncerExportsDistinctWindowLabelsPerGroup(t *testing.T) {
+	sink := &recordingSink{}
+	s := NewSyncer(Options{
+		Cache:   NewCache(),
+		Targets: fixedTargets(Target{Provider: "agy", Identity: "sub-1"}),
+		Sink:    sink,
+		Fetch: func(context.Context, string, string) (AccountSnapshot, error) {
+			return AccountSnapshot{Status: StatusAvailable, Windows: []Window{
+				{Name: "gemini-weekly", Display: "Gemini Models", WindowMinutes: 10080, UsedPercent: 14.36},
+				{Name: "gemini-5h", Display: "Gemini Models", WindowMinutes: 300, UsedPercent: 0},
+				{Name: "3p-weekly", Display: "Claude and GPT models", WindowMinutes: 10080, UsedPercent: 0},
+				{Name: "3p-5h", Display: "Claude and GPT models", WindowMinutes: 300, UsedPercent: 25},
+			}}, nil
+		},
+	})
+	s.PollOnce(context.Background())
+
+	unique := map[string]bool{}
+	for _, sample := range sink.samples {
+		unique[sample] = true
+	}
+	if len(unique) != 4 {
+		t.Fatalf("distinct sample series = %d, want 4: %v", len(unique), sink.samples)
+	}
+}
+
 func TestSyncerRecordsStatusWithoutWindows(t *testing.T) {
 	sink := &recordingSink{}
 	s := NewSyncer(Options{

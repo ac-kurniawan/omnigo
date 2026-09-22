@@ -11,15 +11,17 @@ func TestStatusConstants(t *testing.T) {
 	}
 }
 
-// Codex reports the windows as "primary"/"secondary"; the operator-facing name
-// is the window length, which is what the label actually means. A window whose
-// length is unknown (or a per-model bucket) keeps its raw name.
-func TestWindowLabelNamesCodexWindowsByLength(t *testing.T) {
+// Codex reports generic primary/secondary windows; the operator-facing name is
+// their length. Named provider windows keep their model id alongside the known
+// window length so multiple bars remain distinguishable.
+func TestWindowLabelNamesKnownWindowsByLength(t *testing.T) {
 	for _, tc := range []struct {
 		window Window
 		want   string
 	}{
 		{Window{Name: "primary", WindowMinutes: 300}, "5-hour limit"},
+		{Window{Name: "gemini-3.7-flash", WindowMinutes: 300}, "gemini-3.7-flash · 5-hour limit"},
+		{Window{Name: "Gemini Models", WindowMinutes: 10080}, "Gemini Models · Weekly limit"},
 		{Window{Name: "secondary", WindowMinutes: 10080}, "Weekly limit"},
 		{Window{Name: "gemini-3.7-flash", WindowMinutes: 0}, "gemini-3.7-flash"},
 		{Window{Name: "primary", WindowMinutes: 60}, "primary"},
@@ -62,6 +64,27 @@ func TestHeadlineExhaustedNamesReason(t *testing.T) {
 	}
 	got := s.Headline(now)
 	for _, want := range []string{"exhausted", "claude-opus-4-6-thinking"} {
+		if !contains(got, want) {
+			t.Fatalf("headline %q missing %q", got, want)
+		}
+	}
+}
+
+// An exhausted provider reports the composed window label as the reason, so the
+// countdown lookup must still match that window and surface when it lifts.
+func TestHeadlineExhaustedComposedLabelStillShowsReset(t *testing.T) {
+	now := time.Unix(2_000_000_000, 0)
+	reset := now.Add(17*time.Hour + 43*time.Minute)
+	s := AccountSnapshot{
+		Status: StatusExhausted,
+		Reason: "Claude and GPT models · Weekly limit",
+		Windows: []Window{
+			{Name: "3p-weekly", Display: "Claude and GPT models", WindowMinutes: 10080, UsedPercent: 100, ResetAt: reset},
+			{Name: "3p-5h", Display: "Claude and GPT models", WindowMinutes: 300, UsedPercent: 0, ResetAt: now.Add(time.Hour)},
+		},
+	}
+	got := s.Headline(now)
+	for _, want := range []string{"exhausted", "Weekly limit", "17h"} {
 		if !contains(got, want) {
 			t.Fatalf("headline %q missing %q", got, want)
 		}

@@ -251,6 +251,19 @@ func newServer(getCfg func() *config.Config, store *vault.Store, mutate config.M
 		"quotaWindowLabel": func(w quota.Window) string {
 			return w.Label()
 		},
+		// quotaWindowShortLabel names only the window length. The surrounding
+		// group heading already carries the model scope, so repeating the group
+		// name on every bar would crowd the card.
+		"quotaWindowShortLabel": func(w quota.Window) string {
+			switch w.WindowMinutes {
+			case 300:
+				return "5-hour limit"
+			case 10080:
+				return "Weekly limit"
+			default:
+				return w.Label()
+			}
+		},
 		"quotaFormatPercent": func(p float64) string {
 			if p == float64(int(p)) {
 				return fmt.Sprintf("%d%%", int(p))

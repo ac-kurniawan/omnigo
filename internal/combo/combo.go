@@ -4,10 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/ac-kurniawan/omnigo/internal/provider"
 )
 
 type Target struct {
@@ -38,6 +41,7 @@ func (c Combo) Run(ctx context.Context, dispatch DispatchFunc) (Target, error) {
 	var failures []string
 	var lastErr error
 	backpressure := 0
+	rateLimited := 0
 	for _, target := range targets {
 		if err := dispatch(ctx, target); err != nil {
 			lastErr = err
@@ -47,6 +51,9 @@ func (c Combo) Run(ctx context.Context, dispatch DispatchFunc) (Target, error) {
 			failures = append(failures, fmt.Sprintf("%s: %v", targetKey(target), err))
 			if isBackpressure(err) {
 				backpressure++
+			}
+			if isUpstreamRateLimit(err) {
+				rateLimited++
 			}
 			if tracksFailures && isDrainable(err) {
 				c.Tracker.MarkDrained(target, failureCooldown(err, c.drainTTL()), failureReason(err))
@@ -58,9 +65,10 @@ func (c Combo) Run(ctx context.Context, dispatch DispatchFunc) (Target, error) {
 	if len(failures) == 0 {
 		return Target{}, fmt.Errorf("combo %q has no healthy targets", c.Name)
 	}
-	// Every target is locally saturated: report gateway backpressure so the API
-	// layer answers 429 + Retry-After instead of blaming the upstreams with 502.
-	if backpressure == len(failures) {
+	// Every target rejected with a 429-class error, whether local saturation or
+	// upstream rate limiting. Preserve the typed last error so the API returns
+	// 429 + Retry-After rather than erasing it in aggregation.
+	if backpressure+rateLimited == len(failures) {
 		return Target{}, lastErr
 	}
 	if c.Strategy == "reliable" || c.Strategy == "round-robin" {
@@ -136,8 +144,16 @@ func isDrainable(err error) bool {
 }
 
 // isBackpressure reports gateway-side saturation (local concurrency limit)
-// rather than an upstream fault, so routing can surface 429 instead of 502.
+// rather than an upstream 429 carrying Retry-After.
 func isBackpressure(err error) bool {
-	var busy interface{ RetryAfter() time.Duration }
+	var busy *provider.ProviderBusyError
 	return errors.As(err, &busy)
+}
+
+func isUpstreamRateLimit(err error) bool {
+	if isBackpressure(err) {
+		return false
+	}
+	var status interface{ HTTPStatus() int }
+	return errors.As(err, &status) && status.HTTPStatus() == http.StatusTooManyRequests
 }

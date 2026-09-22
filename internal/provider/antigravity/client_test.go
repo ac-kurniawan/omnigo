@@ -109,3 +109,23 @@ func TestProviderModelsWithGoogleObjectFormat(t *testing.T) {
 		t.Fatalf("models = %+v, want 2", models)
 	}
 }
+
+func TestDefaultBaseURLUsesDailyEndpoint(t *testing.T) {
+	want := "https://daily-cloudcode-pa.googleapis.com"
+	if defaultBaseURL != want {
+		t.Fatalf("defaultBaseURL = %q, want %q", defaultBaseURL, want)
+	}
+}
+
+func TestNormalizeBaseURLRedirectsLegacyHost(t *testing.T) {
+	if got := normalizeBaseURL("https://cloudcode-pa.googleapis.com"); got != defaultBaseURL {
+		t.Fatalf("normalizeBaseURL(legacy) = %q, want %q", got, defaultBaseURL)
+	}
+	if got := normalizeBaseURL("https://cloudcode-pa.googleapis.com/"); got != defaultBaseURL {
+		t.Fatalf("normalizeBaseURL(legacy trailing slash) = %q, want %q", got, defaultBaseURL)
+	}
+	custom := "https://proxy.example.test/v1"
+	if got := normalizeBaseURL(custom); got != custom {
+		t.Fatalf("normalizeBaseURL(custom) = %q, want passthrough %q", got, custom)
+	}
+}

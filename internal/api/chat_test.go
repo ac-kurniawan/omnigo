@@ -988,6 +988,21 @@ func TestDirectProviderSaturationReturns429(t *testing.T) {
 	}
 }
 
+func TestUpstreamRateLimitReturns429WithRetryAfter(t *testing.T) {
+	rr := httptest.NewRecorder()
+	writeProviderError(rr, upstreamRateLimitError{})
+
+	if rr.Code != http.StatusTooManyRequests {
+		t.Fatalf("status = %d, want 429; body = %q", rr.Code, rr.Body.String())
+	}
+	if got := rr.Header().Get("Retry-After"); got != "60" {
+		t.Fatalf("Retry-After = %q, want 60", got)
+	}
+	if !strings.Contains(rr.Body.String(), `"code":"rate_limit_exceeded"`) {
+		t.Fatalf("body = %q, want rate_limit_exceeded", rr.Body.String())
+	}
+}
+
 // When every target in a combo is locally saturated there is no failover left,
 // so the client must get 429 + Retry-After rather than a misleading 502.
 func TestComboFullySaturatedReturns429(t *testing.T) {
