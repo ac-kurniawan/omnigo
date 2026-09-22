@@ -186,8 +186,8 @@ func (p *Provider) FetchQuota(ctx context.Context, account provider.Credentials)
 		return unavailable(snapshot, "upstream unreachable", fmt.Errorf("codex: quota request failed: %w", err))
 	}
 	defer resp.Body.Close()
-	// A plain error, not provider.NewHTTPStatusError: quota reads are
-	// display-only and must never look drainable to the account pool.
+	// A plain error, not provider.NewHTTPStatusError: a failed quota read is
+	// display-only and must not look like an upstream chat failure.
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
 		reason := fmt.Sprintf("upstream status %d", resp.StatusCode)
 		return unavailable(snapshot, reason, fmt.Errorf("codex: quota %s", reason))
@@ -312,12 +312,4 @@ func (p *Provider) observeQuota(account provider.Credentials, h http.Header) {
 	if observer != nil {
 		observer(snapshot)
 	}
-}
-
-// MarkQuotaDrained cools one credential in this provider's account pool
-// because its upstream quota is exhausted. It lets the syncer pre-drain an
-// account through the same pool the request path uses, without exposing the
-// pool itself.
-func (p *Provider) MarkQuotaDrained(identity string, cooldown time.Duration, reason string) {
-	p.pool.MarkQuotaDrained(identity, cooldown, reason)
 }

@@ -410,23 +410,17 @@ func TestChatUnrecoverableRefreshFastFails(t *testing.T) {
 		ExpiresAt:    time.Now().Add(-10 * time.Minute),
 		ProjectID:    "proj-1",
 	}}
-	p := New(provider.Config{Name: "agy", BaseURL: "http://unused"}, store).(*Provider)
-	now := time.Unix(2_000_000_000, 0)
-	p.pool.SetClock(func() time.Time { return now })
+	p := New(provider.Config{Name: "agy", BaseURL: "http://unused"}, store)
 
 	req := provider.ChatRequest{Model: "gemini-3.7-flash-medium", Stream: true, Messages: []provider.Message{{Role: "user", Content: "hi"}}}
-	err := p.ChatCompletion(context.Background(), req, httptest.NewRecorder())
-	if err == nil || err.Error() != "antigravity: re-authentication required; use Connect Google" {
-		t.Fatalf("ChatCompletion err = %v, want reauth required", err)
+	for range 2 {
+		err := p.ChatCompletion(context.Background(), req, httptest.NewRecorder())
+		if err == nil || err.Error() != "antigravity: re-authentication required; use Connect Google" {
+			t.Fatalf("ChatCompletion err = %v, want reauth required", err)
+		}
 	}
-
-	// Past the account cooldown the credential is tried again: the breaker must
-	// answer from the remembered rejection instead of re-POSTing a dead token.
-	now = now.Add(2 * provider.DefaultAccountCooldown)
-	err = p.ChatCompletion(context.Background(), req, httptest.NewRecorder())
-	if err == nil || err.Error() != "antigravity: re-authentication required; use Connect Google" {
-		t.Fatalf("ChatCompletion err after cooldown = %v, want reauth required", err)
-	}
+	// The breaker answers from the remembered rejection on every attempt
+	// instead of re-POSTing a dead token, with no account cooldown in between.
 	if refreshCalls.Load() != 1 {
 		t.Fatalf("refresh calls = %d, want 1", refreshCalls.Load())
 	}

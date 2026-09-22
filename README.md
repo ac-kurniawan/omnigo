@@ -135,8 +135,6 @@ per-account quota in the dashboard, on the provider's account cards.
 quota:
   enabled: true      # default: true
   interval: 5m       # default: 5m, minimum 1m
-  auto_drain: false  # default: false
-  max_cooldown: 30m  # default: 30m
 ```
 
 - **`enabled`** turns background polling on or off. While off, no quota
@@ -145,24 +143,17 @@ quota:
   faster than that would add the upstream pressure the quota data exists to
   avoid. Each cycle is jittered so pooled accounts do not poll in lockstep, and
   an account that keeps failing is retried with backoff.
-- **`auto_drain`** is opt-in. When true, an exhausted account is cooled in the
-  account pool *before* a request fails, so a combo skips it on the next
-  attempt. Draining is per account, so the provider and its combo targets stay
-  routable through any remaining healthy accounts. Off by default, so enabling
-  quota polling changes no routing behaviour.
-- **`max_cooldown`** caps how long a quota drain lasts. Upstream can report a
-  reset days away (Codex's secondary window is seven days); the cap keeps a
-  stale or misreported value from parking a healthy account indefinitely.
 
-Three rules keep quota from removing capacity it should not:
+Polling is display-only. An exhausted reading updates the dashboard badge and
+never removes an account from rotation: the next request tries every stored
+account, and a failure fails over to the next account only inside that
+request.
 
-1. A failed or unparseable quota read is reported as **unavailable** and never
-   drains an account. Only an explicit upstream exhaustion signal drains.
+Two rules keep a bad quota read from looking like exhaustion:
+
+1. A failed or unparseable quota read is reported as **unavailable**.
 2. Codex exhaustion follows `rate_limit.allowed`/`limit_reached`, **not**
    `used_percent`. An account can serve normally with a window at 100%.
-3. Antigravity reports one bucket per model; a bucket at zero remaining with no
-   reset time is treated as unknown rather than drained for an arbitrary
-   period.
 
 Quota data is held in memory only and never written to disk. Quota endpoints
 for both providers are private upstream interfaces and may change without
