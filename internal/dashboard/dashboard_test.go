@@ -143,6 +143,20 @@ func TestIndexRendersOAuthPoolAccordionWithHealthyCount(t *testing.T) {
 			t.Fatalf("accordion checkbox must not be checked by default: %s", frag)
 		}
 	}
+	if !strings.Contains(body, `data-accordion="agy"`) || !strings.Contains(body, `data-accordion="cx"`) {
+		t.Fatal("accordion must be keyed by provider so open state survives a partial re-render")
+	}
+	// Open state is remembered in the browser for the session, then reapplied
+	// after an HTMX swap of #providers. The server response itself stays closed.
+	for _, want := range []string{
+		"omnigo-open-accordions",
+		"htmx:afterSwap",
+		"data-accordion-toggle",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("dashboard missing accordion persistence hook %q", want)
+		}
+	}
 }
 
 func TestCollapseArrowChevronVerticallyCentered(t *testing.T) {

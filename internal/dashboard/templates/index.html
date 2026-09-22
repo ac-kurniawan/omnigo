@@ -1398,6 +1398,43 @@
     }
 
     document.addEventListener('DOMContentLoaded', initPlayground);
+    // Account accordions render closed. While the page is open, remember which
+    // ones the user expanded so an HTMX swap (refresh quota, remove account,
+    // toggle provider) does not snap them shut. A full reload starts closed.
+    const accordionStoreKey = 'omnigo-open-accordions';
+    function readOpenAccordions() {
+      try {
+        const parsed = JSON.parse(sessionStorage.getItem(accordionStoreKey) || '[]');
+        return new Set(Array.isArray(parsed) ? parsed : []);
+      } catch (err) {
+        return new Set();
+      }
+    }
+    function writeOpenAccordions(open) {
+      sessionStorage.setItem(accordionStoreKey, JSON.stringify([...open]));
+    }
+    function restoreAccordions(root) {
+      const open = readOpenAccordions();
+      (root || document).querySelectorAll('[data-accordion]').forEach(card => {
+        const toggle = card.querySelector('[data-accordion-toggle]');
+        if (toggle) toggle.checked = open.has(card.dataset.accordion);
+      });
+    }
+    document.addEventListener('change', event => {
+      const toggle = event.target.closest('[data-accordion-toggle]');
+      if (!toggle) return;
+      const card = toggle.closest('[data-accordion]');
+      if (!card) return;
+      const open = readOpenAccordions();
+      if (toggle.checked) open.add(card.dataset.accordion);
+      else open.delete(card.dataset.accordion);
+      writeOpenAccordions(open);
+    });
+    document.addEventListener('htmx:afterSwap', event => {
+      if (event.detail.target && event.detail.target.id === 'providers') {
+        restoreAccordions(event.detail.target);
+      }
+    });
   </script>
 </body>
 </html>
@@ -1692,8 +1729,8 @@
       {{if or (eq .Type "antigravity") (eq .Type "codex")}}
       <tr class="bg-base-200/20">
         <td colspan="4" class="px-4 py-3">
-          <div class="collapse collapse-arrow accounts-collapse border border-base-content/10 rounded-xl bg-base-100/40">
-            <input type="checkbox" class="min-h-0" aria-label="Toggle OAuth account connections for {{$provName}}" />
+          <div class="collapse collapse-arrow accounts-collapse border border-base-content/10 rounded-xl bg-base-100/40" data-accordion="{{$provName}}">
+            <input type="checkbox" class="min-h-0" data-accordion-toggle aria-label="Toggle OAuth account connections for {{$provName}}" />
             <div class="collapse-title min-h-0 py-1.5 text-xs font-semibold text-base-content/70 flex items-center gap-2">
               <svg xmlns="http://www.w3.org/2000/svg" class="size-3.5 text-success" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1"/></svg>
               Connections
