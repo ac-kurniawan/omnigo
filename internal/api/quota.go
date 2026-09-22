@@ -2,7 +2,6 @@ package api
 
 import (
 	"context"
-	"time"
 
 	"github.com/ac-kurniawan/omnigo/internal/config"
 	"github.com/ac-kurniawan/omnigo/internal/provider"
@@ -90,28 +89,5 @@ func (r *providerRegistry) quotaFetch(cfg func() *config.Config) func(context.Co
 			return fetcher.FetchQuota(ctx, creds)
 		}
 		return quota.AccountSnapshot{}, errAccountGone
-	}
-}
-
-// quotaDrainer routes a quota exhaustion into the named provider's account
-// pool, so auto-drain removes exactly one credential from rotation while the
-// provider and its combo targets stay routable through the other accounts.
-func (r *providerRegistry) quotaDrainer(getCfg func() *config.Config) func(providerName, identity string, cooldown time.Duration, reason string) {
-	return func(providerName, identity string, cooldown time.Duration, reason string) {
-		cfg := getCfg()
-		if cfg == nil {
-			return
-		}
-		p, ok := r.Get(cfg, providerName)
-		if !ok {
-			return
-		}
-		pooled, ok := p.(interface {
-			MarkQuotaDrained(identity string, cooldown time.Duration, reason string)
-		})
-		if !ok {
-			return
-		}
-		pooled.MarkQuotaDrained(identity, cooldown, reason)
 	}
 }

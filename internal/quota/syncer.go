@@ -7,14 +7,6 @@ import (
 	"time"
 )
 
-// Drainer records quota-driven exhaustion. Provider AccountPool satisfies it.
-//
-// A drain MUST be bounded: the syncer clamps the cooldown so a stale or
-// misread window can never park an account indefinitely.
-type Drainer interface {
-	MarkQuotaDrained(provider, identity string, cooldown time.Duration, reason string)
-}
-
 // Sample is one quota observation for metrics export. Status carries the
 // tri-state numerically: 1 available, 0 exhausted, -1 unavailable.
 type Sample struct {
@@ -43,17 +35,14 @@ type Target struct {
 	Account  string // label for metrics: account id when known, else identity
 }
 
-// Syncer polls provider quota in the background and, when auto-drain is on,
-// marks exhausted credentials before traffic reaches them.
+// Syncer polls provider quota in the background and stores the snapshots for
+// the dashboard. It never changes routing.
 type Syncer struct {
 	cache    *Cache
 	targets  TargetsFunc
 	fetch    func(ctx context.Context, provider, identity string) (AccountSnapshot, error)
-	drainer  Drainer
 	sink     SampleSink
 	interval func() time.Duration
-	maxCool  func() time.Duration
-	auto     func() bool
 	now      func() time.Time
 	jitter   func(time.Duration) time.Duration
 
@@ -65,18 +54,15 @@ type Syncer struct {
 
 // Options configures a Syncer.
 //
-// Interval, MaxCooldown, and AutoDrain are functions rather than values so a
-// config reload takes effect on the next cycle without restarting the process,
-// matching how the rest of the gateway reads live configuration.
+// Interval is a function rather than a value so a config reload takes effect
+// on the next cycle without restarting the process, matching how the rest of
+// the gateway reads live configuration.
 type Options struct {
-	Cache       *Cache
-	Targets     TargetsFunc
-	Fetch       func(ctx context.Context, provider, identity string) (AccountSnapshot, error)
-	Drainer     Drainer
-	Sink        SampleSink
-	Interval    func() time.Duration
-	MaxCooldown func() time.Duration
-	AutoDrain   func() bool
+	Cache    *Cache
+	Targets  TargetsFunc
+	Fetch    func(ctx context.Context, provider, identity string) (AccountSnapshot, error)
+	Sink     SampleSink
+	Interval func() time.Duration
 	// Now and Jitter are test seams; nil selects the real clock and jitter.
 	Now    func() time.Time
 	Jitter func(time.Duration) time.Duration
@@ -90,23 +76,14 @@ func NewSyncer(opts Options) *Syncer {
 		cache:     opts.Cache,
 		targets:   opts.Targets,
 		fetch:     opts.Fetch,
-		drainer:   opts.Drainer,
 		sink:      opts.Sink,
 		interval:  opts.Interval,
-		maxCool:   opts.MaxCooldown,
-		auto:      opts.AutoDrain,
 		now:       opts.Now,
 		jitter:    opts.Jitter,
 		failCount: make(map[string]int),
 	}
 	if s.interval == nil {
 		s.interval = func() time.Duration { return 5 * time.Minute }
-	}
-	if s.maxCool == nil {
-		s.maxCool = func() time.Duration { return 30 * time.Minute }
-	}
-	if s.auto == nil {
-		s.auto = func() bool { return false }
 	}
 	if s.now == nil {
 		s.now = time.Now
@@ -195,49 +172,6 @@ func (s *Syncer) pollTarget(ctx context.Context, target Target) {
 	s.cache.Put(snapshot)
 	s.record(snapshot, target)
 
-	if s.auto() && snapshot.Status == StatusExhausted {
-		s.drain(target, snapshot)
-	}
-}
-
-// drain marks the credential exhausted until the earliest reported reset,
-// clamped to maxCool so a misreported multi-day window still self-corrects.
-func (s *Syncer) drain(target Target, snapshot AccountSnapshot) {
-	if s.drainer == nil {
-		return
-	}
-	cooldown := s.cooldownFor(snapshot)
-	if cooldown <= 0 {
-		return
-	}
-	s.drainer.MarkQuotaDrained(target.Provider, target.Identity, cooldown, snapshot.Reason)
-}
-
-// cooldownFor derives the drain duration from the earliest future reset.
-// It returns 0 when no window carries a usable reset, in which case the
-// account is left alone rather than drained for an arbitrary period.
-func (s *Syncer) cooldownFor(snapshot AccountSnapshot) time.Duration {
-	now := s.now()
-	best := time.Duration(0)
-	for _, w := range snapshot.Windows {
-		if w.ResetAt.IsZero() {
-			continue
-		}
-		remaining := w.ResetAt.Sub(now)
-		if remaining <= 0 {
-			continue
-		}
-		if best == 0 || remaining < best {
-			best = remaining
-		}
-	}
-	if best <= 0 {
-		return 0
-	}
-	if limit := s.maxCool(); limit > 0 && best > limit {
-		return limit
-	}
-	return best
 }
 
 func (s *Syncer) record(snapshot AccountSnapshot, target Target) {

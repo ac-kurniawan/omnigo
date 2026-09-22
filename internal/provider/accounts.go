@@ -2,136 +2,20 @@ package provider
 
 import (
 	"bytes"
-	"errors"
-	"fmt"
 	"net/http"
 	"sync"
-	"time"
 )
 
-const DefaultAccountCooldown = 60 * time.Second
+// AccountPool lists the credentials a provider may try for one request, in
+// stored order. It does not remember failures: a 429 or auth error fails over
+// to the next account only within the current request, and the next request
+// starts from the full list again. Remembering a cooldown here hid healthy
+// accounts (including after re-authentication) until the process restarted.
+type AccountPool struct{}
 
-type AccountPool struct {
-	mu     sync.Mutex
-	drains map[string]accountDrain
-	now    func() time.Time
-}
-
-type accountDrain struct {
-	until       time.Time
-	reason      string
-	clientError bool
-}
-
-type accountUnavailableError struct {
-	reason   string
-	cooldown time.Duration
-	// clientError records that the failure which cooled this account was a
-	// client-side 4xx. A bad prompt must not drain the combo target, so the
-	// classification has to survive the cooldown.
-	clientError bool
-}
-
-func (e *accountUnavailableError) Error() string           { return e.reason }
-func (e *accountUnavailableError) Cooldown() time.Duration { return e.cooldown }
-func (e *accountUnavailableError) DrainReason() string     { return e.reason }
-func (e *accountUnavailableError) Drainable() bool         { return !e.clientError }
-
+// Available returns every stored account, in order.
 func (p *AccountPool) Available(store CredStore) []Credentials {
-	accounts, _ := p.AvailableWithError(store)
-	return accounts
-}
-
-func (p *AccountPool) AvailableWithError(store CredStore) ([]Credentials, error) {
-	accounts := accountsFromStore(store)
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	if p.drains == nil {
-		p.drains = make(map[string]accountDrain)
-	}
-	now := p.currentTimeLocked()
-	healthy := make([]Credentials, 0, len(accounts))
-	var unavailable error
-	for i, account := range accounts {
-		key := accountKey(account, i)
-		drain := p.drains[key]
-		if drain.until.IsZero() || !now.Before(drain.until) {
-			delete(p.drains, key)
-			healthy = append(healthy, account)
-			continue
-		}
-		if unavailable == nil && drain.reason != "" {
-			unavailable = &accountUnavailableError{reason: drain.reason, cooldown: drain.until.Sub(now), clientError: drain.clientError}
-		}
-	}
-	return healthy, unavailable
-}
-
-func (p *AccountPool) MarkFailed(account Credentials, err error) {
-	cooldown := DefaultAccountCooldown
-	var withCooldown interface{ Cooldown() time.Duration }
-	if errors.As(err, &withCooldown) && withCooldown.Cooldown() > 0 {
-		cooldown = withCooldown.Cooldown()
-	}
-	var reason string
-	var withReason interface{ DrainReason() string }
-	if errors.As(err, &withReason) {
-		reason = withReason.DrainReason()
-	}
-	clientErr := isClientError(err)
-	p.mu.Lock()
-	if p.drains == nil {
-		p.drains = make(map[string]accountDrain)
-	}
-	p.drains[accountKey(account, 0)] = accountDrain{until: p.currentTimeLocked().Add(cooldown), reason: reason, clientError: clientErr}
-	p.mu.Unlock()
-}
-
-// MarkQuotaDrained cools one credential because its upstream quota is now
-// exhausted, before any request has had to fail with a 429.
-//
-// The identity must match Credentials.Identity() of a stored account; the
-// drain is dropped otherwise. Callers MUST bound cooldown: a quota drain is
-// derived from upstream metadata that can be stale or misreported, so an
-// unbounded drain could park a healthy account.
-func (p *AccountPool) MarkQuotaDrained(identity string, cooldown time.Duration, reason string) {
-	if cooldown <= 0 || identity == "" {
-		return
-	}
-	p.mu.Lock()
-	if p.drains == nil {
-		p.drains = make(map[string]accountDrain)
-	}
-	p.drains[identity] = accountDrain{until: p.currentTimeLocked().Add(cooldown), reason: reason}
-	p.mu.Unlock()
-}
-
-// isClientError reports whether an upstream failure is the caller's fault (a
-// malformed or unsupported request) rather than the provider's. Such failures
-// must not drain a combo target.
-func isClientError(err error) bool {
-	var status interface{ HTTPStatus() int }
-	if !errors.As(err, &status) {
-		return false
-	}
-	switch status.HTTPStatus() {
-	case http.StatusBadRequest, http.StatusNotFound, http.StatusUnprocessableEntity:
-		return true
-	}
-	return false
-}
-
-func (p *AccountPool) currentTimeLocked() time.Time {
-	if p.now != nil {
-		return p.now()
-	}
-	return time.Now()
-}
-
-func (p *AccountPool) SetClock(now func() time.Time) {
-	p.mu.Lock()
-	p.now = now
-	p.mu.Unlock()
+	return accountsFromStore(store)
 }
 
 func accountsFromStore(store CredStore) []Credentials {
@@ -143,13 +27,6 @@ func accountsFromStore(store CredStore) []Credentials {
 		return nil
 	}
 	return []Credentials{account}
-}
-
-func accountKey(account Credentials, index int) string {
-	if identity := account.Identity(); identity != "" {
-		return identity
-	}
-	return fmt.Sprintf("account-%d", index)
 }
 
 func ScopedStore(store CredStore, account Credentials) CredStore {

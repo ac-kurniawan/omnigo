@@ -287,11 +287,7 @@ func TestProviderAccountPoolRefreshUpdatesOnlySelectedAccountConcurrently(t *tes
 	}
 }
 
-func TestProviderAccountPoolSkipsDrainedUntilCooldownExpires(t *testing.T) {
-	oldNow := timeNow
-	now := time.Unix(2_000_000_000, 0)
-	timeNow = func() time.Time { return now }
-	t.Cleanup(func() { timeNow = oldNow })
+func TestProviderAccountPoolRetriesLimitedAccountOnNextRequest(t *testing.T) {
 	var firstCalls atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("chatgpt-account-id") == "account-1" {
@@ -307,22 +303,16 @@ func TestProviderAccountPoolSkipsDrainedUntilCooldownExpires(t *testing.T) {
 		{AccessToken: "access-1", AccountID: "account-1", ExpiresAt: time.Now().Add(time.Hour)},
 		{AccessToken: "access-2", AccountID: "account-2", ExpiresAt: time.Now().Add(time.Hour)},
 	}}
-	p := New(provider.Config{Name: "codex", BaseURL: server.URL}, store).(*Provider)
-	p.pool.SetClock(func() time.Time { return now })
+	p := New(provider.Config{Name: "codex", BaseURL: server.URL}, store)
 	for range 2 {
 		if err := p.ChatCompletion(context.Background(), provider.ChatRequest{Model: "gpt", Raw: []byte(`{"messages":[]}`)}, httptest.NewRecorder()); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if firstCalls.Load() != 1 {
-		t.Fatalf("first account calls = %d", firstCalls.Load())
-	}
-	now = now.Add(121 * time.Second)
-	if err := p.ChatCompletion(context.Background(), provider.ChatRequest{Model: "gpt", Raw: []byte(`{"messages":[]}`)}, httptest.NewRecorder()); err != nil {
-		t.Fatal(err)
-	}
+	// The 429 fails over to the second account inside each request, and the
+	// next request tries the first account again: no remembered cooldown.
 	if firstCalls.Load() != 2 {
-		t.Fatalf("first account calls after expiry = %d", firstCalls.Load())
+		t.Fatalf("first account calls = %d, want one per request", firstCalls.Load())
 	}
 }
 
