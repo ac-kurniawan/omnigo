@@ -26,8 +26,8 @@ func antigravityQuotaAccount() provider.Credentials {
 	}
 }
 
-// serveQuota starts a fake retrieveUserQuota upstream and points baseURL at it,
-// restoring the real endpoint when the test ends.
+// serveQuota starts a fake retrieveUserQuotaSummary upstream and points
+// baseURL at it, restoring the real endpoint when the test ends.
 func serveQuota(t *testing.T, handler http.HandlerFunc) *httptest.Server {
 	t.Helper()
 	srv := httptest.NewServer(handler)
@@ -40,25 +40,32 @@ func serveQuota(t *testing.T, handler http.HandlerFunc) *httptest.Server {
 	return srv
 }
 
-func TestFetchQuotaAllBucketsAvailable(t *testing.T) {
-	// Trimmed shape of the live 27-bucket payload: tokenType WTUS, singular
-	// modelId, remainingFraction, and a resetTime only on windowed buckets.
+// summaryPayload mirrors the live retrieveUserQuotaSummary shape: groups with
+// shared weekly and five-hour buckets.
+const summaryPayload = `{
+	"groups": [
+		{"displayName":"Gemini Models","description":"Models within this group: Gemini Flash, Gemini Pro","buckets":[
+			{"bucketId":"gemini-weekly","displayName":"Weekly Limit Remaining","window":"weekly","resetTime":"2026-09-29T09:12:52Z","remainingFraction":0.8564},
+			{"bucketId":"gemini-5h","displayName":"Five Hour Limit Remaining","window":"5h","resetTime":"2026-09-22T14:12:52Z","remainingFraction":1}
+		]},
+		{"displayName":"Claude and GPT models","description":"Models within this group: Claude Opus, Claude Sonnet, GPT-OSS","buckets":[
+			{"bucketId":"3p-weekly","displayName":"Weekly Limit Remaining","window":"weekly","resetTime":"2026-09-29T09:12:52Z","remainingFraction":1},
+			{"bucketId":"3p-5h","displayName":"Five Hour Limit Remaining","window":"5h","resetTime":"2026-09-22T14:12:52Z","remainingFraction":1}
+		]}
+	],
+	"description":"Within each group, models share a weekly limit and a 5-hour limit."
+}`
+
+func TestFetchQuotaGroupsShareWeeklyAndFiveHourWindows(t *testing.T) {
 	serveQuota(t, func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/v1internal:retrieveUserQuota" {
-			t.Errorf("path = %s", r.URL.Path)
+		if r.URL.Path != "/v1internal:retrieveUserQuotaSummary" {
+			t.Errorf("path = %s, want summary endpoint", r.URL.Path)
 		}
-		_, _ = w.Write([]byte(`{
-			"buckets": [
-				{"tokenType":"WTUS","modelId":"chat_20706","remainingFraction":1},
-				{"tokenType":"WTUS","modelId":"gemini-3.8-flash-tiered","remainingFraction":0.5,"resetTime":"2026-09-18T07:17:28Z"},
-				{"tokenType":"WTUS","modelId":"claude-sonnet-4-6","remainingFraction":1,"resetTime":"2026-09-21T07:17:28Z"}
-			]
-		}`))
+		_, _ = w.Write([]byte(summaryPayload))
 	})
 
 	p := New(provider.Config{Name: "agy"}, staticStore{antigravityQuotaAccount()})
 	account := antigravityQuotaAccount()
-
 	snap, err := p.(*Provider).FetchQuota(context.Background(), account)
 	if err != nil {
 		t.Fatalf("FetchQuota: %v", err)
@@ -66,40 +73,59 @@ func TestFetchQuotaAllBucketsAvailable(t *testing.T) {
 	if snap.Status != quota.StatusAvailable {
 		t.Fatalf("status = %q, want available (reason %q)", snap.Status, snap.Reason)
 	}
-	if snap.Provider != "agy" || snap.Identity != account.Identity() || snap.AccountID != account.AccountID || snap.Email != account.Email {
-		t.Fatalf("identity fields = %+v", snap)
+	if len(snap.Groups) != 2 {
+		t.Fatalf("groups = %d, want 2", len(snap.Groups))
 	}
-	if len(snap.Windows) != 3 {
-		t.Fatalf("windows = %d, want 3", len(snap.Windows))
+	if snap.Groups[0].Name != "Gemini Models" || len(snap.Groups[0].Windows) != 2 {
+		t.Fatalf("group[0] = %+v", snap.Groups[0])
 	}
-	if snap.Windows[0].Name != "chat_20706" || snap.Windows[0].UsedPercent != 0 {
-		t.Fatalf("window[0] = %+v", snap.Windows[0])
+	gemWeekly := snap.Groups[0].Windows[0]
+	// Name is the metric-safe bucket id; Display carries the group for labels.
+	if gemWeekly.Name != "gemini-weekly" || gemWeekly.Display != "Gemini Models" || gemWeekly.WindowMinutes != 10080 {
+		t.Fatalf("gemini weekly window = %+v", gemWeekly)
 	}
-	if snap.Windows[1].UsedPercent != 50 {
-		t.Fatalf("window[1] used = %v, want 50", snap.Windows[1].UsedPercent)
+	// 0.8564 remaining => 14.36 used => 85.64 remaining displayed
+	if got := gemWeekly.RemainingPercent(); got != 85.64 {
+		t.Fatalf("weekly remaining = %v, want 85.64", got)
 	}
-	wantReset := time.Date(2026, 9, 18, 7, 17, 28, 0, time.UTC)
-	if !snap.Windows[1].ResetAt.Equal(wantReset) {
-		t.Fatalf("window[1] reset = %v, want %v", snap.Windows[1].ResetAt, wantReset)
+	if snap.Groups[1].Name != "Claude and GPT models" {
+		t.Fatalf("group[1] = %+v", snap.Groups[1])
 	}
-	if !snap.Windows[0].ResetAt.IsZero() {
-		t.Fatalf("window[0] reset = %v, want zero", snap.Windows[0].ResetAt)
+	if len(snap.Windows) != 4 {
+		t.Fatalf("flattened windows = %d, want 4", len(snap.Windows))
 	}
-	if snap.ObservedAt.IsZero() {
-		t.Fatal("ObservedAt is zero")
+	// Flattened windows must carry the machine id and the group display name.
+	found := map[string]bool{}
+	for _, w := range snap.Windows {
+		found[w.Name+"/"+w.Label()] = true
+	}
+	for _, want := range []string{
+		"gemini-weekly/Gemini Models · Weekly limit",
+		"gemini-5h/Gemini Models · 5-hour limit",
+		"3p-weekly/Claude and GPT models · Weekly limit",
+		"3p-5h/Claude and GPT models · 5-hour limit",
+	} {
+		if !found[want] {
+			t.Fatalf("missing flattened window %q", want)
+		}
 	}
 	if snap.Raw == nil {
 		t.Fatal("Raw payload not retained")
 	}
 }
 
-func TestFetchQuotaExhaustedWhenZeroBucketHasReset(t *testing.T) {
+func TestFetchQuotaWeeklyExhaustedMarksGroupExhausted(t *testing.T) {
 	serveQuota(t, func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`{
-			"buckets": [
-				{"tokenType":"WTUS","modelId":"chat_20706","remainingFraction":1},
-				{"resetTime":"2026-09-21T07:17:28Z","tokenType":"WTUS","modelId":"claude-opus-4-6-thinking","remainingFraction":0},
-				{"resetTime":"2026-09-18T07:17:28Z","tokenType":"WTUS","modelId":"gemini-3.8-flash-tiered","remainingFraction":1}
+			"groups": [
+				{"displayName":"Gemini Models","buckets":[
+					{"bucketId":"gemini-weekly","displayName":"Weekly Limit Remaining","window":"weekly","resetTime":"2026-09-29T09:12:52Z","remainingFraction":1},
+					{"bucketId":"gemini-5h","displayName":"Five Hour Limit Remaining","window":"5h","resetTime":"2026-09-22T14:12:52Z","remainingFraction":1}
+				]},
+				{"displayName":"Claude and GPT models","buckets":[
+					{"bucketId":"3p-weekly","displayName":"Weekly Limit Remaining","window":"weekly","resetTime":"2026-09-29T09:12:52Z","remainingFraction":0},
+					{"bucketId":"3p-5h","displayName":"Five Hour Limit Remaining","window":"5h","resetTime":"2026-09-22T14:12:52Z","remainingFraction":1}
+				]}
 			]
 		}`))
 	})
@@ -112,30 +138,31 @@ func TestFetchQuotaExhaustedWhenZeroBucketHasReset(t *testing.T) {
 	if snap.Status != quota.StatusExhausted {
 		t.Fatalf("status = %q, want exhausted", snap.Status)
 	}
-	if snap.Reason != "claude-opus-4-6-thinking" {
-		t.Fatalf("reason = %q, want binding model id", snap.Reason)
+	if !strings.Contains(snap.Reason, "Claude and GPT models") || !strings.Contains(snap.Reason, "Weekly") {
+		t.Fatalf("reason = %q, want exhausted group + window", snap.Reason)
 	}
-	var zero *quota.Window
+	// Zero weekly bucket must carry the reset so the UI can count down.
+	var weekly *quota.Window
 	for i := range snap.Windows {
-		if snap.Windows[i].Name == "claude-opus-4-6-thinking" {
-			zero = &snap.Windows[i]
+		if snap.Windows[i].WindowMinutes == 10080 && snap.Windows[i].Name == "3p-weekly" {
+			weekly = &snap.Windows[i]
 		}
 	}
-	if zero == nil || zero.UsedPercent != 100 {
-		t.Fatalf("exhausted window = %+v", zero)
+	if weekly == nil || weekly.UsedPercent != 100 {
+		t.Fatalf("exhausted weekly window = %+v", weekly)
 	}
-	if want := time.Date(2026, 9, 21, 7, 17, 28, 0, time.UTC); !zero.ResetAt.Equal(want) {
-		t.Fatalf("reset = %v, want %v", zero.ResetAt, want)
+	if want := time.Date(2026, 9, 29, 9, 12, 52, 0, time.UTC); !weekly.ResetAt.Equal(want) {
+		t.Fatalf("reset = %v, want %v", weekly.ResetAt, want)
 	}
 }
 
 func TestFetchQuotaZeroBucketWithoutResetIsUnavailable(t *testing.T) {
 	serveQuota(t, func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`{
-			"buckets": [
-				{"tokenType":"WTUS","modelId":"chat_20706","remainingFraction":1},
-				{"tokenType":"WTUS","modelId":"claude-opus-4-6-thinking","remainingFraction":0}
-			]
+			"groups": [{"displayName":"Gemini Models","buckets":[
+				{"bucketId":"gemini-weekly","displayName":"Weekly Limit Remaining","window":"weekly","remainingFraction":0},
+				{"bucketId":"gemini-5h","displayName":"Five Hour Limit Remaining","window":"5h","remainingFraction":1}
+			]}]
 		}`))
 	})
 
@@ -174,21 +201,21 @@ func TestFetchQuotaUnauthorizedIsUnavailable(t *testing.T) {
 	}
 }
 
-func TestFetchQuotaEmptyBucketsIsUnavailable(t *testing.T) {
+func TestFetchQuotaEmptyGroupsIsUnavailable(t *testing.T) {
 	serveQuota(t, func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write([]byte(`{"buckets":[]}`))
+		_, _ = w.Write([]byte(`{"groups":[]}`))
 	})
 
 	p := New(provider.Config{Name: "agy"}, staticStore{antigravityQuotaAccount()})
 	snap, err := p.(*Provider).FetchQuota(context.Background(), antigravityQuotaAccount())
 	if err == nil {
-		t.Fatal("expected error for empty buckets")
+		t.Fatal("expected error for empty groups")
 	}
 	if snap.Status != quota.StatusUnavailable {
 		t.Fatalf("status = %q, want unavailable", snap.Status)
 	}
-	if !strings.Contains(snap.Reason, "no quota buckets") {
-		t.Fatalf("reason = %q, want no quota buckets", snap.Reason)
+	if !strings.Contains(snap.Reason, "no quota groups") {
+		t.Fatalf("reason = %q, want no quota groups", snap.Reason)
 	}
 }
 
@@ -201,7 +228,7 @@ func TestFetchQuotaSendsAuthAndProject(t *testing.T) {
 		gotCT = r.Header.Get("Content-Type")
 		b, _ := io.ReadAll(r.Body)
 		gotBody = string(b)
-		_, _ = w.Write([]byte(`{"buckets":[{"tokenType":"WTUS","modelId":"chat_20706","remainingFraction":1}]}`))
+		_, _ = w.Write([]byte(`{"groups":[{"displayName":"Gemini Models","buckets":[{"bucketId":"gemini-5h","displayName":"Five Hour Limit Remaining","window":"5h","remainingFraction":1}]}]}`))
 	})
 
 	p := New(provider.Config{Name: "agy"}, staticStore{antigravityQuotaAccount()})
@@ -231,7 +258,7 @@ func TestFetchQuotaOmitsEmptyProject(t *testing.T) {
 	serveQuota(t, func(w http.ResponseWriter, r *http.Request) {
 		b, _ := io.ReadAll(r.Body)
 		gotBody = string(b)
-		_, _ = w.Write([]byte(`{"buckets":[{"tokenType":"WTUS","modelId":"chat_20706","remainingFraction":1}]}`))
+		_, _ = w.Write([]byte(`{"groups":[{"displayName":"Gemini Models","buckets":[{"bucketId":"gemini-5h","displayName":"Five Hour Limit Remaining","window":"5h","remainingFraction":1}]}]}`))
 	})
 
 	account := antigravityQuotaAccount()
@@ -252,64 +279,12 @@ func TestProviderImplementsQuotaFetcher(t *testing.T) {
 	}
 }
 
-func TestFetchQuotaReal27BucketPayloadShape(t *testing.T) {
-	// 27-bucket fixture mirroring upstream shape: 24 active, 3 exhausted with reset targets.
-	serveQuota(t, func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write([]byte(`{
-			"buckets": [
-				{"tokenType":"WTUS","modelId":"chat_20706","remainingFraction":1},
-				{"tokenType":"WTUS","modelId":"gemini-1.5-pro","remainingFraction":1},
-				{"tokenType":"WTUS","modelId":"gemini-1.5-flash","remainingFraction":1},
-				{"tokenType":"WTUS","modelId":"gemini-2.0-flash","remainingFraction":0.9,"resetTime":"2026-09-18T12:00:00Z"},
-				{"tokenType":"WTUS","modelId":"gemini-2.0-pro","remainingFraction":1},
-				{"tokenType":"WTUS","modelId":"gemini-3.7-flash","remainingFraction":0.75,"resetTime":"2026-09-18T10:00:00Z"},
-				{"tokenType":"WTUS","modelId":"gemini-3.7-pro","remainingFraction":0.5,"resetTime":"2026-09-18T08:00:00Z"},
-				{"tokenType":"WTUS","modelId":"gemini-3.8-flash-tiered","remainingFraction":1},
-				{"tokenType":"WTUS","modelId":"claude-3-5-sonnet","remainingFraction":1},
-				{"tokenType":"WTUS","modelId":"claude-3-5-haiku","remainingFraction":1},
-				{"tokenType":"WTUS","modelId":"claude-3-opus","remainingFraction":1},
-				{"tokenType":"WTUS","modelId":"claude-opus-4-6-thinking","remainingFraction":0,"resetTime":"2026-09-21T07:17:28Z"},
-				{"tokenType":"WTUS","modelId":"claude-sonnet-4-6","remainingFraction":0,"resetTime":"2026-09-21T07:17:28Z"},
-				{"tokenType":"WTUS","modelId":"gpt-oss-120b-medium","remainingFraction":0,"resetTime":"2026-09-21T07:17:28Z"},
-				{"tokenType":"WTUS","modelId":"gpt-4o","remainingFraction":1},
-				{"tokenType":"WTUS","modelId":"gpt-4o-mini","remainingFraction":1},
-				{"tokenType":"WTUS","modelId":"code-bison","remainingFraction":1},
-				{"tokenType":"WTUS","modelId":"code-gecko","remainingFraction":1},
-				{"tokenType":"WTUS","modelId":"text-bison","remainingFraction":1},
-				{"tokenType":"WTUS","modelId":"chat-bison","remainingFraction":1},
-				{"tokenType":"WTUS","modelId":"tab-completion-default","remainingFraction":1},
-				{"tokenType":"WTUS","modelId":"tab-completion-smart","remainingFraction":1},
-				{"tokenType":"WTUS","modelId":"agent-gemini-pro","remainingFraction":1},
-				{"tokenType":"WTUS","modelId":"agent-claude-sonnet","remainingFraction":1},
-				{"tokenType":"WTUS","modelId":"reviewer-model","remainingFraction":1},
-				{"tokenType":"WTUS","modelId":"embed-gecko","remainingFraction":1},
-				{"tokenType":"WTUS","modelId":"embed-multilingual","remainingFraction":1}
-			]
-		}`))
-	})
-
-	p := New(provider.Config{Name: "agy"}, staticStore{antigravityQuotaAccount()})
-	snap, err := p.(*Provider).FetchQuota(context.Background(), antigravityQuotaAccount())
-	if err != nil {
-		t.Fatalf("FetchQuota: %v", err)
-	}
-	if snap.Status != quota.StatusExhausted {
-		t.Fatalf("status = %q, want exhausted", snap.Status)
-	}
-	if len(snap.Windows) != 27 {
-		t.Fatalf("windows count = %d, want 27", len(snap.Windows))
-	}
-	if snap.Reason != "claude-opus-4-6-thinking" {
-		t.Fatalf("reason = %q, want first exhausted model id", snap.Reason)
-	}
-}
-
 func TestFetchQuotaMissingRemainingFractionIsUnavailable(t *testing.T) {
 	serveQuota(t, func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`{
-			"buckets": [
-				{"tokenType":"WTUS","modelId":"chat_20706"}
-			]
+			"groups": [{"displayName":"Gemini Models","buckets":[
+				{"bucketId":"gemini-5h","displayName":"Five Hour Limit Remaining","window":"5h"}
+			]}]
 		}`))
 	})
 

@@ -391,23 +391,36 @@ func TestKeysRendersUseInPlaygroundAction(t *testing.T) {
 
 // A template execution error truncates the providers partial mid-render: the
 // HTTP status is already 200, so the page silently loses every account after
-// the failure. Guard the whole partial, including the quota bars and detail
-// modals, so a bad template fails the build rather than production.
-func TestProvidersPartialRendersQuotaAccountsCompletely(t *testing.T) {
+// the failure. Guard the whole partial, including the grouped quota bars and
+// detail modals, so a bad template fails the build rather than production.
+func TestProvidersPartialRendersGroupedAntigravityQuota(t *testing.T) {
+	weeklyReset := time.Now().Add(17*time.Hour + 43*time.Minute)
+	fiveHourReset := time.Now().Add(4 * time.Hour)
 	cache := quota.NewCache()
 	cache.Put(quota.AccountSnapshot{
 		Provider:   "agy",
 		Identity:   "sub-1:user@example.com",
 		Email:      "user@example.com",
 		Status:     quota.StatusExhausted,
-		Reason:     "claude-opus-4-6-thinking",
+		Reason:     "Claude and GPT models · Weekly limit",
 		ObservedAt: time.Now().Add(-90 * time.Minute),
-		Windows: []quota.Window{
-			{Name: "claude-opus-4-6-thinking", UsedPercent: 100, ResetAt: time.Now().Add(48 * time.Hour)},
-			{Name: "gemini-3.8-flash-tiered", UsedPercent: 12.5},
-			{Name: "gemini-3.7-flash", UsedPercent: 64},
-			{Name: "gemini-3.6-pro", UsedPercent: 2},
-			{Name: "gemini-3.5-flash", UsedPercent: 40},
+		Groups: []quota.Group{
+			{
+				Name:        "Gemini Models",
+				Description: "Models within this group: Gemini Flash, Gemini Pro",
+				Windows: []quota.Window{
+					{Name: "Gemini Models", UsedPercent: 14.36, WindowMinutes: 10080, ResetAt: weeklyReset},
+					{Name: "Gemini Models", UsedPercent: 0, WindowMinutes: 300, ResetAt: fiveHourReset},
+				},
+			},
+			{
+				Name:        "Claude and GPT models",
+				Description: "Models within this group: Claude Opus, Claude Sonnet, GPT-OSS",
+				Windows: []quota.Window{
+					{Name: "Claude and GPT models", UsedPercent: 100, WindowMinutes: 10080, ResetAt: weeklyReset},
+					{Name: "Claude and GPT models", UsedPercent: 25, WindowMinutes: 300, ResetAt: fiveHourReset},
+				},
+			},
 		},
 	})
 	disabled := false
@@ -429,14 +442,29 @@ func TestProvidersPartialRendersQuotaAccountsCompletely(t *testing.T) {
 	for _, want := range []string{
 		">Exhausted<",
 		`class="modal"`,
-		"claude-opus-4-6-thinking",
-		"12.5%", // a fractional remaining percent must not abort rendering
+		"Gemini Models",
+		"Claude and GPT models",
+		"Models within this group: Gemini Flash, Gemini Pro",
+		// Inline bars use the short label; the group name is in the aria-label.
+		`aria-label="Gemini Models · Weekly limit remaining quota"`,
+		`aria-label="Gemini Models · 5-hour limit remaining quota"`,
+		`aria-label="Claude and GPT models · Weekly limit remaining quota"`,
+		`aria-label="Claude and GPT models · 5-hour limit remaining quota"`,
+		"85.6%", // a fractional remaining percent must not abort rendering
+		"75%",
 		`class="progress progress-error`,
-		"+2 more models",
 		"Observed 1h ago",
+		"Refreshes",
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("providers partial missing %q (render truncated?)", want)
+		}
+	}
+	// The hidden weekly limit is now reported, so the old "not reported by
+	// Antigravity" disclaimer must be gone.
+	for _, gone := range []string{"Weekly limit is not reported", "quota shown per model"} {
+		if strings.Contains(body, gone) {
+			t.Fatalf("providers partial still claims %q", gone)
 		}
 	}
 	if strings.Contains(body, "{{") {
@@ -444,22 +472,24 @@ func TestProvidersPartialRendersQuotaAccountsCompletely(t *testing.T) {
 	}
 }
 
-// The inline card shows the most-constrained windows and hides the rest behind
-// the modal, so an account with many model buckets stays readable. Windows must
-// also be ordered lowest-remaining-first: the whole point is surfacing the
-// binding constraint without opening anything.
-func TestProvidersPartialShowsTopThreeWindowsLowestRemainingFirst(t *testing.T) {
+// A grouped snapshot renders both groups inline and in the modal, and the group
+// order follows upstream rather than being sorted away.
+func TestProvidersPartialGroupedQuotaKeepsBothGroups(t *testing.T) {
 	cache := quota.NewCache()
 	cache.Put(quota.AccountSnapshot{
 		Provider:   "agy",
 		Identity:   "sub-1:user@example.com",
 		Status:     quota.StatusAvailable,
 		ObservedAt: time.Now(),
-		Windows: []quota.Window{
-			{Name: "healthy", UsedPercent: 20},
-			{Name: "drained", UsedPercent: 100, ResetAt: time.Now().Add(time.Hour)},
-			{Name: "warning", UsedPercent: 85},
-			{Name: "hidden", UsedPercent: 5},
+		Groups: []quota.Group{
+			{Name: "Gemini Models", Windows: []quota.Window{
+				{Name: "Gemini Models", UsedPercent: 10, WindowMinutes: 10080},
+				{Name: "Gemini Models", UsedPercent: 20, WindowMinutes: 300},
+			}},
+			{Name: "Claude and GPT models", Windows: []quota.Window{
+				{Name: "Claude and GPT models", UsedPercent: 30, WindowMinutes: 10080},
+				{Name: "Claude and GPT models", UsedPercent: 40, WindowMinutes: 300},
+			}},
 		},
 	})
 	disabled := false
@@ -472,30 +502,18 @@ func TestProvidersPartialShowsTopThreeWindowsLowestRemainingFirst(t *testing.T) 
 	}}
 	h := NewHandlerWithQuota(func() *config.Config { return cfg }, vault.NewMemoryStore(v), nil, cache)
 	rr := httptest.NewRecorder()
-
 	h.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/providers", nil))
 	body := rr.Body.String()
 
-	if n := strings.Count(body, `class="progress `); n != 7 {
-		t.Fatalf("progress bar count = %d, want 7 (3 inline + 4 in the modal)", n)
+	if n := strings.Count(body, `class="progress `); n != 8 {
+		t.Fatalf("progress bar count = %d, want 8 (4 inline + 4 in the modal)", n)
 	}
-	// The overflow affordance is what tells the operator that more model
-	// buckets exist than the card shows.
-	if !strings.Contains(body, "+1 more models") {
-		t.Fatalf("card missing overflow affordance")
-	}
-	start := strings.Index(body, "flex flex-col gap-1.5 pt-0.5")
-	if start < 0 {
-		t.Fatal("inline bar list missing")
-	}
-	bars := body[start:]
-	bars = bars[:strings.Index(bars, "<dialog")]
-	if !(strings.Index(bars, ">drained<") < strings.Index(bars, ">warning<") &&
-		strings.Index(bars, ">warning<") < strings.Index(bars, ">healthy<")) {
-		t.Fatalf("inline bars not ordered lowest-remaining-first: %s", bars)
-	}
-	if strings.Contains(bars, ">hidden<") {
-		t.Fatalf("inline card must truncate to three windows: %s", bars)
+	inline := body[strings.Index(body, "flex flex-col gap-2.5 pt-0.5"):]
+	inline = inline[:strings.Index(inline, "<dialog")]
+	gemini := strings.Index(inline, "Gemini Models")
+	claude := strings.Index(inline, "Claude and GPT models")
+	if gemini < 0 || claude < 0 || gemini > claude {
+		t.Fatalf("inline groups out of upstream order: %s", inline)
 	}
 }
 

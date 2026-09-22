@@ -29,7 +29,7 @@ providers:
   - name: agy
     type: antigravity
     # disabled: true  # skip this provider in routing and /v1/models
-    base_url: https://cloudcode-pa.googleapis.com
+    base_url: https://daily-cloudcode-pa.googleapis.com
     # timeout: 20s  # per-provider override of server.timeout (default: server.timeout)
     # stream_timeout: 10m  # per-provider override of server.stream_timeout; 0 disables the bound
     # max_concurrency: 4  # cap in-flight requests per provider; excess requests fail fast with 429 and combo failover

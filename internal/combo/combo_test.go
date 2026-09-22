@@ -4,10 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/ac-kurniawan/omnigo/internal/provider"
 )
 
 func TestPriorityFallsBackOnFailure(t *testing.T) {
@@ -408,6 +411,46 @@ type mockClientError struct {
 
 func (e mockClientError) Error() string   { return fmt.Sprintf("upstream status %d", e.status) }
 func (e mockClientError) HTTPStatus() int { return e.status }
+
+type mockUpstreamRateLimit struct{ mockClientError }
+
+func (mockUpstreamRateLimit) RetryAfter() time.Duration { return time.Minute }
+
+func TestUpstreamRateLimitIsNotGatewayBackpressure(t *testing.T) {
+	err := mockUpstreamRateLimit{mockClientError{status: http.StatusTooManyRequests}}
+	if isBackpressure(err) {
+		t.Fatal("upstream 429 with Retry-After classified as gateway backpressure")
+	}
+}
+
+func TestReliableAllUpstreamRateLimitedPreserves429(t *testing.T) {
+	c := Combo{Name: "rate-limited", Strategy: "reliable", Targets: []Target{{Provider: "a", Model: "m1"}, {Provider: "b", Model: "m2"}}}
+	_, err := c.Run(context.Background(), func(context.Context, Target) error {
+		return mockUpstreamRateLimit{mockClientError{status: http.StatusTooManyRequests}}
+	})
+	var status interface{ HTTPStatus() int }
+	if !errors.As(err, &status) || status.HTTPStatus() != http.StatusTooManyRequests {
+		t.Fatalf("error = %v, want preserved upstream 429", err)
+	}
+	var retry interface{ RetryAfter() time.Duration }
+	if !errors.As(err, &retry) || retry.RetryAfter() != time.Minute {
+		t.Fatalf("error = %v, want preserved Retry-After", err)
+	}
+}
+
+func TestReliableMixed429FailuresPreserves429(t *testing.T) {
+	c := Combo{Name: "rate-limited", Strategy: "reliable", Targets: []Target{{Provider: "a", Model: "m1"}, {Provider: "b", Model: "m2"}}}
+	_, err := c.Run(context.Background(), func(_ context.Context, target Target) error {
+		if target.Provider == "a" {
+			return &provider.ProviderBusyError{Limit: 1}
+		}
+		return mockUpstreamRateLimit{mockClientError{status: http.StatusTooManyRequests}}
+	})
+	var status interface{ HTTPStatus() int }
+	if !errors.As(err, &status) || status.HTTPStatus() != http.StatusTooManyRequests {
+		t.Fatalf("error = %v, want preserved 429", err)
+	}
+}
 
 func TestRunDoesNotDrainOnClientError(t *testing.T) {
 	tr := NewTracker("")

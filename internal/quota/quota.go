@@ -27,14 +27,24 @@ const (
 )
 
 // Window is one provider quota window. Codex reports "primary" (5h) and
-// "secondary" (7d); Antigravity reports one window per model bucket, so Name
-// carries the model id there.
+// "secondary" (7d). Antigravity reports named weekly and five-hour windows per
+// model group, so Name carries the group there.
 type Window struct {
 	Name          string        `json:"name"`
+	Display       string        `json:"display,omitempty"`
 	UsedPercent   float64       `json:"used_percent"`
 	WindowMinutes int           `json:"window_minutes,omitempty"`
 	ResetAt       time.Time     `json:"reset_at,omitempty"`
 	ResetAfter    time.Duration `json:"reset_after,omitempty"`
+}
+
+// Group is a provider-reported cluster of models sharing one set of quota
+// windows. Antigravity's weekly and five-hour limits are per group, so a
+// model's remaining quota is its group's remaining quota.
+type Group struct {
+	Name        string   `json:"name"`
+	Description string   `json:"description,omitempty"`
+	Windows     []Window `json:"windows,omitempty"`
 }
 
 // Window length constants for the labels below. Codex's two windows are a
@@ -44,16 +54,21 @@ const (
 	weeklyMinutes   = 10080
 )
 
-// Label is the operator-facing name for a window. Codex upstream calls its
-// windows "primary" and "secondary", which says nothing about what they bound;
-// the length does, so those two render as "5-hour limit" and "Weekly limit". A
-// provider reporting one bucket per model (Antigravity) keeps the model id, and
-// an unrecognized length falls back to the raw upstream name.
+// Label is the operator-facing name for a window. Codex's generic primary and
+// secondary names become "5-hour limit" and "Weekly limit". A named provider
+// window — an Antigravity model group — keeps its group name alongside the
+// length, so the two groups stay distinguishable.
 func (w Window) Label() string {
 	switch w.WindowMinutes {
 	case fiveHourMinutes:
+		if name := windowName(w); name != "window" && name != "primary" {
+			return name + " · 5-hour limit"
+		}
 		return "5-hour limit"
 	case weeklyMinutes:
+		if name := windowName(w); name != "window" && name != "secondary" {
+			return name + " · Weekly limit"
+		}
 		return "Weekly limit"
 	default:
 		return windowName(w)
@@ -90,6 +105,7 @@ type AccountSnapshot struct {
 	ObservedAt time.Time `json:"observed_at"`
 	Windows    []Window  `json:"windows,omitempty"`
 	Raw        any       `json:"raw,omitempty"`
+	Groups     []Group   `json:"groups,omitempty"`
 }
 
 // SortedWindows returns the snapshot's windows ordered most-constrained-first
@@ -178,7 +194,7 @@ func (s AccountSnapshot) exhaustedDetail(now time.Time) string {
 	} else {
 		for _, w := range s.Windows {
 			if w.UsedPercent >= 100 {
-				name = windowName(w)
+				name = w.Label()
 				break
 			}
 		}
@@ -187,7 +203,7 @@ func (s AccountSnapshot) exhaustedDetail(now time.Time) string {
 		return ""
 	}
 	for _, w := range s.Windows {
-		if windowName(w) != name {
+		if windowName(w) != name && w.Label() != name && w.Name != name {
 			continue
 		}
 		label := w.Label()
@@ -200,6 +216,9 @@ func (s AccountSnapshot) exhaustedDetail(now time.Time) string {
 }
 
 func windowName(w Window) string {
+	if w.Display != "" {
+		return w.Display
+	}
 	if w.Name == "" {
 		return "window"
 	}
