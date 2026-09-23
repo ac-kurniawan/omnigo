@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"strings"
 
 	"github.com/ac-kurniawan/omnigo/internal/config"
 	"github.com/ac-kurniawan/omnigo/internal/vault"
@@ -189,6 +190,98 @@ func (s *Server) toggleProvider(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.renderProviders(w)
+}
+
+// updateProviderTimeouts replaces one provider's request and stream timeout
+// overrides. Empty values clear the override so the provider inherits the
+// server default. An invalid duration is rejected and the previous values are
+// restored, matching the combo edit path.
+func (s *Server) updateProviderTimeouts(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	timeout := strings.TrimSpace(r.FormValue("timeout"))
+	streamTimeout := strings.TrimSpace(r.FormValue("stream_timeout"))
+
+	if s.mutate != nil {
+		err := s.mutate(func(c *config.Config) error {
+			var prev config.Provider
+			found := false
+			for _, p := range c.Providers {
+				if p.Name == name {
+					prev = p
+					found = true
+					break
+				}
+			}
+			if err := config.SetProviderTimeouts(c, name, timeout, streamTimeout); err != nil {
+				return err
+			}
+			if err := c.Validate(); err != nil {
+				if found {
+					for i := range c.Providers {
+						if c.Providers[i].Name == name {
+							c.Providers[i] = prev
+							break
+						}
+					}
+				}
+				return err
+			}
+			return nil
+		})
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+	}
+
+	if r.Header.Get("HX-Request") != "true" {
+		http.Redirect(w, r, "/", http.StatusSeeOther)
+		return
+	}
+	s.renderProviders(w)
+}
+
+// updateServerTimeouts replaces the server-wide request and stream timeout
+// defaults. Empty values restore the built-in defaults (60s and 15m). "0" for
+// the stream timeout is accepted and means unbounded.
+func (s *Server) updateServerTimeouts(w http.ResponseWriter, r *http.Request) {
+	timeout := strings.TrimSpace(r.FormValue("timeout"))
+	streamTimeout := strings.TrimSpace(r.FormValue("stream_timeout"))
+
+	if s.mutate != nil {
+		err := s.mutate(func(c *config.Config) error {
+			prev := c.Server
+			if err := config.SetServerTimeouts(c, timeout, streamTimeout); err != nil {
+				return err
+			}
+			if err := c.Validate(); err != nil {
+				c.Server = prev
+				return err
+			}
+			return nil
+		})
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+	}
+
+	if r.Header.Get("HX-Request") != "true" {
+		http.Redirect(w, r, "/", http.StatusSeeOther)
+		return
+	}
+	s.renderSettings(w)
+}
+
+func (s *Server) getSettings(w http.ResponseWriter, r *http.Request) {
+	s.renderSettings(w)
+}
+
+func (s *Server) renderSettings(w http.ResponseWriter) {
+	data := viewData{Server: s.getCfg().Server}
+	if err := s.tmpl.ExecuteTemplate(w, "settings", data); err != nil {
+		log.Printf("dashboard: render settings: %v", err)
+	}
 }
 
 func (s *Server) getProviders(w http.ResponseWriter, r *http.Request) {

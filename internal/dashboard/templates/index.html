@@ -201,9 +201,9 @@
           <svg xmlns="http://www.w3.org/2000/svg" class="size-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 7a2 2 0 012 2m4 0a6 6 0 01-7.743 5.743L11 17H9v2H7v2H4a1 1 0 01-1-1v-2.586a1 1 0 01.293-.707l5.964-5.964A6 6 0 1121 9z" /></svg>
           Client Keys
         </button>
-        <button type="button" class="tab tab-nav-btn font-semibold text-sm px-6 py-2.5 h-auto rounded-xl transition-all gap-2 text-base-content/70 hover:text-base-content" onclick="showTab('quickstart', this)">
-          <svg xmlns="http://www.w3.org/2000/svg" class="size-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4" /></svg>
-          Playground &amp; Docs
+        <button type="button" class="tab tab-nav-btn font-semibold text-sm px-6 py-2.5 h-auto rounded-xl transition-all gap-2 text-base-content/70 hover:text-base-content" onclick="showTab('settings', this)">
+          <svg xmlns="http://www.w3.org/2000/svg" class="size-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.066 2.573c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.573 1.066c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.066-2.573c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" /><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" /></svg>
+          Settings
         </button>
       </div>
 
@@ -315,10 +315,17 @@
 
                   <!-- Hidden input holding ordered targets string -->
                   <input type="hidden" name="targets" id="combo-targets-hidden" required>
-                  <div class="flex items-center gap-2">
-                    <label class="text-xs font-semibold text-base-content/70 whitespace-nowrap" for="combo-timeout">Total timeout</label>
-                    <input type="text" name="timeout" id="combo-timeout" placeholder="e.g. 120s, blank = uncapped" class="input input-bordered input-xs font-mono text-xs rounded-lg w-48">
-                    <span class="text-[11px] text-base-content/40">shared across the whole chain, so one stalled target cannot use up the rest</span>
+                  <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div>
+                      <label class="label pb-1.5 pt-0 text-xs font-semibold text-base-content/70" for="combo-timeout">Total timeout</label>
+                      <input type="text" name="timeout" id="combo-timeout" placeholder="e.g. 120s, blank = uncapped" class="input input-bordered input-xs font-mono text-xs rounded-lg w-full">
+                      <span class="text-[11px] text-base-content/40">shared across the whole chain, so one stalled target cannot use up the rest</span>
+                    </div>
+                    <div>
+                      <label class="label pb-1.5 pt-0 text-xs font-semibold text-base-content/70" for="combo-drain-ttl">Drain cooldown</label>
+                      <input type="text" name="drain_ttl" id="combo-drain-ttl" placeholder="e.g. 60s, blank = 60s" class="input input-bordered input-xs font-mono text-xs rounded-lg w-full">
+                      <span class="text-[11px] text-base-content/40">how long a failed target stays skipped</span>
+                    </div>
                   </div>
 
                   <!-- Ordered Chain List Container -->
@@ -487,6 +494,19 @@
                     </div>
                     <div id="combo-edit-chain-items" class="space-y-1.5 hidden"></div>
                   </div>
+
+                  <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div>
+                      <label class="label pb-1.5 pt-0 text-xs font-semibold text-base-content/70" for="combo-edit-timeout">Total timeout</label>
+                      <input type="text" name="timeout" id="combo-edit-timeout" placeholder="e.g. 120s, blank = uncapped" class="input input-bordered input-xs font-mono text-xs rounded-lg w-full">
+                      <span class="text-[11px] text-base-content/40">shared across the whole chain</span>
+                    </div>
+                    <div>
+                      <label class="label pb-1.5 pt-0 text-xs font-semibold text-base-content/70" for="combo-edit-drain-ttl">Drain cooldown</label>
+                      <input type="text" name="drain_ttl" id="combo-edit-drain-ttl" placeholder="e.g. 60s, blank = 60s" class="input input-bordered input-xs font-mono text-xs rounded-lg w-full">
+                      <span class="text-[11px] text-base-content/40">how long a failed target stays skipped</span>
+                    </div>
+                  </div>
                 </div>
 
                 <div class="modal-action border-t border-base-content/10 pt-3 flex items-center justify-between">
@@ -534,6 +554,7 @@
 
       <!-- Panel 4: Quickstart & Docs -->
       <div id="panel-quickstart" class="tab-panel hidden space-y-6">
+
         <!-- Gateway Inspector & Playground Card -->
         <div class="card bg-base-100 border border-base-content/10 rounded-2xl shadow-sm p-6 space-y-6">
           <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-base-content/10 pb-4">
@@ -750,6 +771,11 @@
             </div>
           </div>
         </div>
+      </div>
+
+      <!-- Panel 5: Settings -->
+      <div id="panel-settings" class="tab-panel hidden space-y-6">
+        <div id="settings" hx-get="/settings" hx-trigger="load" hx-swap="innerHTML">{{template "settings" .}}</div>
       </div>
     </main>
   </div>
@@ -1055,12 +1081,16 @@
       return true;
     }
 
-    function openEditComboModal(name, strategy, targetsCsv) {
+    function openEditComboModal(name, strategy, targetsCsv, timeout, drainTTL) {
       editComboTargets = (targetsCsv || '').split(',').map(s => s.trim()).filter(Boolean);
       const badge = document.getElementById('combo-edit-name-badge');
       if (badge) badge.innerText = name;
       const strategySelect = document.getElementById('combo-edit-strategy');
       if (strategySelect) strategySelect.value = strategy;
+      const timeoutInput = document.getElementById('combo-edit-timeout');
+      if (timeoutInput) timeoutInput.value = timeout || '';
+      const drainInput = document.getElementById('combo-edit-drain-ttl');
+      if (drainInput) drainInput.value = drainTTL || '';
       const form = document.getElementById('combo-edit-form');
       if (form) {
         const action = '/combos/' + encodeURIComponent(name);
@@ -1560,179 +1590,179 @@
             </button>
           </div>
 
-          <!-- Models Modal -->
           <dialog id="models-modal-{{.Name}}" class="modal modal-bottom sm:modal-middle">
             {{template "models-modal-box" .}}
             <form method="dialog" class="modal-backdrop"><button>close</button></form>
           </dialog>
         </td>
+
         <td class="text-right py-3.5 px-4 whitespace-nowrap">
           <div class="flex items-center justify-end gap-2">
             <input type="checkbox" class="toggle toggle-xs toggle-success" {{if not .Disabled}}checked{{end}} hx-post="/providers/{{.Name}}/toggle" hx-target="#providers" hx-swap="innerHTML" title="{{if .Disabled}}Enable provider{{else}}Disable provider{{end}}">
-            {{if eq .Type "openai"}}
-              {{if $hasKey}}
-                <button type="button" class="btn btn-xs btn-outline btn-ghost border-base-content/20 hover:border-base-content/40 px-2.5 py-1 h-auto min-h-[1.75rem] rounded-lg gap-1 font-medium" onclick="document.getElementById('key-modal-{{.Name}}').showModal()" title="API Key Configured — Click to update">
-                  <svg xmlns="http://www.w3.org/2000/svg" class="size-3 text-success" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7" /></svg>
-                  Key
-                </button>
-              {{else}}
-                <button type="button" class="btn btn-xs btn-warning btn-outline px-2.5 py-1 h-auto min-h-[1.75rem] rounded-lg gap-1 font-medium animate-pulse hover:animate-none" onclick="document.getElementById('key-modal-{{.Name}}').showModal()" title="No API Key Configured — Click to set key">
-                  <svg xmlns="http://www.w3.org/2000/svg" class="size-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 7a2 2 0 012 2m4 0a6 6 0 01-7.743 5.743L11 17H9v2H7v2H4a1 1 0 01-1-1v-2.586a1 1 0 01.293-.707l5.964-5.964A6 6 0 1121 9z" /></svg>
-                  Set Key
-                </button>
+            <div class="dropdown dropdown-end">
+            <button type="button" tabindex="0" class="btn btn-ghost btn-xs btn-square" aria-label="Provider actions for {{.Name}}">
+              <svg xmlns="http://www.w3.org/2000/svg" class="size-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 5v.01M12 12v.01M12 19v.01M12 6a1 1 0 110-2 1 1 0 010 2zm0 7a1 1 0 110-2 1 1 0 010 2zm0 7a1 1 0 110-2 1 1 0 010 2z"/></svg>
+            </button>
+            <ul tabindex="0" class="dropdown-content menu menu-sm bg-base-100 rounded-box border border-base-content/10 shadow-lg z-10 w-44 p-1">
+              <li><button type="button" onclick="document.getElementById('edit-modal-{{.Name}}').showModal()">Edit</button></li>
+              {{if eq .Type "openai"}}
+                {{if $hasKey}}
+                  <li><button type="button" onclick="document.getElementById('key-modal-{{.Name}}').showModal()">Update Key</button></li>
+                {{else}}
+                  <li><button type="button" onclick="document.getElementById('key-modal-{{.Name}}').showModal()">Set Key</button></li>
+                {{end}}
               {{end}}
+              {{if eq .Type "antigravity"}}
+                <li><button type="button" onclick="document.getElementById('modal-{{.Name}}').showModal()">Connect Google</button></li>
+              {{end}}
+              {{if eq .Type "codex"}}
+                <li><button type="button" onclick="document.getElementById('modal-{{.Name}}').showModal()">Connect ChatGPT</button></li>
+              {{end}}
+              <li><button type="button" hx-post="/internal/test/{{.Name}}" hx-target="#result" hx-swap="innerHTML">Test</button></li>
+              <li><button type="button" hx-post="/internal/refresh-models/{{.Name}}" hx-target="#result" hx-swap="innerHTML" hx-on::after-request="htmx.ajax('GET', '/providers', {target:'#providers', swap:'innerHTML'})">Refresh Models</button></li>
+              <li><button type="button" class="text-error" hx-post="/providers/{{.Name}}/delete" hx-target="#providers" hx-swap="innerHTML" hx-confirm="Remove provider {{.Name}}?">Delete</button></li>
+            </ul>
+          </div>
+          </div>
 
-              <!-- OpenAI Key Modal -->
-              <dialog id="key-modal-{{.Name}}" class="modal modal-bottom sm:modal-middle">
-                <div class="modal-box max-w-md text-left border border-base-content/10 shadow-2xl p-6 rounded-2xl">
-                  <h3 class="text-base font-bold flex items-center gap-2 text-primary">
-                    <svg xmlns="http://www.w3.org/2000/svg" class="size-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 7a2 2 0 012 2m4 0a6 6 0 01-7.743 5.743L11 17H9v2H7v2H4a1 1 0 01-1-1v-2.586a1 1 0 01.293-.707l5.964-5.964A6 6 0 1121 9z" /></svg>
-                    Configure API Key &bull; {{.Name}}
-                  </h3>
-                  <p class="text-xs text-base-content/60 mt-1">Set the Bearer API key for this provider. Saved encrypted in auth.yaml.</p>
-                  {{$currKey := ""}}
-                  {{if and $sec $sec.APIKey}}{{$currKey = $sec.APIKey}}{{else if .APIKey}}{{$currKey = .APIKey}}{{end}}
-                  {{if $currKey}}
-                    <div class="mt-3 p-3 rounded-xl bg-base-200/80 border border-base-content/10 text-xs">
-                      <span class="text-base-content/60">Current Status:</span>
-                      <code class="font-mono ml-1 text-success font-semibold">Configured (len: {{len $currKey}})</code>
-                    </div>
-                  {{end}}
+          <dialog id="edit-modal-{{.Name}}" class="modal modal-bottom sm:modal-middle">
+            <div class="modal-box max-w-md text-left border border-base-content/10 shadow-2xl p-6 rounded-2xl">
+              <h3 class="text-base font-bold flex items-center gap-2">
+                <span>Edit Provider</span>
+                <span class="badge badge-primary font-mono badge-sm">{{.Name}}</span>
+              </h3>
+              <p class="text-xs text-base-content/60 mt-1">Override the server defaults for this provider. Blank restores the default.</p>
+              <form action="/providers/{{.Name}}/timeouts" method="POST" hx-post="/providers/{{.Name}}/timeouts" hx-target="#providers" hx-swap="innerHTML" onsubmit="document.getElementById('edit-modal-{{.Name}}').close()" class="space-y-4 my-4">
+                <div>
+                  <label class="label pb-1.5 pt-0 text-xs font-semibold text-base-content/70" for="provider-timeout-{{.Name}}">Request timeout</label>
+                  <input type="text" name="timeout" id="provider-timeout-{{.Name}}" value="{{.Timeout}}" placeholder="e.g. 60s, blank = server default" class="input input-bordered input-sm w-full font-mono text-xs px-3 py-2 h-auto min-h-[2.25rem] rounded-lg">
+                </div>
+                <div>
+                  <label class="label pb-1.5 pt-0 text-xs font-semibold text-base-content/70" for="provider-stream-timeout-{{.Name}}">Stream timeout</label>
+                  <input type="text" name="stream_timeout" id="provider-stream-timeout-{{.Name}}" value="{{.StreamTimeout}}" placeholder="e.g. 15m, 0 = unbounded, blank = server default" class="input input-bordered input-sm w-full font-mono text-xs px-3 py-2 h-auto min-h-[2.25rem] rounded-lg">
+                </div>
+                <div class="flex justify-end gap-2 pt-2 border-t border-base-content/10">
+                  <button type="button" class="btn btn-sm btn-ghost px-4 rounded-xl" onclick="document.getElementById('edit-modal-{{.Name}}').close()">Cancel</button>
+                  <button type="submit" class="btn btn-sm btn-primary px-5 rounded-xl font-medium shadow-sm">Save</button>
+                </div>
+              </form>
+            </div>
+            <form method="dialog" class="modal-backdrop"><button>close</button></form>
+          </dialog>
 
-                  <form action="/providers/{{.Name}}/key" method="POST" hx-post="/providers/{{.Name}}/key" hx-target="#providers" hx-swap="innerHTML" onsubmit="document.getElementById('key-modal-{{.Name}}').close()" class="space-y-4 my-4">
-                    <div>
-                      <label class="label pb-1.5 pt-0 text-xs font-semibold text-base-content/70">Bearer API Key</label>
-                      <input type="password" name="api_key" placeholder="Enter API key (e.g. sk-...)" class="input input-bordered input-sm w-full font-mono text-xs px-3.5 py-2.5 h-auto min-h-[2.5rem] rounded-xl" required>
-                    </div>
-                    <div class="flex justify-end gap-2 pt-2">
-                      <button type="button" class="btn btn-sm btn-ghost px-4 rounded-xl" onclick="document.getElementById('key-modal-{{.Name}}').close()">Cancel</button>
-                      <button type="submit" class="btn btn-sm btn-primary px-5 rounded-xl font-medium shadow-sm">Save Key</button>
-                    </div>
+          {{if eq .Type "openai"}}
+            <dialog id="key-modal-{{.Name}}" class="modal modal-bottom sm:modal-middle">
+              <div class="modal-box max-w-md text-left border border-base-content/10 shadow-2xl p-6 rounded-2xl">
+                <h3 class="text-base font-bold flex items-center gap-2 text-primary">
+                  <svg xmlns="http://www.w3.org/2000/svg" class="size-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 7a2 2 0 012 2m4 0a6 6 0 01-7.743 5.743L11 17H9v2H7v2H4a1 1 0 01-1-1v-2.586a1 1 0 01.293-.707l5.964-5.964A6 6 0 1121 9z" /></svg>
+                  Configure API Key &bull; {{.Name}}
+                </h3>
+                <p class="text-xs text-base-content/60 mt-1">Set the Bearer API key for this provider. Saved encrypted in auth.yaml.</p>
+                {{$currKey := ""}}
+                {{if and $sec $sec.APIKey}}{{$currKey = $sec.APIKey}}{{else if .APIKey}}{{$currKey = .APIKey}}{{end}}
+                {{if $currKey}}
+                  <div class="mt-3 p-3 rounded-xl bg-base-200/80 border border-base-content/10 text-xs">
+                    <span class="text-base-content/60">Current Status:</span>
+                    <code class="font-mono ml-1 text-success font-semibold">Configured (len: {{len $currKey}})</code>
+                  </div>
+                {{end}}
+                <form action="/providers/{{.Name}}/key" method="POST" hx-post="/providers/{{.Name}}/key" hx-target="#providers" hx-swap="innerHTML" onsubmit="document.getElementById('key-modal-{{.Name}}').close()" class="space-y-4 my-4">
+                  <div>
+                    <label class="label pb-1.5 pt-0 text-xs font-semibold text-base-content/70">Bearer API Key</label>
+                    <input type="password" name="api_key" placeholder="Enter API key (e.g. sk-...)" class="input input-bordered input-sm w-full font-mono text-xs px-3.5 py-2.5 h-auto min-h-[2.5rem] rounded-xl" required>
+                  </div>
+                  <div class="flex justify-end gap-2 pt-2">
+                    <button type="button" class="btn btn-sm btn-ghost px-4 rounded-xl" onclick="document.getElementById('key-modal-{{.Name}}').close()">Cancel</button>
+                    <button type="submit" class="btn btn-sm btn-primary px-5 rounded-xl font-medium shadow-sm">Save Key</button>
+                  </div>
+                </form>
+              </div>
+              <form method="dialog" class="modal-backdrop"><button>close</button></form>
+            </dialog>
+          {{end}}
+
+          {{if eq .Type "antigravity"}}
+            <dialog id="modal-{{.Name}}" class="modal modal-bottom sm:modal-middle">
+              <div class="modal-box max-w-xl text-left border border-base-content/10 shadow-2xl p-6 rounded-2xl">
+                <h3 class="text-lg font-bold flex items-center gap-2 text-primary">
+                  <svg xmlns="http://www.w3.org/2000/svg" class="size-5" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/></svg>
+                  Connect Google Antigravity
+                </h3>
+                <p class="text-xs text-base-content/70 mt-1">Authenticate Antigravity via Google SSO using the standard desktop loopback callback flow.</p>
+                <div class="space-y-4 my-5">
+                  <div class="bg-base-200/70 p-4 rounded-xl border border-base-content/10">
+                    <div class="text-xs font-bold text-base-content/80 uppercase tracking-wider mb-1">Step 1: Authorize Google Account</div>
+                    <p class="text-xs text-base-content/60 mb-3">Click below to open Google SSO in a new tab. Log in and approve access.</p>
+                    <a href="/oauth/login/{{.Name}}" target="_blank" class="btn btn-sm btn-outline btn-success gap-2 w-full justify-between rounded-xl px-4 py-2 h-auto min-h-[2.25rem]">
+                      <span>1. Open Google Sign-In (New Tab)</span>
+                      <svg xmlns="http://www.w3.org/2000/svg" class="size-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" /></svg>
+                    </a>
+                  </div>
+                  <div class="bg-base-200/70 p-4 rounded-xl border border-base-content/10">
+                    <div class="text-xs font-bold text-base-content/80 uppercase tracking-wider mb-1">Step 2: Paste Redirect Callback URL</div>
+                    <p class="text-xs text-base-content/60 mb-3">After approving, Google redirects your browser to <code class="text-primary text-xs px-1.5 py-0.5 bg-base-300/60 rounded">http://127.0.0.1:20128/callback?...</code> (even if your browser says "Unable to connect", that's normal!). Copy that full address from your browser's address bar and paste it below:</p>
+                    <form action="/oauth/{{.Name}}/paste-callback" method="POST" hx-post="/oauth/{{.Name}}/paste-callback" hx-target="#result" hx-swap="innerHTML" hx-on::after-request="document.getElementById('modal-{{.Name}}').close(); htmx.ajax('GET', '/providers', {target:'#providers', swap:'innerHTML'})" class="space-y-3">
+                      <textarea name="callback" rows="3" placeholder="http://127.0.0.1:20128/callback?state=...&code=4/0ATs..." class="textarea textarea-bordered textarea-sm w-full font-mono text-xs p-3 rounded-xl" required></textarea>
+                      <div class="flex justify-end gap-2">
+                        <button type="submit" class="btn btn-sm btn-primary px-5 h-auto min-h-[2.25rem] rounded-xl gap-1.5 shadow-sm font-medium">
+                          <svg xmlns="http://www.w3.org/2000/svg" class="size-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7" /></svg>
+                          Authenticate &amp; Link Account
+                        </button>
+                      </div>
+                    </form>
+                  </div>
+                </div>
+                <div class="modal-action border-t border-base-content/10 pt-3">
+                  <form method="dialog">
+                    <button class="btn btn-sm btn-ghost px-4 rounded-xl">Cancel</button>
                   </form>
                 </div>
-                <form method="dialog" class="modal-backdrop"><button>close</button></form>
-              </dialog>
-            {{end}}
+              </div>
+              <form method="dialog" class="modal-backdrop"><button>close</button></form>
+            </dialog>
+          {{end}}
 
-            {{if eq .Type "antigravity"}}
-              <button type="button" class="btn btn-xs btn-success text-white px-3 py-1 h-auto min-h-[1.75rem] rounded-lg gap-1.5 shadow-sm font-medium" onclick="document.getElementById('modal-{{.Name}}').showModal()">
-                <svg xmlns="http://www.w3.org/2000/svg" class="size-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1" /></svg>
-                Connect Google
-              </button>
-
-              <!-- Antigravity OAuth Modal -->
-              <dialog id="modal-{{.Name}}" class="modal modal-bottom sm:modal-middle">
-                <div class="modal-box max-w-xl text-left border border-base-content/10 shadow-2xl p-6 rounded-2xl">
-                  <h3 class="text-lg font-bold flex items-center gap-2 text-primary">
-                    <svg xmlns="http://www.w3.org/2000/svg" class="size-5" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/></svg>
-                    Connect Google Antigravity
-                  </h3>
-                  <p class="text-xs text-base-content/70 mt-1">Authenticate Antigravity via Google SSO using the standard desktop loopback callback flow.</p>
-
-                  <div class="space-y-4 my-5">
-                    <!-- Step 1 -->
-                    <div class="bg-base-200/70 p-4 rounded-xl border border-base-content/10">
-                      <div class="text-xs font-bold text-base-content/80 uppercase tracking-wider mb-1">Step 1: Authorize Google Account</div>
-                      <p class="text-xs text-base-content/60 mb-3">Click below to open Google SSO in a new tab. Log in and approve access.</p>
-                      <a href="/oauth/login/{{.Name}}" target="_blank" class="btn btn-sm btn-outline btn-success gap-2 w-full justify-between rounded-xl px-4 py-2 h-auto min-h-[2.25rem]">
-                        <span>1. Open Google Sign-In (New Tab)</span>
-                        <svg xmlns="http://www.w3.org/2000/svg" class="size-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" /></svg>
-                      </a>
-                    </div>
-
-                    <!-- Step 2 -->
-                    <div class="bg-base-200/70 p-4 rounded-xl border border-base-content/10">
-                      <div class="text-xs font-bold text-base-content/80 uppercase tracking-wider mb-1">Step 2: Paste Redirect Callback URL</div>
-                      <p class="text-xs text-base-content/60 mb-3">After approving, Google redirects your browser to <code class="text-primary text-xs px-1.5 py-0.5 bg-base-300/60 rounded">http://127.0.0.1:20128/callback?...</code> (even if your browser says "Unable to connect", that's normal!). Copy that full address from your browser's address bar and paste it below:</p>
-                      
-                      <form action="/oauth/{{.Name}}/paste-callback" method="POST" hx-post="/oauth/{{.Name}}/paste-callback" hx-target="#result" hx-swap="innerHTML" hx-on::after-request="document.getElementById('modal-{{.Name}}').close(); htmx.ajax('GET', '/providers', {target:'#providers', swap:'innerHTML'})" class="space-y-3">
-                        <textarea name="callback" rows="3" placeholder="http://127.0.0.1:20128/callback?state=...&code=4/0ATs..." class="textarea textarea-bordered textarea-sm w-full font-mono text-xs p-3 rounded-xl" required></textarea>
-                        <div class="flex justify-end gap-2">
-                          <button type="submit" class="btn btn-sm btn-primary px-5 h-auto min-h-[2.25rem] rounded-xl gap-1.5 shadow-sm font-medium">
-                            <svg xmlns="http://www.w3.org/2000/svg" class="size-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7" /></svg>
-                            Authenticate &amp; Link Account
-                          </button>
-                        </div>
-                      </form>
-                    </div>
+          {{if eq .Type "codex"}}
+            <dialog id="modal-{{.Name}}" class="modal modal-bottom sm:modal-middle">
+              <div class="modal-box max-w-xl text-left border border-base-content/10 shadow-2xl p-6 rounded-2xl">
+                <h3 class="text-lg font-bold flex items-center gap-2 text-primary">
+                  <svg xmlns="http://www.w3.org/2000/svg" class="size-5" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2a10 10 0 100 20 10 10 0 000-20zm0 4a6 6 0 110 12 6 6 0 010-12z"/></svg>
+                  Connect ChatGPT (Codex)
+                </h3>
+                <p class="text-xs text-base-content/70 mt-1">Authenticate with your ChatGPT account using the Codex PKCE login flow.</p>
+                <div class="space-y-4 my-5">
+                  <div class="bg-base-200/70 p-4 rounded-xl border border-base-content/10">
+                    <div class="text-xs font-bold text-base-content/80 uppercase tracking-wider mb-1">Step 1: Authorize ChatGPT Account</div>
+                    <p class="text-xs text-base-content/60 mb-3">Click below to open ChatGPT sign-in in a new tab. Log in and approve access.</p>
+                    <a href="/oauth/login/{{.Name}}" target="_blank" class="btn btn-sm btn-outline btn-success gap-2 w-full justify-between rounded-xl px-4 py-2 h-auto min-h-[2.25rem]">
+                      <span>1. Open ChatGPT Sign-In (New Tab)</span>
+                      <svg xmlns="http://www.w3.org/2000/svg" class="size-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" /></svg>
+                    </a>
                   </div>
-
-                  <div class="modal-action border-t border-base-content/10 pt-3">
-                    <form method="dialog">
-                      <button class="btn btn-sm btn-ghost px-4 rounded-xl">Cancel</button>
+                  <div class="bg-base-200/70 p-4 rounded-xl border border-base-content/10">
+                    <div class="text-xs font-bold text-base-content/80 uppercase tracking-wider mb-1">Step 2: Paste Redirect Callback URL</div>
+                    <p class="text-xs text-base-content/60 mb-3">After approving, ChatGPT redirects your browser to <code class="text-primary text-xs px-1.5 py-0.5 bg-base-300/60 rounded">http://localhost:1455/auth/callback?...</code> (even if your browser says "Unable to connect", that's normal!). Copy that full address from your browser's address bar and paste it below:</p>
+                    <form action="/oauth/{{.Name}}/paste-callback" method="POST" hx-post="/oauth/{{.Name}}/paste-callback" hx-target="#result" hx-swap="innerHTML" hx-on::after-request="document.getElementById('modal-{{.Name}}').close(); htmx.ajax('GET', '/providers', {target:'#providers', swap:'innerHTML'})" class="space-y-3">
+                      <textarea name="callback" rows="3" placeholder="http://localhost:1455/auth/callback?code=...&state=..." class="textarea textarea-bordered textarea-sm w-full font-mono text-xs p-3 rounded-xl" required></textarea>
+                      <div class="flex justify-end gap-2">
+                        <button type="submit" class="btn btn-sm btn-primary px-5 h-auto min-h-[2.25rem] rounded-xl gap-1.5 shadow-sm font-medium">
+                          <svg xmlns="http://www.w3.org/2000/svg" class="size-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7" /></svg>
+                          Authenticate &amp; Link Account
+                        </button>
+                      </div>
                     </form>
                   </div>
                 </div>
-                <form method="dialog" class="modal-backdrop"><button>close</button></form>
-              </dialog>
-            {{end}}
-
-            {{if eq .Type "codex"}}
-              <button type="button" class="btn btn-xs btn-success text-white px-3 py-1 h-auto min-h-[1.75rem] rounded-lg gap-1.5 shadow-sm font-medium" onclick="document.getElementById('modal-{{.Name}}').showModal()">
-                <svg xmlns="http://www.w3.org/2000/svg" class="size-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1" /></svg>
-                Connect ChatGPT
-              </button>
-
-              <!-- Codex OAuth Modal -->
-              <dialog id="modal-{{.Name}}" class="modal modal-bottom sm:modal-middle">
-                <div class="modal-box max-w-xl text-left border border-base-content/10 shadow-2xl p-6 rounded-2xl">
-                  <h3 class="text-lg font-bold flex items-center gap-2 text-primary">
-                    <svg xmlns="http://www.w3.org/2000/svg" class="size-5" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2a10 10 0 100 20 10 10 0 000-20zm0 4a6 6 0 110 12 6 6 0 010-12z"/></svg>
-                    Connect ChatGPT (Codex)
-                  </h3>
-                  <p class="text-xs text-base-content/70 mt-1">Authenticate with your ChatGPT account using the Codex PKCE login flow.</p>
-
-                  <div class="space-y-4 my-5">
-                    <!-- Step 1 -->
-                    <div class="bg-base-200/70 p-4 rounded-xl border border-base-content/10">
-                      <div class="text-xs font-bold text-base-content/80 uppercase tracking-wider mb-1">Step 1: Authorize ChatGPT Account</div>
-                      <p class="text-xs text-base-content/60 mb-3">Click below to open ChatGPT sign-in in a new tab. Log in and approve access.</p>
-                      <a href="/oauth/login/{{.Name}}" target="_blank" class="btn btn-sm btn-outline btn-success gap-2 w-full justify-between rounded-xl px-4 py-2 h-auto min-h-[2.25rem]">
-                        <span>1. Open ChatGPT Sign-In (New Tab)</span>
-                        <svg xmlns="http://www.w3.org/2000/svg" class="size-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" /></svg>
-                      </a>
-                    </div>
-
-                    <!-- Step 2 -->
-                    <div class="bg-base-200/70 p-4 rounded-xl border border-base-content/10">
-                      <div class="text-xs font-bold text-base-content/80 uppercase tracking-wider mb-1">Step 2: Paste Redirect Callback URL</div>
-                      <p class="text-xs text-base-content/60 mb-3">After approving, ChatGPT redirects your browser to <code class="text-primary text-xs px-1.5 py-0.5 bg-base-300/60 rounded">http://localhost:1455/auth/callback?...</code> (even if your browser says "Unable to connect", that's normal!). Copy that full address from your browser's address bar and paste it below:</p>
-
-                      <form action="/oauth/{{.Name}}/paste-callback" method="POST" hx-post="/oauth/{{.Name}}/paste-callback" hx-target="#result" hx-swap="innerHTML" hx-on::after-request="document.getElementById('modal-{{.Name}}').close(); htmx.ajax('GET', '/providers', {target:'#providers', swap:'innerHTML'})" class="space-y-3">
-                        <textarea name="callback" rows="3" placeholder="http://localhost:1455/auth/callback?code=...&state=..." class="textarea textarea-bordered textarea-sm w-full font-mono text-xs p-3 rounded-xl" required></textarea>
-                        <div class="flex justify-end gap-2">
-                          <button type="submit" class="btn btn-sm btn-primary px-5 h-auto min-h-[2.25rem] rounded-xl gap-1.5 shadow-sm font-medium">
-                            <svg xmlns="http://www.w3.org/2000/svg" class="size-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7" /></svg>
-                            Authenticate &amp; Link Account
-                          </button>
-                        </div>
-                      </form>
-                    </div>
-                  </div>
-
-                  <div class="modal-action border-t border-base-content/10 pt-3">
-                    <form method="dialog">
-                      <button class="btn btn-sm btn-ghost px-4 rounded-xl">Cancel</button>
-                    </form>
-                  </div>
+                <div class="modal-action border-t border-base-content/10 pt-3">
+                  <form method="dialog">
+                    <button class="btn btn-sm btn-ghost px-4 rounded-xl">Cancel</button>
+                  </form>
                 </div>
-                <form method="dialog" class="modal-backdrop"><button>close</button></form>
-              </dialog>
-            {{end}}
+              </div>
+              <form method="dialog" class="modal-backdrop"><button>close</button></form>
+            </dialog>
+          {{end}}
 
-            <button hx-post="/internal/test/{{.Name}}" hx-target="#result" hx-swap="innerHTML" class="btn btn-xs btn-outline btn-info px-2.5 py-1 h-auto min-h-[1.75rem] rounded-lg gap-1 font-medium" title="Test Connection">
-              <svg xmlns="http://www.w3.org/2000/svg" class="size-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z" /></svg>
-              Test
-            </button>
-            <button hx-post="/internal/refresh-models/{{.Name}}" hx-target="#result" hx-swap="innerHTML" hx-on::after-request="htmx.ajax('GET', '/providers', {target:'#providers', swap:'innerHTML'})" class="btn btn-xs btn-outline btn-warning px-2.5 py-1 h-auto min-h-[1.75rem] rounded-lg gap-1 font-medium" title="Sync live model catalog">
-              <svg xmlns="http://www.w3.org/2000/svg" class="size-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" /></svg>
-              Refresh
-            </button>
-            <button hx-post="/providers/{{.Name}}/delete" hx-target="#providers" hx-swap="innerHTML" hx-confirm="Remove provider {{.Name}}?" class="btn btn-xs btn-outline btn-error px-2.5 py-1 h-auto min-h-[1.75rem] rounded-lg gap-1 font-medium" title="Delete Provider">
-              <svg xmlns="http://www.w3.org/2000/svg" class="size-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>
-              Delete
-            </button>
-          </div>
         </td>
       </tr>
       {{if or (eq .Type "antigravity") (eq .Type "codex")}}
@@ -1930,13 +1960,14 @@
         <th class="py-3 px-4">Combo Name</th>
         <th class="py-3 px-4">Routing Strategy</th>
         <th class="py-3 px-4">Routing Target Chain</th>
+        <th class="py-3 px-4">Budgets</th>
         <th class="py-3 px-4 text-right">Actions</th>
       </tr>
     </thead>
     <tbody class="divide-y divide-base-content/5">
       {{if not .Combos}}
       <tr>
-        <td colspan="4" class="text-center py-12 text-base-content/40 italic">
+        <td colspan="5" class="text-center py-12 text-base-content/40 italic">
           No combos configured yet. Create one above to chain fallback models.
         </td>
       </tr>
@@ -1947,6 +1978,8 @@
         <td class="py-3.5 px-4">
           <form action="/combos/{{.Name}}" method="POST" hx-post="/combos/{{.Name}}" hx-target="#combos" hx-swap="innerHTML">
             <input type="hidden" name="targets" value="{{range $i, $t := .Targets}}{{if $i}},{{end}}{{$t.Provider}}/{{$t.Model}}{{end}}">
+            <input type="hidden" name="timeout" value="{{.Timeout}}">
+            <input type="hidden" name="drain_ttl" value="{{.DrainTTL}}">
             <select name="strategy" class="select select-bordered select-xs font-mono text-xs rounded-lg" onchange="this.form.requestSubmit()">
               <option value="priority" {{if eq .Strategy "priority"}}selected{{end}}>priority</option>
               <option value="fill-first" {{if eq .Strategy "fill-first"}}selected{{end}}>fill-first</option>
@@ -1984,8 +2017,12 @@
             {{end}}
           </div>
         </td>
+        <td class="py-3.5 px-4 text-xs font-mono whitespace-nowrap">
+          <div>timeout {{if .Timeout}}<span class="text-base-content">{{.Timeout}}</span>{{else}}<span class="text-base-content/40">uncapped</span>{{end}}</div>
+          <div class="text-base-content/50">drain {{if .DrainTTL}}{{.DrainTTL}}{{else}}60s{{end}}</div>
+        </td>
         <td class="text-right py-3.5 px-4 whitespace-nowrap">
-          <button type="button" onclick="openEditComboModal('{{.Name}}', '{{.Strategy}}', '{{range $i, $t := .Targets}}{{if $i}},{{end}}{{$t.Provider}}/{{$t.Model}}{{end}}')" class="btn btn-xs btn-outline btn-primary px-2.5 py-1 h-auto min-h-[1.75rem] rounded-lg gap-1 font-medium mr-1">
+          <button type="button" onclick="openEditComboModal('{{.Name}}', '{{.Strategy}}', '{{range $i, $t := .Targets}}{{if $i}},{{end}}{{$t.Provider}}/{{$t.Model}}{{end}}', '{{.Timeout}}', '{{.DrainTTL}}')" class="btn btn-xs btn-outline btn-primary px-2.5 py-1 h-auto min-h-[1.75rem] rounded-lg gap-1 font-medium mr-1">
             <svg xmlns="http://www.w3.org/2000/svg" class="size-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" /></svg>
             Edit
           </button>
@@ -2018,6 +2055,8 @@
   </div>
 </div>
 {{end}}
+
+
 
 <div class="overflow-x-auto">
   <table class="table w-full">
@@ -2058,6 +2097,38 @@
       {{end}}
     </tbody>
   </table>
+</div>
+{{end}}
+
+
+{{define "settings"}}
+<div class="card bg-base-100 border border-base-content/10 rounded-2xl shadow-sm p-6 space-y-6">
+  <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-base-content/10 pb-4">
+    <div>
+      <h2 class="text-xl font-bold">Server Settings</h2>
+      <p class="text-xs text-base-content/60 mt-1">Global timeouts inherited by providers unless they set their own.</p>
+    </div>
+  </div>
+  <form action="/settings/timeouts" method="POST" hx-post="/settings/timeouts" hx-target="#settings" hx-swap="innerHTML" class="space-y-4 max-w-xl">
+    <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+      <div>
+        <label class="label pb-1.5 pt-0 text-xs font-semibold text-base-content/70" for="server-timeout">Request timeout</label>
+        <input type="text" name="timeout" id="server-timeout" value="{{.Server.Timeout}}" placeholder="e.g. 60s, blank = default 60s" class="input input-bordered input-sm w-full font-mono text-xs px-3 py-2 h-auto min-h-[2.25rem] rounded-lg">
+        <span class="text-[11px] text-base-content/40">bounds a buffered upstream call end to end</span>
+      </div>
+      <div>
+        <label class="label pb-1.5 pt-0 text-xs font-semibold text-base-content/70" for="server-stream-timeout">Stream timeout</label>
+        <input type="text" name="stream_timeout" id="server-stream-timeout" value="{{.Server.StreamTimeout}}" placeholder="e.g. 15m, 0 = unbounded, blank = default 15m" class="input input-bordered input-sm w-full font-mono text-xs px-3 py-2 h-auto min-h-[2.25rem] rounded-lg">
+        <span class="text-[11px] text-base-content/40">total wall-clock budget for one streamed generation</span>
+      </div>
+    </div>
+    <div class="flex justify-end pt-2 border-t border-base-content/10">
+      <button type="submit" class="btn btn-primary btn-sm px-5 h-auto min-h-[2.25rem] rounded-lg gap-1.5 shadow-sm font-medium">
+        <svg xmlns="http://www.w3.org/2000/svg" class="size-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>
+        Save Settings
+      </button>
+    </div>
+  </form>
 </div>
 {{end}}
 
