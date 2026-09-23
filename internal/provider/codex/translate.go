@@ -135,6 +135,9 @@ func ToResponsesRequest(req provider.ChatRequest) (map[string]any, error) {
 			return nil, err
 		}
 		out["text"] = map[string]any{"format": text}
+		if text["type"] == "json_object" {
+			ensureJSONMention(input)
+		}
 	}
 	return out, nil
 }
@@ -480,6 +483,40 @@ func translateResponseFormat(raw any) (map[string]any, error) {
 		return out, nil
 	default:
 		return nil, invalid("response_format.type %q is unsupported", typeName)
+	}
+}
+
+// jsonObjectHint is appended when a json_object response is requested but no
+// user message contains the word "json". Codex enforces that itself and rejects
+// the request with a 400 otherwise, even when a system message already says it.
+const jsonObjectHint = "Respond in json."
+
+// ensureJSONMention makes a json_object request acceptable to Codex, which
+// requires the word "json" somewhere in the user input and only inspects the
+// last user message. It appends a short hint to that message when the word is
+// absent, and does nothing when the caller already satisfied the requirement.
+func ensureJSONMention(input []any) {
+	for i := len(input) - 1; i >= 0; i-- {
+		message, ok := input[i].(map[string]any)
+		if !ok || message["role"] != "user" {
+			continue
+		}
+		parts, ok := message["content"].([]any)
+		if !ok {
+			return
+		}
+		for _, part := range parts {
+			item, ok := part.(map[string]any)
+			if !ok {
+				continue
+			}
+			text, _ := item["text"].(string)
+			if strings.Contains(strings.ToLower(text), "json") {
+				return
+			}
+		}
+		message["content"] = append(parts, map[string]any{"type": "input_text", "text": jsonObjectHint})
+		return
 	}
 }
 
