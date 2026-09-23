@@ -611,6 +611,43 @@ func TestReliableBuffersFailuresBeforeCommitting(t *testing.T) {
 	}
 }
 
+// A combo budget caps the whole chain, so a chain of targets that each stall
+// returns a timeout rather than running on until the client gives up, and the
+// client is told to retry.
+func TestComboTimeoutReturnsGatewayTimeout(t *testing.T) {
+	provider.Register("openai", func(cfg provider.Config, store provider.CredStore) provider.Provider {
+		return &responseProvider{name: cfg.Name, chat: func(ctx context.Context, _ provider.ChatRequest, _ http.ResponseWriter) error {
+			<-ctx.Done()
+			return ctx.Err()
+		}}
+	})
+	cfg := &config.Config{
+		Providers: []config.Provider{
+			{Name: "a", Type: "openai", Models: []string{"m1"}},
+			{Name: "b", Type: "openai", Models: []string{"m2"}},
+			{Name: "c", Type: "openai", Models: []string{"m3"}},
+		},
+		Combos: []config.Combo{{
+			Name: "safe", Strategy: "reliable", Timeout: "300ms",
+			Targets: []config.ComboTarget{{Provider: "a", Model: "m1"}, {Provider: "b", Model: "m2"}, {Provider: "c", Model: "m3"}},
+		}},
+	}
+
+	start := time.Now()
+	rr := performChat(t, cfg, nil, `{"model":"safe","messages":[]}`)
+	elapsed := time.Since(start)
+
+	if rr.Code != http.StatusGatewayTimeout {
+		t.Fatalf("status = %d, body = %s", rr.Code, rr.Body.String())
+	}
+	if rr.Header().Get("Retry-After") == "" {
+		t.Fatal("missing Retry-After on combo timeout")
+	}
+	if elapsed > 2*time.Second {
+		t.Fatalf("chain ran %s, want it bounded near 300ms", elapsed)
+	}
+}
+
 func TestReliableIgnoresDuplicateWriteHeaderFromFailedAttempt(t *testing.T) {
 	provider.Register("openai", func(cfg provider.Config, store provider.CredStore) provider.Provider {
 		return &responseProvider{name: cfg.Name, chat: func(_ context.Context, req provider.ChatRequest, w http.ResponseWriter) error {

@@ -471,3 +471,44 @@ func TestRunDoesNotDrainOnClientError(t *testing.T) {
 		t.Fatal("t1 should NOT be drained on 400 Bad Request")
 	}
 }
+
+// A combo budget is shared across the chain. One target that stalls for its
+// whole slice must not consume the budget of the targets behind it: the next
+// target still gets a deadline, and the request ends once the budget is spent
+// instead of running on past it.
+func TestComboTimeoutBoundsTheChain(t *testing.T) {
+	c := Combo{
+		Name:     "safe",
+		Strategy: "reliable",
+		Timeout:  200 * time.Millisecond,
+		Targets: []Target{
+			{Provider: "a", Model: "m1"},
+			{Provider: "b", Model: "m2"},
+			{Provider: "c", Model: "m3"},
+		},
+	}
+
+	var attempts []time.Duration
+	start := time.Now()
+	_, err := c.Run(context.Background(), func(ctx context.Context, target Target) error {
+		deadline, ok := ctx.Deadline()
+		if !ok {
+			t.Errorf("target %s got no deadline", target.Provider)
+			return errors.New("no deadline")
+		}
+		attempts = append(attempts, time.Until(deadline))
+		<-ctx.Done()
+		return ctx.Err()
+	})
+	elapsed := time.Since(start)
+
+	if len(attempts) < 2 {
+		t.Fatalf("only %d targets were attempted before the budget ran out; want at least 2", len(attempts))
+	}
+	if elapsed > 600*time.Millisecond {
+		t.Fatalf("chain ran %s, want it bounded near 200ms", elapsed)
+	}
+	if err == nil {
+		t.Fatal("expected the chain to fail once its budget was spent")
+	}
+}

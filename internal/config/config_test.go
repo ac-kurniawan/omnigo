@@ -207,6 +207,19 @@ func TestTimeoutProviderOverride(t *testing.T) {
 	}
 }
 
+func TestComboTimeoutParsedAndValidated(t *testing.T) {
+	if got := (Combo{}).ParsedTimeout(); got != 0 {
+		t.Fatalf("unset combo timeout = %v, want 0 (uncapped)", got)
+	}
+	if got := (Combo{Timeout: "2m"}).ParsedTimeout(); got != 2*time.Minute {
+		t.Fatalf("combo timeout = %v, want 2m", got)
+	}
+	cfg := &Config{Combos: []Combo{{Name: "auto", Strategy: "reliable", Timeout: "nope"}}}
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected error for invalid combo timeout")
+	}
+}
+
 func TestValidateRejectsInvalidTimeout(t *testing.T) {
 	tests := []struct {
 		name string
