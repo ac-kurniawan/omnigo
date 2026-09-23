@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"time"
 
 	"github.com/ac-kurniawan/omnigo/internal/config"
 	"github.com/ac-kurniawan/omnigo/internal/quota"
@@ -46,6 +47,29 @@ func (rt *ProviderRuntime) QuotaFetch(getCfg func() *config.Config) func(context
 	}
 	return rt.registry.quotaFetch(getCfg)
 }
+
+// QuotaDrainer returns a drainer that routes a quota exhaustion into the named
+// provider's account pool.
+func (rt *ProviderRuntime) QuotaDrainer(getCfg func() *config.Config) quota.Drainer {
+	if rt == nil {
+		return noopDrainer{}
+	}
+	return runtimeDrainer{drain: rt.registry.quotaDrainer(getCfg)}
+}
+
+// runtimeDrainer adapts the registry's drain function to quota.Drainer.
+type runtimeDrainer struct {
+	drain func(provider, identity string, cooldown time.Duration, reason string)
+}
+
+func (d runtimeDrainer) MarkQuotaDrained(provider, identity string, cooldown time.Duration, reason string) {
+	d.drain(provider, identity, cooldown, reason)
+}
+
+// noopDrainer drops drains when no runtime is available.
+type noopDrainer struct{}
+
+func (noopDrainer) MarkQuotaDrained(string, string, time.Duration, string) {}
 
 // RefreshQuota performs one synchronous poll and stores the result, backing
 // the dashboard's per-account Refresh button.

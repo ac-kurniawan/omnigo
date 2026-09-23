@@ -376,19 +376,29 @@ func TestQuotaDefaults(t *testing.T) {
 	if !q.IsEnabled() {
 		t.Fatal("quota polling must default to enabled")
 	}
+	if q.AutoDrainEnabled() {
+		t.Fatal("auto_drain must default to disabled so upgrades change no routing behavior")
+	}
 	if got := q.ParsedInterval(); got != 5*time.Minute {
 		t.Fatalf("interval = %s, want 5m", got)
+	}
+	if got := q.ParsedMaxCooldown(); got != 30*time.Minute {
+		t.Fatalf("max_cooldown = %s, want 30m", got)
 	}
 }
 
 func TestQuotaParsesConfiguredValues(t *testing.T) {
 	enabled := true
-	q := Quota{Enabled: &enabled, Interval: "2m"}
-	if !q.IsEnabled() {
-		t.Fatal("expected polling on")
+	auto := true
+	q := Quota{Enabled: &enabled, AutoDrain: &auto, Interval: "2m", MaxCooldown: "15m"}
+	if !q.IsEnabled() || !q.AutoDrainEnabled() {
+		t.Fatal("expected both switches on")
 	}
 	if got := q.ParsedInterval(); got != 2*time.Minute {
 		t.Fatalf("interval = %s, want 2m", got)
+	}
+	if got := q.ParsedMaxCooldown(); got != 15*time.Minute {
+		t.Fatalf("max_cooldown = %s, want 15m", got)
 	}
 }
 
@@ -406,6 +416,8 @@ func TestLoadQuotaBlock(t *testing.T) {
 	yamlContent := `quota:
   enabled: true
   interval: 3m
+  auto_drain: true
+  max_cooldown: 10m
 providers: []
 combos: []
 `
@@ -415,6 +427,9 @@ combos: []
 	cfg, err := Load(p)
 	if err != nil {
 		t.Fatalf("Load: %v", err)
+	}
+	if !cfg.Quota.AutoDrainEnabled() {
+		t.Fatal("auto_drain not parsed")
 	}
 	if got := cfg.Quota.ParsedInterval(); got != 3*time.Minute {
 		t.Fatalf("interval = %s, want 3m", got)
@@ -432,6 +447,13 @@ func TestValidateRejectsInvalidQuotaInterval(t *testing.T) {
 	cfg := &Config{Quota: Quota{Interval: "soon"}}
 	if err := cfg.Validate(); err == nil {
 		t.Fatal("expected error for unparseable interval")
+	}
+}
+
+func TestValidateRejectsInvalidQuotaMaxCooldown(t *testing.T) {
+	cfg := &Config{Quota: Quota{MaxCooldown: "0s"}}
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected error for non-positive max_cooldown")
 	}
 }
 
