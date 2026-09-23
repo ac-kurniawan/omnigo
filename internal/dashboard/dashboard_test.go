@@ -351,6 +351,8 @@ func TestIndexRendersPlaygroundInspector(t *testing.T) {
 	}
 	body := rr.Body.String()
 	for _, want := range []string{
+		"Playground &amp; Docs",
+		"showTab('quickstart'",
 		"Gateway Inspector &amp; Playground",
 		"id=\"playground-key\"",
 		"id=\"playground-model\"",
