@@ -65,6 +65,7 @@ providers:
 combos:
   - name: auto
     strategy: priority # priority | fill-first
+    # timeout: 120s  # total budget for the whole chain; split across the targets still to be tried. Unset = uncapped.
     targets:
       - provider: agy
         model: gemini-3.7-flash-medium

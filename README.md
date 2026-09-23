@@ -115,6 +115,32 @@ Both take a per-provider override (`providers[].timeout`,
 time to first byte separately: the configured value governs it for streams and
 buffered calls alike.
 
+### Combo chain budget
+
+A combo tries its targets one after another, and each target gets the full
+per-provider `timeout`. On a long chain that multiplies: four targets that each
+stall for 60s hold the request for four minutes, and the client gives up before
+the last target is ever tried.
+
+`combos[].timeout` caps the whole chain instead. The budget is split evenly
+across the targets still to be tried, so one stalled target spends only its
+share and the next target still gets a deadline. When the budget runs out the
+gateway answers `504` with `Retry-After` rather than waiting for the client to
+time out. Unset leaves the chain uncapped, which is the previous behaviour.
+
+```yaml
+combos:
+  - name: coding
+    strategy: reliable
+    timeout: 120s   # whole chain; each target gets an equal slice
+    targets:
+      - { provider: primary, model: gpt-5 }
+      - { provider: backup, model: claude }
+```
+
+With a 120s budget and three targets, each gets about 40s. A target that fails
+fast returns its unused time to the targets behind it.
+
 ### Dashboard (optional)
 
 The dashboard is served by default. Set `dashboard.enabled: false` in

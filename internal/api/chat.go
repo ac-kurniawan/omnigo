@@ -134,6 +134,7 @@ func runCombo(w http.ResponseWriter, r *http.Request, cfg *config.Config, regist
 		Strategy: cb.Strategy,
 		Tracker:  tracker,
 		DrainTTL: cb.ParsedDrainTTL(),
+		Timeout:  cb.ParsedTimeout(),
 	}
 	for _, t := range cb.Targets {
 		c.Targets = append(c.Targets, combo.Target{Provider: t.Provider, Model: t.Model})
@@ -259,6 +260,11 @@ func providerForName(cfg *config.Config, registry *providerRegistry, name string
 // sanitized because upstream errors can embed credentials.
 func writeProviderError(w http.ResponseWriter, err error) {
 	msg := sanitizeFailure(err)
+	if errors.Is(err, combo.ErrComboTimeout) || errors.Is(err, context.DeadlineExceeded) {
+		w.Header().Set("Retry-After", "1")
+		writeError(w, http.StatusGatewayTimeout, msg)
+		return
+	}
 	var busy interface {
 		HTTPStatus() int
 		RetryAfter() time.Duration
@@ -289,6 +295,8 @@ func statusToCode(status int) string {
 		return "upstream_error"
 	case http.StatusTooManyRequests:
 		return "rate_limit_exceeded"
+	case http.StatusGatewayTimeout:
+		return "timeout"
 	default:
 		return "invalid_request_error"
 	}
