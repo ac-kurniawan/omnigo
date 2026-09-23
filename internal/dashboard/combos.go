@@ -71,9 +71,10 @@ func parseComboTargets(r *http.Request) []config.ComboTarget {
 	return targets
 }
 
-// updateCombo replaces a combo's strategy and target chain wholesale. Any
-// cooldown recorded for a target in the new chain is cleared so the edited
-// combo starts from a clean slate.
+// updateCombo replaces a combo's strategy, target chain, and budgets wholesale.
+// Any cooldown recorded for a target in the new chain is cleared so the edited
+// combo starts from a clean slate. Empty timeout and drain_ttl clear those
+// settings; Validate rejects a duration that does not parse.
 func (s *Server) updateCombo(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 	strategy := r.FormValue("strategy")
@@ -82,10 +83,36 @@ func (s *Server) updateCombo(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	targets := parseComboTargets(r)
+	timeout := strings.TrimSpace(r.FormValue("timeout"))
+	drainTTL := strings.TrimSpace(r.FormValue("drain_ttl"))
 
 	if s.mutate != nil {
 		err := s.mutate(func(c *config.Config) error {
-			return config.SetCombo(c, name, strategy, targets)
+			var prev config.Combo
+			found := false
+			for _, cb := range c.Combos {
+				if cb.Name == name {
+					prev = cb
+					found = true
+					break
+				}
+			}
+			err := config.SetCombo(c, name, strategy, targets, timeout, drainTTL)
+			if err != nil {
+				return err
+			}
+			if err := c.Validate(); err != nil {
+				if found {
+					for i := range c.Combos {
+						if c.Combos[i].Name == name {
+							c.Combos[i] = prev
+							break
+						}
+					}
+				}
+				return err
+			}
+			return nil
 		})
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
