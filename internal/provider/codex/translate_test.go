@@ -2,7 +2,9 @@ package codex
 
 import (
 	"errors"
+	"fmt"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/ac-kurniawan/omnigo/internal/provider"
@@ -197,6 +199,45 @@ func TestToResponsesRequestMapsSimpleResponseFormatsAndToolChoice(t *testing.T) 
 				t.Fatalf("text = %#v, tool_choice = %#v", got["text"], got["tool_choice"])
 			}
 		})
+	}
+}
+
+// Codex rejects text.format json_object unless the word "json" appears in the
+// input, and it only looks at the last user message. A client that sets
+// response_format without saying "json" would otherwise always get a 400.
+func TestJSONObjectFormatAddsHintWhenInputLacksJSON(t *testing.T) {
+	raw := []byte(`{"messages":[{"role":"system","content":"answer in json"},{"role":"user","content":"hi"}],"response_format":{"type":"json_object"}}`)
+	got, err := ToResponsesRequest(provider.ChatRequest{Model: "codex", Raw: raw})
+	if err != nil {
+		t.Fatalf("ToResponsesRequest: %v", err)
+	}
+	input, _ := got["input"].([]any)
+	if len(input) == 0 {
+		t.Fatal("expected an input message")
+	}
+	last, _ := input[len(input)-1].(map[string]any)
+	content, _ := last["content"].([]any)
+	if len(content) == 0 {
+		t.Fatal("expected content parts")
+	}
+	text, _ := content[len(content)-1].(map[string]any)
+	if !strings.Contains(strings.ToLower(fmt.Sprint(text["text"])), "json") {
+		t.Fatalf("last user text = %#v, want the word json so Codex accepts json_object", text["text"])
+	}
+}
+
+func TestJSONObjectFormatLeavesInputAloneWhenJSONPresent(t *testing.T) {
+	raw := []byte(`{"messages":[{"role":"user","content":"reply as json"}],"response_format":{"type":"json_object"}}`)
+	got, err := ToResponsesRequest(provider.ChatRequest{Model: "codex", Raw: raw})
+	if err != nil {
+		t.Fatalf("ToResponsesRequest: %v", err)
+	}
+	input, _ := got["input"].([]any)
+	last, _ := input[len(input)-1].(map[string]any)
+	content, _ := last["content"].([]any)
+	text, _ := content[0].(map[string]any)
+	if text["text"] != "reply as json" {
+		t.Fatalf("user text = %#v, want it unchanged", text["text"])
 	}
 }
 
