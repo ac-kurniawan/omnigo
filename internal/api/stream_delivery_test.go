@@ -168,7 +168,66 @@ func TestDirectPostCommitFailureDoesNotAppendJSONError(t *testing.T) {
 	if !strings.Contains(body, "one") {
 		t.Fatalf("first chunk missing: %q", body)
 	}
-	if strings.Contains(body, `"error"`) {
+	if strings.Contains(body, `"object":"error"`) || strings.HasPrefix(strings.TrimSpace(body), "{") {
 		t.Fatalf("JSON error envelope appended to committed SSE body: %q", body)
+	}
+}
+
+// Once a chunk is on the wire the gateway can no longer fail over, so a stream
+// that dies afterwards must tell the client it failed. A bare close looks like
+// a finished answer, which is what leaves callers retrying or inventing their
+// own fallback text.
+func TestPostCommitStreamFailureEmitsSSEError(t *testing.T) {
+	provider.Register("openai", provider.NewOpenAI)
+	release := make(chan struct{})
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		flusher, _ := w.(http.Flusher)
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"one\"}}]}\n\n"))
+		flusher.Flush()
+		<-release
+	}))
+	defer upstream.Close()
+	defer close(release)
+
+	cfg := &config.Config{
+		Combos:    []config.Combo{{Name: "smart", Strategy: "fill-first", Targets: []config.ComboTarget{{Provider: "openai", Model: "gpt-4o"}}}},
+		Providers: []config.Provider{{Name: "openai", Type: "openai", BaseURL: upstream.URL, Models: []string{"gpt-4o"}, Timeout: "200ms"}},
+	}
+	raw, hash, prefix, _ := auth.GenerateKey()
+	v := &vault.Vault{ClientKeys: []vault.ClientKey{{ID: "k1", KeyHash: hash, Prefix: prefix, Active: true}}}
+	router := NewRouter(func() *config.Config { return cfg }, vault.NewMemoryStore(v), nil, nil, "test-version", nil)
+	gw := httptest.NewServer(router)
+	defer gw.Close()
+
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, gw.URL+"/v1/chat/completions",
+		strings.NewReader(`{"model":"smart","stream":true,"messages":[{"role":"user","content":"hi"}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer "+raw)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	buf := make([]byte, 0, 4096)
+	tmp := make([]byte, 512)
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		n, readErr := resp.Body.Read(tmp)
+		buf = append(buf, tmp[:n]...)
+		if readErr != nil {
+			break
+		}
+	}
+	body := string(buf)
+	if !strings.Contains(body, "one") {
+		t.Fatalf("first chunk missing: %q", body)
+	}
+	if !strings.Contains(body, "event: error") {
+		t.Fatalf("committed stream died without an SSE error frame: %q", body)
 	}
 }

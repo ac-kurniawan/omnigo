@@ -133,3 +133,21 @@ func (w *commitTracker) Flush() {
 		flusher.Flush()
 	}
 }
+
+// writeStreamError tells a client whose stream already started that the
+// generation did not finish. The response is committed, so failover is no
+// longer possible and a JSON envelope would be parsed as a malformed chunk; an
+// SSE error event is a frame a streaming client can read and act on instead of
+// treating the truncated answer as complete.
+func writeStreamError(w http.ResponseWriter, message string) {
+	payload, err := json.Marshal(map[string]any{"error": map[string]string{"message": message}})
+	if err != nil {
+		return
+	}
+	_, _ = w.Write([]byte("event: error\ndata: "))
+	_, _ = w.Write(payload)
+	_, _ = w.Write([]byte("\n\n"))
+	if flusher, ok := w.(http.Flusher); ok {
+		flusher.Flush()
+	}
+}

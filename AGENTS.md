@@ -41,7 +41,7 @@ gofmt -w .                    # format (or goimports)
 | API        | `internal/api`    | `/v1/chat/completions`, `/v1/models`, internal endpoints   |
 | Dashboard  | `internal/dashboard` | HTMX UI: providers, combos, keys, OAuth login              |
 | Observability | `internal/observability` | OpenTelemetry meter, Prometheus exposition at `/actuator/metrics` |
-| Quota      | `internal/quota`  | Per-account quota snapshots, in-memory cache, background poller (display only) |
+| Quota      | `internal/quota`  | Per-account quota snapshots, in-memory cache, background poller, opt-in auto-drain |
 
 ## Request Pipeline
 

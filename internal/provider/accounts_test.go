@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"sync"
 	"testing"
+	"time"
 )
 
 type accountTestStore struct {
@@ -31,12 +32,89 @@ func (s *accountTestStore) PutAccount(identity string, c Credentials) error {
 	return errors.New("not found")
 }
 
-func TestAccountPoolReturnsEveryAccountInOrder(t *testing.T) {
-	store := &accountTestStore{accounts: []Credentials{{AccountID: "one"}, {AccountID: "two"}}}
+type accountCooldownError time.Duration
+
+func (e accountCooldownError) Error() string           { return "failed" }
+func (e accountCooldownError) Cooldown() time.Duration { return time.Duration(e) }
+func (e accountCooldownError) DrainReason() string     { return e.Error() }
+
+func TestAccountPoolPreservesOrderAndCooldown(t *testing.T) {
+	now := time.Unix(1_000, 0)
 	pool := AccountPool{}
+	pool.SetClock(func() time.Time { return now })
+	store := &accountTestStore{accounts: []Credentials{{AccountID: "one"}, {AccountID: "two"}}}
 	accounts := pool.Available(store)
 	if len(accounts) != 2 || accounts[0].AccountID != "one" || accounts[1].AccountID != "two" {
 		t.Fatalf("accounts = %+v", accounts)
+	}
+	pool.MarkFailed(accounts[0], accountCooldownError(2*time.Minute))
+	accounts, reason := pool.AvailableWithError(store)
+	if len(accounts) != 1 || accounts[0].AccountID != "two" {
+		t.Fatalf("healthy accounts = %+v", accounts)
+	}
+	if reason == nil || reason.Error() != "failed" {
+		t.Fatalf("reason = %v, want failed", reason)
+	}
+	withCooldown, ok := reason.(interface{ Cooldown() time.Duration })
+	if !ok {
+		t.Fatalf("reason type = %T, want cooldown error", reason)
+	}
+	if withCooldown.Cooldown() != 2*time.Minute {
+		t.Fatalf("cooldown = %s, want 2m", withCooldown.Cooldown())
+	}
+	now = now.Add(2*time.Minute + time.Second)
+	accounts, reason = pool.AvailableWithError(store)
+	if len(accounts) != 2 || accounts[0].AccountID != "one" {
+		t.Fatalf("accounts after cooldown = %+v", accounts)
+	}
+	if reason != nil {
+		t.Fatalf("reason after cooldown = %v, want nil", reason)
+	}
+}
+
+// A client-side 4xx must not drain the combo target, and that classification
+// has to survive the account cooldown: the error the pool hands back while the
+// account is cooling reports the original cause, so routing must still see it
+// as non-drainable.
+func TestAccountPoolKeepsClientErrorClassificationAcrossCooldown(t *testing.T) {
+	pool := AccountPool{}
+	store := &accountTestStore{accounts: []Credentials{{AccountID: "one"}}}
+	accounts, _ := pool.AvailableWithError(store)
+	pool.MarkFailed(accounts[0], NewHTTPStatusError(http.StatusBadRequest, "antigravity: status 400"))
+
+	healthy, err := pool.AvailableWithError(store)
+	if len(healthy) != 0 || err == nil {
+		t.Fatalf("healthy = %+v, err = %v; want the account cooled", healthy, err)
+	}
+	var drainable interface{ Drainable() bool }
+	if !errors.As(err, &drainable) {
+		t.Fatalf("cooldown error %T does not classify drainability", err)
+	}
+	if drainable.Drainable() {
+		t.Fatalf("4xx cooldown error is drainable: a bad prompt would remove the target for %v", err)
+	}
+	if err.Error() != "antigravity: status 400" {
+		t.Fatalf("reason = %q, want the original cause", err.Error())
+	}
+}
+
+// The mirror case: an upstream fault must stay drainable so routing fails over.
+func TestAccountPoolKeepsUpstreamFaultDrainable(t *testing.T) {
+	pool := AccountPool{}
+	store := &accountTestStore{accounts: []Credentials{{AccountID: "one"}}}
+	accounts, _ := pool.AvailableWithError(store)
+	pool.MarkFailed(accounts[0], NewHTTPStatusError(http.StatusBadGateway, "antigravity: status 502"))
+
+	_, err := pool.AvailableWithError(store)
+	if err == nil {
+		t.Fatal("account was not cooled")
+	}
+	var drainable interface{ Drainable() bool }
+	if !errors.As(err, &drainable) {
+		t.Fatalf("cooldown error %T does not classify drainability", err)
+	}
+	if !drainable.Drainable() {
+		t.Fatal("upstream fault cooldown error is not drainable: routing would keep a broken target")
 	}
 }
 
@@ -153,4 +231,52 @@ func (s *plainTestStore) Put(c Credentials) error {
 	defer s.mu.Unlock()
 	s.creds = c
 	return nil
+}
+
+func TestMarkQuotaDrainedExcludesOnlyNamedIdentity(t *testing.T) {
+	now := time.Unix(1_000, 0)
+	pool := AccountPool{}
+	pool.SetClock(func() time.Time { return now })
+	store := &accountTestStore{accounts: []Credentials{{AccountID: "one", Email: "one@example.com"}, {AccountID: "two", Email: "two@example.com"}}}
+
+	pool.MarkQuotaDrained("one:one@example.com", 10*time.Minute, "claude-opus-4-6-thinking")
+
+	accounts, reason := pool.AvailableWithError(store)
+	if len(accounts) != 1 || accounts[0].AccountID != "two" {
+		t.Fatalf("healthy accounts = %+v, want only the undrained account", accounts)
+	}
+	if reason == nil || reason.Error() != "claude-opus-4-6-thinking" {
+		t.Fatalf("reason = %v, want the quota reason", reason)
+	}
+	drainable, ok := reason.(interface{ Drainable() bool })
+	if !ok || !drainable.Drainable() {
+		t.Fatalf("quota drain reason = %T, want a drainable error so combos fail over", reason)
+	}
+}
+
+func TestMarkQuotaDrainedExpiresWithCooldown(t *testing.T) {
+	now := time.Unix(1_000, 0)
+	pool := AccountPool{}
+	pool.SetClock(func() time.Time { return now })
+	store := &accountTestStore{accounts: []Credentials{{AccountID: "one", Email: "one@example.com"}}}
+
+	pool.MarkQuotaDrained("one:one@example.com", 5*time.Minute, "exhausted")
+	if got := pool.Available(store); len(got) != 0 {
+		t.Fatalf("accounts while drained = %+v, want none", got)
+	}
+
+	now = now.Add(5*time.Minute + time.Second)
+	if got := pool.Available(store); len(got) != 1 {
+		t.Fatalf("accounts after cooldown = %+v, want the account back", got)
+	}
+}
+
+func TestMarkQuotaDrainedIgnoresInvalidInput(t *testing.T) {
+	pool := AccountPool{}
+	store := &accountTestStore{accounts: []Credentials{{AccountID: "one"}}}
+	pool.MarkQuotaDrained("one", 0, "zero cooldown")
+	pool.MarkQuotaDrained("", time.Hour, "no identity")
+	if got := pool.Available(store); len(got) != 1 {
+		t.Fatalf("accounts = %+v, want the account untouched", got)
+	}
 }
