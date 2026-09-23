@@ -77,7 +77,7 @@ func (b *closeTrackingBody) Close() error {
 }
 
 func TestChatCompletionClosesUpstreamResponseBody(t *testing.T) {
-	body := &closeTrackingBody{Reader: strings.NewReader(`data: {"candidates":[{"content":{"parts":[{"text":"ok"}]}}]}` + "\n\n")}
+	body := &closeTrackingBody{Reader: strings.NewReader(`data: {"candidates":[{"content":{"parts":[{"text":"ok"}]},"finishReason":"STOP"}]}` + "\n\n")}
 	transport := roundTripFunc(func(*http.Request) (*http.Response, error) {
 		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: body}, nil
 	})
@@ -88,6 +88,73 @@ func TestChatCompletionClosesUpstreamResponseBody(t *testing.T) {
 	}
 	if !body.closed.Load() {
 		t.Fatal("upstream response body was not closed")
+	}
+}
+
+// A stream that ends without a finish reason was cut off: the upstream closed
+// or reset before the generation completed. Reporting success and appending
+// [DONE] makes the client treat the truncated answer as final, so the gateway
+// must fail the attempt instead.
+func TestStreamEndsWithoutFinishReasonIsIncomplete(t *testing.T) {
+	body := io.NopCloser(strings.NewReader("data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"partial\"}]}}]}\n\n"))
+	transport := roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: body}, nil
+	})
+	p := New(provider.Config{Name: "agy", BaseURL: "https://example.invalid", Transport: transport},
+		staticStore{provider.Credentials{AccessToken: "token", ProjectID: "p", ExpiresAt: time.Now().Add(time.Hour)}})
+
+	rr := httptest.NewRecorder()
+	err := p.ChatCompletion(context.Background(), provider.ChatRequest{
+		Model: "gemini", Stream: true, Messages: []provider.Message{{Role: "user", Content: "hi"}},
+	}, rr)
+	if err == nil {
+		t.Fatal("stream ending without a finish reason was reported as success")
+	}
+	if strings.Contains(rr.Body.String(), "data: [DONE]") {
+		t.Fatalf("truncated stream was closed with [DONE]: %s", rr.Body.String())
+	}
+}
+
+// A mid-stream connection reset is the same failure: bytes already delivered,
+// then the socket dies. It must surface as an error, not a finished answer.
+func TestStreamReaderErrorIsIncomplete(t *testing.T) {
+	body := io.NopCloser(io.MultiReader(
+		strings.NewReader("data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"partial\"}]}}]}\n\n"),
+		errReader{errors.New("connection reset by peer")},
+	))
+	transport := roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: body}, nil
+	})
+	p := New(provider.Config{Name: "agy", BaseURL: "https://example.invalid", Transport: transport},
+		staticStore{provider.Credentials{AccessToken: "token", ProjectID: "p", ExpiresAt: time.Now().Add(time.Hour)}})
+
+	err := p.ChatCompletion(context.Background(), provider.ChatRequest{
+		Model: "gemini", Stream: true, Messages: []provider.Message{{Role: "user", Content: "hi"}},
+	}, httptest.NewRecorder())
+	if err == nil {
+		t.Fatal("stream that reset mid-way was reported as success")
+	}
+}
+
+type errReader struct{ err error }
+
+func (r errReader) Read([]byte) (int, error) { return 0, r.err }
+
+// The non-streaming path aggregates the same SSE feed, so a feed that closes
+// before a finish reason is a truncated answer too, not a short completion.
+func TestCompleteEndsWithoutFinishReasonIsIncomplete(t *testing.T) {
+	body := io.NopCloser(strings.NewReader("data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"partial\"}]}}]}\n\n"))
+	transport := roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: body}, nil
+	})
+	p := New(provider.Config{Name: "agy", BaseURL: "https://example.invalid", Transport: transport},
+		staticStore{provider.Credentials{AccessToken: "token", ProjectID: "p", ExpiresAt: time.Now().Add(time.Hour)}})
+
+	err := p.ChatCompletion(context.Background(), provider.ChatRequest{
+		Model: "gemini", Messages: []provider.Message{{Role: "user", Content: "hi"}},
+	}, httptest.NewRecorder())
+	if err == nil {
+		t.Fatal("completion ending without a finish reason was reported as success")
 	}
 }
 
@@ -231,8 +298,8 @@ func TestModelsAutoRefreshesExpiredToken(t *testing.T) {
 func TestChatStreamsOpenAISSE(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
-		w.Write([]byte("data: {\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"hel\"}]}}]}\n\n"))
-		w.Write([]byte("data: {\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"lo\"}]}}]}\n\n"))
+		w.Write([]byte("data: {\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"hel\"}]},\"finishReason\":\"STOP\"}]}\n\n"))
+		w.Write([]byte("data: {\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"lo\"}]},\"finishReason\":\"STOP\"}]}\n\n"))
 	}))
 	defer srv.Close()
 
@@ -262,7 +329,7 @@ func TestChatAccountPoolFallsBackOnPreCommitFailure(t *testing.T) {
 			return
 		}
 		w.Header().Set("Content-Type", "text/event-stream")
-		_, _ = w.Write([]byte("data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"success\"}]}}]}\n\n"))
+		_, _ = w.Write([]byte("data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"success\"}]},\"finishReason\":\"STOP\"}]}\n\n"))
 	}))
 	defer srv.Close()
 
@@ -284,18 +351,19 @@ func TestChatAccountPoolFallsBackOnPreCommitFailure(t *testing.T) {
 	}
 }
 
-func TestChatAccountPoolRetriesLimitedAccountOnNextRequest(t *testing.T) {
+func TestChatAccountPoolFallsBackAfter429AndRespectsRetryAfter(t *testing.T) {
+	now := time.Unix(2_000_000_000, 0)
 	var calls []string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
 		calls = append(calls, token)
-		if token == "first" && len(calls) == 1 {
+		if token == "first" {
 			w.Header().Set("Retry-After", "120")
 			w.WriteHeader(http.StatusTooManyRequests)
 			return
 		}
 		w.Header().Set("Content-Type", "text/event-stream")
-		_, _ = w.Write([]byte("data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"success\"}]}}]}\n\n"))
+		_, _ = w.Write([]byte("data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"success\"}]},\"finishReason\":\"STOP\"}]}\n\n"))
 	}))
 	defer srv.Close()
 
@@ -303,7 +371,8 @@ func TestChatAccountPoolRetriesLimitedAccountOnNextRequest(t *testing.T) {
 		{AccessToken: "first", AccountID: "google-1", ProjectID: "p", ExpiresAt: time.Now().Add(time.Hour)},
 		{AccessToken: "second", AccountID: "google-2", ProjectID: "p", ExpiresAt: time.Now().Add(time.Hour)},
 	}}
-	p := New(provider.Config{Name: "agy", BaseURL: srv.URL}, store)
+	p := New(provider.Config{Name: "agy", BaseURL: srv.URL}, store).(*Provider)
+	p.pool.SetClock(func() time.Time { return now })
 	req := provider.ChatRequest{Model: "gemini", Messages: []provider.Message{{Role: "user", Content: "hi"}}}
 	for range 2 {
 		rr := httptest.NewRecorder()
@@ -313,25 +382,26 @@ func TestChatAccountPoolRetriesLimitedAccountOnNextRequest(t *testing.T) {
 		if !strings.Contains(rr.Body.String(), "success") {
 			t.Fatalf("body = %s", rr.Body.String())
 		}
+		now = now.Add(61 * time.Second)
 	}
-	// The 429 fails over inside the first request, then the next request tries
-	// the previously limited account again instead of remembering the cooldown.
-	if len(calls) != 3 || calls[0] != "first" || calls[1] != "second" || calls[2] != "first" {
+	if len(calls) != 3 || calls[0] != "first" || calls[1] != "second" || calls[2] != "second" {
 		t.Fatalf("calls = %v", calls)
 	}
 }
 
-func TestChatAllAccountsRateLimitedFailsOverEachRequest(t *testing.T) {
+func TestChatAllAccountsCoolingReturnsRateLimitUntilCooldownExpires(t *testing.T) {
+	start := time.Unix(2_000_000_000, 0)
+	now := start
 	var calls atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls.Add(1)
-		if calls.Load() <= 2 {
+		if now.Equal(start) {
 			w.Header().Set("Retry-After", "60")
 			w.WriteHeader(http.StatusTooManyRequests)
 			return
 		}
 		w.Header().Set("Content-Type", "text/event-stream")
-		_, _ = w.Write([]byte("data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"success\"}]}}]}\n\n"))
+		_, _ = w.Write([]byte("data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"success\"}]},\"finishReason\":\"STOP\"}]}\n\n"))
 	}))
 	defer srv.Close()
 
@@ -339,28 +409,31 @@ func TestChatAllAccountsRateLimitedFailsOverEachRequest(t *testing.T) {
 		{AccessToken: "first", AccountID: "google-1", ProjectID: "p", ExpiresAt: time.Now().Add(time.Hour)},
 		{AccessToken: "second", AccountID: "google-2", ProjectID: "p", ExpiresAt: time.Now().Add(time.Hour)},
 	}}
-	p := New(provider.Config{Name: "agy", BaseURL: srv.URL}, store)
+	p := New(provider.Config{Name: "agy", BaseURL: srv.URL}, store).(*Provider)
+	p.pool.SetClock(func() time.Time { return now })
 	req := provider.ChatRequest{Model: "gemini", Messages: []provider.Message{{Role: "user", Content: "hi"}}}
 
-	if err := p.ChatCompletion(context.Background(), req, httptest.NewRecorder()); err == nil || err.Error() != "antigravity: rate limited" {
-		t.Fatalf("first request error = %v", err)
+	for range 2 {
+		err := p.ChatCompletion(context.Background(), req, httptest.NewRecorder())
+		if err == nil || err.Error() != "antigravity: rate limited" {
+			t.Fatalf("ChatCompletion error = %v", err)
+		}
 	}
 	if calls.Load() != 2 {
-		t.Fatalf("first request upstream calls = %d, want one per account", calls.Load())
+		t.Fatalf("calls during cooldown = %d, want 2", calls.Load())
 	}
 
-	// The next request starts over: the previously limited accounts are tried
-	// again, so a transient 429 cannot hide the pool.
+	now = now.Add(time.Minute + time.Second)
 	rr := httptest.NewRecorder()
 	if err := p.ChatCompletion(context.Background(), req, rr); err != nil {
-		t.Fatalf("second request: %v", err)
+		t.Fatalf("ChatCompletion after cooldown: %v", err)
 	}
 	if calls.Load() != 3 || !strings.Contains(rr.Body.String(), "success") {
 		t.Fatalf("calls = %d, body = %q", calls.Load(), rr.Body.String())
 	}
 }
 
-func TestChatSingleAccount429RetriesOnNextRequest(t *testing.T) {
+func TestChatSingleAccountCoolingReturnsRateLimit(t *testing.T) {
 	var calls atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls.Add(1)
@@ -369,7 +442,7 @@ func TestChatSingleAccount429RetriesOnNextRequest(t *testing.T) {
 	defer srv.Close()
 
 	store := staticStore{provider.Credentials{AccessToken: "token", ProjectID: "p", ExpiresAt: time.Now().Add(time.Hour)}}
-	p := New(provider.Config{Name: "agy", BaseURL: srv.URL}, store)
+	p := New(provider.Config{Name: "agy", BaseURL: srv.URL}, store).(*Provider)
 	req := provider.ChatRequest{Model: "gemini", Messages: []provider.Message{{Role: "user", Content: "hi"}}}
 	for range 2 {
 		err := p.ChatCompletion(context.Background(), req, httptest.NewRecorder())
@@ -377,8 +450,8 @@ func TestChatSingleAccount429RetriesOnNextRequest(t *testing.T) {
 			t.Fatalf("ChatCompletion error = %v", err)
 		}
 	}
-	if calls.Load() != 2 {
-		t.Fatalf("calls = %d, want 2 (no remembered cooldown)", calls.Load())
+	if calls.Load() != 1 {
+		t.Fatalf("calls = %d, want 1", calls.Load())
 	}
 }
 
@@ -538,8 +611,8 @@ func TestChatAccountPoolExhaustsEachAccountOnceAfter429(t *testing.T) {
 func TestChatNonStreamingReturnsOpenAIJSON(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
-		w.Write([]byte("data: {\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"hel\"}]}}]}\n\n"))
-		w.Write([]byte("data: {\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"lo\"}]}}]}\n\n"))
+		w.Write([]byte("data: {\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"hel\"}]},\"finishReason\":\"STOP\"}]}\n\n"))
+		w.Write([]byte("data: {\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"lo\"}]},\"finishReason\":\"STOP\"}]}\n\n"))
 	}))
 	defer srv.Close()
 
@@ -604,7 +677,7 @@ func TestChatRetriesOn401(t *testing.T) {
 			t.Fatalf("retry auth = %q", got)
 		}
 		w.Header().Set("Content-Type", "text/event-stream")
-		w.Write([]byte("data: {\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"success!\"}]}}]}\n\n"))
+		w.Write([]byte("data: {\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"success!\"}]},\"finishReason\":\"STOP\"}]}\n\n"))
 	}))
 	defer apiSrv.Close()
 
@@ -637,7 +710,7 @@ func TestChatStreamsBeforeUpstreamCompletes(t *testing.T) {
 	release := make(chan struct{})
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
-		_, _ = w.Write([]byte("data: {\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"hel\"}]}}]}\n\n"))
+		_, _ = w.Write([]byte("data: {\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"hel\"}]},\"finishReason\":\"STOP\"}]}\n\n"))
 		w.(http.Flusher).Flush()
 		<-release
 	}))

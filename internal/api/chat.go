@@ -76,6 +76,8 @@ func handleChat(getCfg func() *config.Config, registry *providerRegistry, tracke
 		metrics.RecordProviderRequest(r.Context(), provName, knownModelLabel(cfg, provName, model), classifyProviderError(providerErr, tracked.committed, r.Context().Err() != nil))
 		if providerErr != nil && !tracked.committed {
 			writeProviderError(w, providerErr)
+		} else if providerErr != nil && req.Stream && r.Context().Err() == nil {
+			writeStreamError(w, sanitizeFailure(providerErr))
 		}
 	}
 }
@@ -163,6 +165,12 @@ func runCombo(w http.ResponseWriter, r *http.Request, cfg *config.Config, regist
 			metrics.RecordProviderRequest(ctx, t.Provider, t.Model, classifyProviderError(err, true, clientGone))
 			if tracker != nil && cb.Strategy != "priority" && !clientGone {
 				tracker.MarkDrained(t, cb.ParsedDrainTTL(), sanitizeFailure(err))
+			}
+			// The client already has part of the answer and no failover is
+			// possible, so say the generation failed instead of ending the
+			// stream as if it had completed.
+			if req.Stream && !clientGone {
+				writeStreamError(w, sanitizeFailure(err))
 			}
 			return nil
 		}

@@ -76,7 +76,27 @@ type geminiChunk struct {
 				Text string `json:"text"`
 			} `json:"parts"`
 		} `json:"content"`
+		FinishReason string `json:"finishReason"`
 	} `json:"candidates"`
+}
+
+// geminiFinishReason reports the finish reason of the first candidate, or ""
+// when the frame carries none. An empty result is not an error: most frames of
+// a stream have no finish reason, and only the last one does.
+func geminiFinishReason(chunk []byte) (string, error) {
+	payload := strings.TrimSpace(strings.TrimPrefix(string(chunk), "data: "))
+	var frame geminiFrame
+	if err := json.Unmarshal([]byte(payload), &frame); err != nil {
+		return "", fmt.Errorf("parse gemini chunk: %w", err)
+	}
+	body := frame.geminiChunk
+	if frame.Response != nil {
+		body = *frame.Response
+	}
+	if len(body.Candidates) == 0 {
+		return "", nil
+	}
+	return body.Candidates[0].FinishReason, nil
 }
 
 func geminiChunkText(chunk []byte) (string, error) {
