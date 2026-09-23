@@ -208,3 +208,101 @@ func TestToggleProviderDisabled(t *testing.T) {
 		t.Fatal("expected provider enabled after second toggle")
 	}
 }
+
+func TestUpdateProviderTimeouts(t *testing.T) {
+	cfg := &config.Config{
+		Providers: []config.Provider{{Name: "groq", Type: "openai"}},
+	}
+	mutate := func(fn func(*config.Config) error) error {
+		if err := fn(cfg); err != nil {
+			return err
+		}
+		return cfg.Validate()
+	}
+	s := newServer(func() *config.Config { return cfg }, vault.NewMemoryStore(&vault.Vault{}), mutate)
+
+	post := func(body string) *httptest.ResponseRecorder {
+		t.Helper()
+		req := httptest.NewRequest("POST", "/providers/groq/timeouts", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		req.Header.Set("HX-Request", "true")
+		rr := httptest.NewRecorder()
+		s.routes().ServeHTTP(rr, req)
+		return rr
+	}
+
+	rr := post("timeout=30s&stream_timeout=2m")
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rr.Code, rr.Body.String())
+	}
+	if cfg.Providers[0].Timeout != "30s" || cfg.Providers[0].StreamTimeout != "2m" {
+		t.Fatalf("timeouts = %q/%q, want 30s/2m", cfg.Providers[0].Timeout, cfg.Providers[0].StreamTimeout)
+	}
+	if !strings.Contains(rr.Body.String(), `value="30s"`) || !strings.Contains(rr.Body.String(), `value="2m"`) {
+		t.Fatalf("edit modal missing prefilled timeouts: %s", rr.Body.String())
+	}
+
+	rr = post("timeout=&stream_timeout=")
+	if rr.Code != http.StatusOK {
+		t.Fatalf("clear status = %d, body = %s", rr.Code, rr.Body.String())
+	}
+	if cfg.Providers[0].Timeout != "" || cfg.Providers[0].StreamTimeout != "" {
+		t.Fatalf("timeouts not cleared: %+v", cfg.Providers[0])
+	}
+
+	rr = post("timeout=nope&stream_timeout=2m")
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("invalid timeout status = %d, want 400", rr.Code)
+	}
+	if cfg.Providers[0].Timeout != "" || cfg.Providers[0].StreamTimeout != "" {
+		t.Fatalf("rejected timeout was stored: %+v", cfg.Providers[0])
+	}
+}
+
+func TestUpdateServerTimeouts(t *testing.T) {
+	cfg := &config.Config{}
+	mutate := func(fn func(*config.Config) error) error {
+		if err := fn(cfg); err != nil {
+			return err
+		}
+		return cfg.Validate()
+	}
+	s := newServer(func() *config.Config { return cfg }, vault.NewMemoryStore(&vault.Vault{}), mutate)
+
+	post := func(body string) *httptest.ResponseRecorder {
+		t.Helper()
+		req := httptest.NewRequest("POST", "/settings/timeouts", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		req.Header.Set("HX-Request", "true")
+		rr := httptest.NewRecorder()
+		s.routes().ServeHTTP(rr, req)
+		return rr
+	}
+
+	rr := post("timeout=45s&stream_timeout=5m")
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rr.Code, rr.Body.String())
+	}
+	if cfg.Server.Timeout != "45s" || cfg.Server.StreamTimeout != "5m" {
+		t.Fatalf("server timeouts = %q/%q, want 45s/5m", cfg.Server.Timeout, cfg.Server.StreamTimeout)
+	}
+	if !strings.Contains(rr.Body.String(), `value="45s"`) || !strings.Contains(rr.Body.String(), `value="5m"`) {
+		t.Fatalf("settings form missing prefilled timeouts: %s", rr.Body.String())
+	}
+
+	rr = post("timeout=&stream_timeout=0")
+	if rr.Code != http.StatusOK {
+		t.Fatalf("clear status = %d, body = %s", rr.Code, rr.Body.String())
+	}
+	if cfg.Server.Timeout != "" || cfg.Server.StreamTimeout != "0" {
+		t.Fatalf("server timeouts = %q/%q, want empty/0", cfg.Server.Timeout, cfg.Server.StreamTimeout)
+	}
+
+	rr = post("timeout=nope")
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("invalid timeout status = %d, want 400", rr.Code)
+	}
+	if cfg.Server.Timeout != "" || cfg.Server.StreamTimeout != "0" {
+		t.Fatalf("rejected server timeout was stored: %+v", cfg.Server)
+	}
+}

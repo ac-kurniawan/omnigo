@@ -184,10 +184,33 @@ func SetProviderDisabled(c *Config, name string, disabled bool) error {
 	return fmt.Errorf("provider %q not found", name)
 }
 
-// SetCombo replaces a combo's strategy and target chain in-memory, in place.
-// It preserves the combo's position in the list and its drain_ttl, and rejects
-// unknown strategies or an empty target chain.
-func SetCombo(c *Config, name, strategy string, targets []ComboTarget) error {
+// SetProviderTimeouts replaces a provider's request and stream timeout overrides
+// in-memory. Empty strings clear the override, so the provider falls back to
+// the server default. Validation of the duration strings happens in Validate.
+func SetProviderTimeouts(c *Config, name, timeout, streamTimeout string) error {
+	for i := range c.Providers {
+		if c.Providers[i].Name == name {
+			c.Providers[i].Timeout = timeout
+			c.Providers[i].StreamTimeout = streamTimeout
+			return nil
+		}
+	}
+	return fmt.Errorf("provider %q not found", name)
+}
+
+// SetServerTimeouts replaces the server-wide request and stream timeout defaults
+// in-memory. Empty strings clear the override, restoring the built-in defaults.
+func SetServerTimeouts(c *Config, timeout, streamTimeout string) error {
+	c.Server.Timeout = timeout
+	c.Server.StreamTimeout = streamTimeout
+	return nil
+}
+
+// SetCombo replaces a combo's strategy, target chain, and budgets in-memory, in
+// place. It preserves the combo's position in the list and rejects unknown
+// strategies or an empty target chain. timeout and drainTTL are the raw
+// duration strings from the dashboard form: empty clears the setting.
+func SetCombo(c *Config, name, strategy string, targets []ComboTarget, timeout, drainTTL string) error {
 	if !validStrategies[strategy] {
 		return fmt.Errorf("combo %q: unknown strategy %q", name, strategy)
 	}
@@ -198,15 +221,17 @@ func SetCombo(c *Config, name, strategy string, targets []ComboTarget) error {
 		if c.Combos[i].Name == name {
 			c.Combos[i].Strategy = strategy
 			c.Combos[i].Targets = targets
+			c.Combos[i].Timeout = timeout
+			c.Combos[i].DrainTTL = drainTTL
 			return nil
 		}
 	}
 	return fmt.Errorf("combo %q not found", name)
 }
 
-// UpdateCombo replaces a combo's strategy and target chain on disk.
-func UpdateCombo(path, name, strategy string, targets []ComboTarget) error {
+// UpdateCombo replaces a combo's strategy, target chain, and budgets on disk.
+func UpdateCombo(path, name, strategy string, targets []ComboTarget, timeout, drainTTL string) error {
 	return Mutate(path, func(c *Config) error {
-		return SetCombo(c, name, strategy, targets)
+		return SetCombo(c, name, strategy, targets, timeout, drainTTL)
 	})
 }

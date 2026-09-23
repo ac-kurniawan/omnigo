@@ -94,7 +94,7 @@ func TestSetComboSuccess(t *testing.T) {
 		{Provider: "openai-main", Model: "gpt-4o-mini"},
 		{Provider: "openai-main", Model: "gpt-4o"},
 	}
-	if err := SetCombo(cfg, "smart", "round-robin", newTargets); err != nil {
+	if err := SetCombo(cfg, "smart", "round-robin", newTargets, "", ""); err != nil {
 		t.Fatalf("SetCombo: %v", err)
 	}
 
@@ -108,7 +108,7 @@ func TestSetComboSuccess(t *testing.T) {
 
 func TestSetComboUnknownCombo(t *testing.T) {
 	cfg := &Config{Combos: []Combo{{Name: "smart", Strategy: "priority"}}}
-	err := SetCombo(cfg, "nonexistent", "priority", []ComboTarget{{Provider: "p", Model: "m"}})
+	err := SetCombo(cfg, "nonexistent", "priority", []ComboTarget{{Provider: "p", Model: "m"}}, "", "")
 	if err == nil {
 		t.Fatal("expected error for unknown combo")
 	}
@@ -120,9 +120,74 @@ func TestSetComboRejectsEmptyTargets(t *testing.T) {
 			{Name: "smart", Strategy: "priority", Targets: []ComboTarget{{Provider: "p", Model: "m"}}},
 		},
 	}
-	err := SetCombo(cfg, "smart", "priority", nil)
+	err := SetCombo(cfg, "smart", "priority", nil, "", "")
 	if err == nil {
 		t.Fatal("expected error for empty targets")
+	}
+}
+
+func TestSetComboUpdatesTimeoutAndDrainTTL(t *testing.T) {
+	cfg := &Config{
+		Combos: []Combo{{
+			Name:     "smart",
+			Strategy: "priority",
+			Targets:  []ComboTarget{{Provider: "p", Model: "m"}},
+			Timeout:  "90s",
+			DrainTTL: "45s",
+		}},
+	}
+	targets := []ComboTarget{{Provider: "p", Model: "m2"}}
+	if err := SetCombo(cfg, "smart", "reliable", targets, "2m", "30s"); err != nil {
+		t.Fatalf("SetCombo: %v", err)
+	}
+	got := cfg.Combos[0]
+	if got.Timeout != "2m" {
+		t.Fatalf("timeout = %q, want 2m", got.Timeout)
+	}
+	if got.DrainTTL != "30s" {
+		t.Fatalf("drain_ttl = %q, want 30s", got.DrainTTL)
+	}
+	if err := SetCombo(cfg, "smart", "reliable", targets, "", ""); err != nil {
+		t.Fatalf("SetCombo clear: %v", err)
+	}
+	if got := cfg.Combos[0]; got.Timeout != "" || got.DrainTTL != "" {
+		t.Fatalf("budgets = timeout %q drain_ttl %q, want both cleared", got.Timeout, got.DrainTTL)
+	}
+}
+
+func TestSetProviderTimeouts(t *testing.T) {
+	cfg := &Config{Providers: []Provider{{Name: "groq", Type: "openai"}}}
+	if err := SetProviderTimeouts(cfg, "groq", "30s", "2m"); err != nil {
+		t.Fatalf("SetProviderTimeouts: %v", err)
+	}
+	p := cfg.Providers[0]
+	if p.Timeout != "30s" || p.StreamTimeout != "2m" {
+		t.Fatalf("provider timeouts = %q/%q, want 30s/2m", p.Timeout, p.StreamTimeout)
+	}
+	if err := SetProviderTimeouts(cfg, "groq", "", ""); err != nil {
+		t.Fatalf("SetProviderTimeouts clear: %v", err)
+	}
+	if cfg.Providers[0].Timeout != "" || cfg.Providers[0].StreamTimeout != "" {
+		t.Fatalf("provider timeouts not cleared: %+v", cfg.Providers[0])
+	}
+	if err := SetProviderTimeouts(cfg, "missing", "30s", ""); err == nil {
+		t.Fatal("expected error for unknown provider")
+	}
+}
+
+func TestSetServerTimeouts(t *testing.T) {
+	cfg := &Config{}
+	if err := SetServerTimeouts(cfg, "45s", "5m"); err != nil {
+		t.Fatalf("SetServerTimeouts: %v", err)
+	}
+	if cfg.Server.Timeout != "45s" || cfg.Server.StreamTimeout != "5m" {
+		t.Fatalf("server timeouts = %q/%q, want 45s/5m", cfg.Server.Timeout, cfg.Server.StreamTimeout)
+	}
+	if err := SetServerTimeouts(cfg, "", ""); err != nil {
+		t.Fatalf("SetServerTimeouts clear: %v", err)
+	}
+	if cfg.Server.Timeout != "" || cfg.Server.StreamTimeout != "" {
+		t.Fatalf("server timeouts not cleared: %+v", cfg.Server)
 	}
 }
 
@@ -137,7 +202,7 @@ func TestUpdateComboDisk(t *testing.T) {
 		{Provider: "openai-main", Model: "gpt-4o"},
 		{Provider: "openai-main", Model: "gpt-4o-mini"},
 	}
-	if err := UpdateCombo(p, "auto", "reliable", newTargets); err != nil {
+	if err := UpdateCombo(p, "auto", "reliable", newTargets, "", ""); err != nil {
 		t.Fatalf("UpdateCombo: %v", err)
 	}
 
