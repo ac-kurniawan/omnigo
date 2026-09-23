@@ -115,6 +115,7 @@ func TestOpenAIChatStreamExceedsClientTimeout(t *testing.T) {
 		}
 		time.Sleep(20 * time.Millisecond)
 		_, _ = w.Write([]byte("data: chunk2\n\n"))
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
 		if flusher != nil {
 			flusher.Flush()
 		}
@@ -247,6 +248,10 @@ func TestOpenAIStreamBudgetZeroIsUnbounded(t *testing.T) {
 			}
 			time.Sleep(30 * time.Millisecond)
 		}
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+		if flusher != nil {
+			flusher.Flush()
+		}
 	}))
 	defer srv.Close()
 
@@ -317,7 +322,7 @@ func TestOpenAIStripsSensitiveUpstreamHeaders(t *testing.T) {
 		w.Header().Set("X-Internal-Debug", "upstream-node-7")
 		w.Header().Set("X-Request-Id", "req-123")
 		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n"))
 	}))
 	defer srv.Close()
 
@@ -366,7 +371,7 @@ func TestOpenAIChatStreamsPassthrough(t *testing.T) {
 			t.Fatalf("auth = %q", got)
 		}
 		w.Header().Set("Content-Type", "text/event-stream")
-		w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n"))
+		w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"hi\"},\"finish_reason\":\"stop\"}]}\n\n"))
 		w.Write([]byte("data: [DONE]\n\n"))
 	}))
 	rec := httptest.NewRecorder()
@@ -374,7 +379,106 @@ func TestOpenAIChatStreamsPassthrough(t *testing.T) {
 	if err := p.ChatCompletion(context.Background(), req, rec); err != nil {
 		t.Fatalf("ChatCompletion: %v", err)
 	}
+	got := rec.Body.String()
+	want := "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n"
+	if got != want {
+		t.Fatalf("proxied body = %q, want %q", got, want)
+	}
+}
+
+// Framing must survive the proxy untouched, including CR line endings. A
+// rewrite would break clients that split on the terminator the upstream sent.
+func TestOpenAIStreamFramingPassesThroughUnchanged(t *testing.T) {
+	body := "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\r\ndata: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\r\ndata: [DONE]\r\n"
+	p := newOpenAI(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(body))
+	}))
+	rec := httptest.NewRecorder()
+	req := ChatRequest{Model: "gpt-4o", Stream: true, Messages: []Message{{Role: "user", Content: "hi"}}}
+	if err := p.ChatCompletion(context.Background(), req, rec); err != nil {
+		t.Fatalf("ChatCompletion: %v", err)
+	}
+	if got := rec.Body.String(); got != body {
+		t.Fatalf("proxied body = %q, want %q", got, body)
+	}
+}
+
+// A stream that closes without any finish signal must not be reported as
+// success: the client would treat the truncated (or empty) body as a finished
+// answer. Both "finish_reason" on a chunk and a [DONE] frame count as
+// completion signals; a bare EOF does not.
+func TestOpenAIStreamWithoutFinishSignalIsIncomplete(t *testing.T) {
+	cases := map[string]string{
+		"empty body":      "",
+		"keepalive only":  ": keepalive\n\n",
+		"content no stop": "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n",
+		"truncated":       "data: {\"choices\":[{\"delta\":{\"content\":\"par\"}}]}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"tial\"}}]}\n\n",
+	}
+	for name, body := range cases {
+		t.Run(name, func(t *testing.T) {
+			p := newOpenAI(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "text/event-stream")
+				_, _ = w.Write([]byte(body))
+			}))
+			rec := httptest.NewRecorder()
+			req := ChatRequest{Model: "gpt-4o", Stream: true, Messages: []Message{{Role: "user", Content: "hi"}}}
+			if err := p.ChatCompletion(context.Background(), req, rec); err == nil {
+				t.Fatalf("stream without a finish signal reported success; body = %q", rec.Body.String())
+			}
+		})
+	}
+}
+
+// Usage-only final chunks carry "choices": [] with no finish_reason, so the
+// completeness check must accept a [DONE] frame as the end-of-stream signal
+// and must not require the last data frame to be a completion chunk.
+func TestOpenAIStreamDoneFrameIsComplete(t *testing.T) {
+	p := newOpenAI(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"hi\"},\"finish_reason\":null}]}\n\n"))
+		_, _ = w.Write([]byte("data: {\"choices\":[],\"usage\":{\"total_tokens\":3}}\n\n"))
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	rec := httptest.NewRecorder()
+	req := ChatRequest{Model: "gpt-4o", Stream: true, Messages: []Message{{Role: "user", Content: "hi"}}}
+	if err := p.ChatCompletion(context.Background(), req, rec); err != nil {
+		t.Fatalf("ChatCompletion: %v", err)
+	}
 	if !strings.Contains(rec.Body.String(), "data: [DONE]") {
+		t.Fatalf("body = %q", rec.Body.String())
+	}
+}
+
+// A finish_reason on any chunk completes the stream even when upstream omits
+// the [DONE] sentinel; some compatible providers end the response with the
+// finish chunk alone.
+func TestOpenAIStreamFinishReasonIsComplete(t *testing.T) {
+	p := newOpenAI(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n"))
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n"))
+	}))
+	rec := httptest.NewRecorder()
+	req := ChatRequest{Model: "gpt-4o", Stream: true, Messages: []Message{{Role: "user", Content: "hi"}}}
+	if err := p.ChatCompletion(context.Background(), req, rec); err != nil {
+		t.Fatalf("ChatCompletion: %v", err)
+	}
+}
+
+// Non-streaming responses are complete JSON bodies, not SSE: the completeness
+// scan must not reject a body that happens to contain SSE-shaped text.
+func TestOpenAINonStreamBodyUnaffected(t *testing.T) {
+	p := newOpenAI(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"data: hi"},"finish_reason":"stop"}]}`))
+	}))
+	rec := httptest.NewRecorder()
+	req := ChatRequest{Model: "gpt-4o", Messages: []Message{{Role: "user", Content: "hi"}}}
+	if err := p.ChatCompletion(context.Background(), req, rec); err != nil {
+		t.Fatalf("ChatCompletion: %v", err)
+	}
+	if !strings.Contains(rec.Body.String(), "data: hi") {
 		t.Fatalf("body = %q", rec.Body.String())
 	}
 }
