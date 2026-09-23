@@ -24,6 +24,10 @@ type Combo struct {
 	Targets  []Target
 	Tracker  *Tracker
 	DrainTTL time.Duration
+	// Timeout is the total budget for the whole chain. Positive: every target
+	// gets an equal slice of the remaining time, so one stalled target cannot
+	// consume the budget of the targets behind it. Zero: no combo-level cap.
+	Timeout time.Duration
 }
 
 type DispatchFunc func(ctx context.Context, t Target) error
@@ -31,6 +35,10 @@ type DispatchFunc func(ctx context.Context, t Target) error
 type drainReasoner interface {
 	DrainReason() string
 }
+
+// ErrComboTimeout means the wall-clock budget shared by a combo chain was
+// exhausted before any target completed.
+var ErrComboTimeout = errors.New("combo timeout exceeded")
 
 var roundRobinCounters sync.Map
 
@@ -42,8 +50,25 @@ func (c Combo) Run(ctx context.Context, dispatch DispatchFunc) (Target, error) {
 	var lastErr error
 	backpressure := 0
 	rateLimited := 0
+	attemptStart := time.Now()
 	for _, target := range targets {
-		if err := dispatch(ctx, target); err != nil {
+		attemptCtx := ctx
+		cancel := func() {}
+		if c.Timeout > 0 {
+			remaining := c.Timeout - time.Since(attemptStart)
+			left := len(targets) - len(failures)
+			if left <= 0 {
+				left = 1
+			}
+			slice := remaining / time.Duration(left)
+			if slice <= 0 {
+				return Target{}, ErrComboTimeout
+			}
+			attemptCtx, cancel = context.WithTimeout(ctx, slice)
+		}
+		err := dispatch(attemptCtx, target)
+		cancel()
+		if err != nil {
 			lastErr = err
 			if ctx.Err() != nil {
 				return Target{}, ctx.Err()
@@ -62,6 +87,9 @@ func (c Combo) Run(ctx context.Context, dispatch DispatchFunc) (Target, error) {
 		}
 		return target, nil
 	}
+	if c.Timeout > 0 && time.Since(attemptStart) >= c.Timeout {
+		lastErr = errors.Join(ErrComboTimeout, lastErr)
+	}
 	if len(failures) == 0 {
 		return Target{}, fmt.Errorf("combo %q has no healthy targets", c.Name)
 	}
@@ -72,7 +100,11 @@ func (c Combo) Run(ctx context.Context, dispatch DispatchFunc) (Target, error) {
 		return Target{}, lastErr
 	}
 	if c.Strategy == "reliable" || c.Strategy == "round-robin" {
-		return Target{}, fmt.Errorf("combo %q failed: %s", c.Name, strings.Join(failures, "; "))
+		err := fmt.Errorf("combo %q failed: %s", c.Name, strings.Join(failures, "; "))
+		if errors.Is(lastErr, ErrComboTimeout) {
+			err = errors.Join(ErrComboTimeout, err)
+		}
+		return Target{}, err
 	}
 	return Target{}, lastErr
 }

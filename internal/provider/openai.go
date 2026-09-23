@@ -78,7 +78,7 @@ type openAIProvider struct {
 func NewOpenAI(cfg Config, store CredStore) Provider {
 	timeout := cfg.Timeout
 	if timeout <= 0 {
-		timeout = 20 * time.Second
+		timeout = 60 * time.Second
 	}
 	client := &http.Client{Timeout: timeout, Transport: cfg.Transport}
 	return &openAIProvider{
