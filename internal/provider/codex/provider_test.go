@@ -687,6 +687,30 @@ func TestProviderIncompleteResponseUsesLengthFinishReason(t *testing.T) {
 	}
 }
 
+// response.done is the terminal event some Codex upstreams emit instead of
+// response.completed. Treating it as unknown makes a finished generation look
+// truncated, so the gateway fails a request that actually succeeded.
+func TestProviderAcceptsResponseDoneAsCompletion(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.WriteString(w, event("response.output_text.delta", map[string]any{"delta": "answer"}))
+		_, _ = io.WriteString(w, event("response.done", map[string]any{"response": map[string]any{"id": "resp_done", "status": "completed", "usage": map[string]any{"input_tokens": 4, "output_tokens": 1}}}))
+	}))
+	defer server.Close()
+	store := &memoryCredStore{creds: provider.Credentials{AccessToken: "access", AccountID: "account", ExpiresAt: time.Now().Add(time.Hour)}}
+	p := New(provider.Config{Name: "codex", BaseURL: server.URL, Timeout: time.Second}, store)
+
+	for _, stream := range []bool{false, true} {
+		rr := httptest.NewRecorder()
+		err := p.ChatCompletion(context.Background(), provider.ChatRequest{Model: "gpt", Stream: stream, Raw: []byte(`{"messages":[{"role":"user","content":"hi"}]}`)}, rr)
+		if err != nil {
+			t.Fatalf("stream=%v: response.done was not accepted: %v", stream, err)
+		}
+		if !strings.Contains(rr.Body.String(), "answer") {
+			t.Fatalf("stream=%v: response dropped the text: %s", stream, rr.Body.String())
+		}
+	}
+}
+
 func TestProviderModelsUsesLiveCatalog(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/models.json" {

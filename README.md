@@ -95,14 +95,16 @@ Two knobs bound every upstream call, and both are hot-reloaded:
 
 ```yaml
 server:
-  timeout: 20s          # default 20s
-  stream_timeout: 10m   # default 10m; 0 = no total bound
+  timeout: 60s          # default 60s
+  stream_timeout: 15m   # default 15m; 0 = no total bound
 ```
 
 - `timeout` bounds how long the gateway waits on a provider. A buffered call is
   capped end to end; a streamed generation is capped per silence, so a long
-  answer is not killed mid-flight. Server keep-alive and shutdown bounds are
-  fixed transport constants, independent of this value.
+  answer is not killed mid-flight. Sixty seconds is long enough to survive a
+  slow first token and short enough that a stalled generation fails over before
+  a client gives up. Server keep-alive and shutdown bounds are fixed transport
+  constants, independent of this value.
 - `stream_timeout` caps the total wall-clock time of one streamed generation,
   time to first byte included. Silence alone cannot end a stream that keeps
   trickling bytes; this budget can. `0` (or `0s`) disables it, leaving a

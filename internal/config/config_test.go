@@ -116,31 +116,31 @@ func TestLoadProviderDisabled(t *testing.T) {
 	}
 }
 
-func TestTimeoutDefaultIs20s(t *testing.T) {
+func TestTimeoutDefaultIs60s(t *testing.T) {
 	cfg := &Config{}
-	if got := cfg.DefaultTimeout(); got != 20*time.Second {
-		t.Fatalf("DefaultTimeout = %v, want 20s", got)
+	if got := cfg.DefaultTimeout(); got != 60*time.Second {
+		t.Fatalf("DefaultTimeout = %v, want 60s", got)
 	}
-	if got := cfg.Server.ParsedTimeout(); got != 20*time.Second {
-		t.Fatalf("Server.ParsedTimeout = %v, want 20s", got)
+	if got := cfg.Server.ParsedTimeout(); got != 60*time.Second {
+		t.Fatalf("Server.ParsedTimeout = %v, want 60s", got)
 	}
 	p := Provider{Name: "test", Type: "openai"}
-	if got := p.ParsedTimeout(cfg.DefaultTimeout()); got != 20*time.Second {
-		t.Fatalf("Provider.ParsedTimeout = %v, want 20s", got)
+	if got := p.ParsedTimeout(cfg.DefaultTimeout()); got != 60*time.Second {
+		t.Fatalf("Provider.ParsedTimeout = %v, want 60s", got)
 	}
 }
 
 func TestStreamTimeoutDefaultsAndOverrides(t *testing.T) {
 	cfg := &Config{}
-	if got := cfg.DefaultStreamTimeout(); got != 10*time.Minute {
-		t.Fatalf("DefaultStreamTimeout = %v, want 10m", got)
+	if got := cfg.DefaultStreamTimeout(); got != 15*time.Minute {
+		t.Fatalf("DefaultStreamTimeout = %v, want 15m", got)
 	}
-	if got := cfg.Server.ParsedStreamTimeout(); got != 10*time.Minute {
-		t.Fatalf("Server.ParsedStreamTimeout = %v, want 10m", got)
+	if got := cfg.Server.ParsedStreamTimeout(); got != 15*time.Minute {
+		t.Fatalf("Server.ParsedStreamTimeout = %v, want 15m", got)
 	}
 	p := Provider{Name: "test", Type: "openai"}
-	if got := p.ParsedStreamTimeout(cfg.DefaultStreamTimeout()); got != 10*time.Minute {
-		t.Fatalf("Provider.ParsedStreamTimeout = %v, want 10m", got)
+	if got := p.ParsedStreamTimeout(cfg.DefaultStreamTimeout()); got != 15*time.Minute {
+		t.Fatalf("Provider.ParsedStreamTimeout = %v, want 15m", got)
 	}
 
 	cfgCustom := &Config{
@@ -203,7 +203,7 @@ func TestTimeoutProviderOverride(t *testing.T) {
 		t.Fatalf("fast provider timeout = %v, want 5s", got)
 	}
 	if got := cfg.Providers[1].ParsedTimeout(cfg.DefaultTimeout()); got != 20*time.Second {
-		t.Fatalf("normal provider timeout = %v, want 20s", got)
+		t.Fatalf("normal provider timeout = %v, want inherited 20s", got)
 	}
 }
 
