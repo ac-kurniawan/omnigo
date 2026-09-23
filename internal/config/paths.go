@@ -10,8 +10,8 @@ import (
 const DefaultConfigYAML = `server:
   host: 0.0.0.0
   port: 8080
-  timeout: 20s
-  stream_timeout: 10m
+  timeout: 60s
+  stream_timeout: 15m
 
 providers:
   - name: agy

@@ -87,7 +87,7 @@ func New(cfg provider.Config, store provider.CredStore) provider.Provider {
 	}
 	timeout := cfg.Timeout
 	if timeout <= 0 {
-		timeout = 20 * time.Second
+		timeout = 60 * time.Second
 	}
 	client := &http.Client{Timeout: timeout, Transport: cfg.Transport}
 	return &Provider{
@@ -522,7 +522,7 @@ func (s *streamState) consume(eventType string, payload []byte) ([]map[string]an
 				}
 			}
 		}
-	case "response.completed", "response.incomplete":
+	case "response.completed", "response.incomplete", "response.done":
 		s.completed = true
 		if response, ok := event["response"].(map[string]any); ok {
 			if id, ok := response["id"].(string); ok && id != "" {
@@ -552,7 +552,7 @@ func (s *streamState) consume(eventType string, payload []byte) ([]map[string]an
 
 func emitsChunk(eventType string) bool {
 	switch eventType {
-	case "response.output_text.delta", "response.reasoning_summary_text.delta", "response.reasoning_content_text.delta", "response.reasoning_text.delta", "response.output_item.added", "response.function_call_arguments.delta", "response.completed", "response.incomplete":
+	case "response.output_text.delta", "response.reasoning_summary_text.delta", "response.reasoning_content_text.delta", "response.reasoning_text.delta", "response.output_item.added", "response.function_call_arguments.delta", "response.completed", "response.incomplete", "response.done":
 		return true
 	default:
 		return false

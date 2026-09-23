@@ -1,13 +1,15 @@
 server:
   host: 0.0.0.0
   port: 8080
-  # Upstream request timeout (default: 20s). Bounds a buffered upstream call
-  # end to end, and bounds silence for a streamed generation.
-  timeout: 20s
-  # Total wall-clock budget for one streamed generation (default: 10m).
+  # Upstream request timeout (default: 60s). Bounds a buffered upstream call
+  # end to end, and bounds silence for a streamed generation. Sixty seconds
+  # survives a slow first token while still failing over a stalled generation
+  # before the client gives up.
+  timeout: 60s
+  # Total wall-clock budget for one streamed generation (default: 15m).
   # Bounds a stream that keeps trickling bytes and never finishes. 0 disables
   # the bound, leaving only silence bounded.
-  stream_timeout: 10m
+  stream_timeout: 15m
 
 
 dashboard:
@@ -32,8 +34,8 @@ providers:
     type: antigravity
     # disabled: true  # skip this provider in routing and /v1/models
     base_url: https://daily-cloudcode-pa.googleapis.com
-    # timeout: 20s  # per-provider override of server.timeout (default: server.timeout)
-    # stream_timeout: 10m  # per-provider override of server.stream_timeout; 0 disables the bound
+    # timeout: 60s  # per-provider override of server.timeout (default: server.timeout)
+    # stream_timeout: 15m  # per-provider override of server.stream_timeout; 0 disables the bound
     # max_concurrency: 4  # cap in-flight requests per provider; excess requests fail fast with 429 and combo failover
     models:
       - gemini-3.7-flash-medium
