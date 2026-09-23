@@ -17,11 +17,11 @@ type Server struct {
 
 func (s Server) ParsedTimeout() time.Duration {
 	if s.Timeout == "" {
-		return 20 * time.Second
+		return 60 * time.Second
 	}
 	d, err := time.ParseDuration(s.Timeout)
 	if err != nil || d <= 0 {
-		return 20 * time.Second
+		return 60 * time.Second
 	}
 	return d
 }
@@ -30,7 +30,7 @@ func (s Server) ParsedTimeout() time.Duration {
 // generation. Unlike the request timeout, a zero budget is meaningful: it
 // leaves streamed generations unbounded, so only silence is bounded.
 func (s Server) ParsedStreamTimeout() time.Duration {
-	return parseStreamTimeout(s.StreamTimeout, 10*time.Minute)
+	return parseStreamTimeout(s.StreamTimeout, 15*time.Minute)
 }
 
 // parseStreamTimeout parses a stream budget where an unset value takes the
@@ -61,7 +61,7 @@ type Provider struct {
 
 func (p Provider) ParsedTimeout(defaultTimeout time.Duration) time.Duration {
 	if defaultTimeout <= 0 {
-		defaultTimeout = 20 * time.Second
+		defaultTimeout = 60 * time.Second
 	}
 	if p.Timeout == "" {
 		return defaultTimeout
@@ -98,6 +98,10 @@ type Combo struct {
 	Strategy string        `yaml:"strategy"`
 	Targets  []ComboTarget `yaml:"targets"`
 	DrainTTL string        `yaml:"drain_ttl,omitempty"`
+	// Timeout is the total wall-clock budget for one request across every
+	// target of this combo. Unset means no combo-level cap: each target keeps
+	// the full per-provider timeout, which multiplies across a long chain.
+	Timeout string `yaml:"timeout,omitempty"`
 }
 
 func (c Combo) ParsedDrainTTL() time.Duration {
@@ -107,6 +111,19 @@ func (c Combo) ParsedDrainTTL() time.Duration {
 	d, err := time.ParseDuration(c.DrainTTL)
 	if err != nil || d <= 0 {
 		return 60 * time.Second
+	}
+	return d
+}
+
+// ParsedTimeout returns the combo-level request budget, or 0 when unset
+// (uncapped at the combo level; each target still has its provider timeout).
+func (c Combo) ParsedTimeout() time.Duration {
+	if c.Timeout == "" {
+		return 0
+	}
+	d, err := time.ParseDuration(c.Timeout)
+	if err != nil || d <= 0 {
+		return 0
 	}
 	return d
 }
@@ -212,7 +229,7 @@ func (c *Config) DefaultTimeout() time.Duration {
 			return d
 		}
 	}
-	return 20 * time.Second
+	return 60 * time.Second
 }
 
 // DefaultStreamTimeout returns the server-wide stream budget: the total
@@ -296,6 +313,12 @@ func (c *Config) Validate() error {
 			d, err := time.ParseDuration(cb.DrainTTL)
 			if err != nil || d <= 0 {
 				return fmt.Errorf("combo %q: invalid drain_ttl %q", cb.Name, cb.DrainTTL)
+			}
+		}
+		if cb.Timeout != "" {
+			d, err := time.ParseDuration(cb.Timeout)
+			if err != nil || d <= 0 {
+				return fmt.Errorf("combo %q: invalid timeout %q", cb.Name, cb.Timeout)
 			}
 		}
 	}

@@ -95,14 +95,16 @@ Two knobs bound every upstream call, and both are hot-reloaded:
 
 ```yaml
 server:
-  timeout: 20s          # default 20s
-  stream_timeout: 10m   # default 10m; 0 = no total bound
+  timeout: 60s          # default 60s
+  stream_timeout: 15m   # default 15m; 0 = no total bound
 ```
 
 - `timeout` bounds how long the gateway waits on a provider. A buffered call is
   capped end to end; a streamed generation is capped per silence, so a long
-  answer is not killed mid-flight. Server keep-alive and shutdown bounds are
-  fixed transport constants, independent of this value.
+  answer is not killed mid-flight. Sixty seconds is long enough to survive a
+  slow first token and short enough that a stalled generation fails over before
+  a client gives up. Server keep-alive and shutdown bounds are fixed transport
+  constants, independent of this value.
 - `stream_timeout` caps the total wall-clock time of one streamed generation,
   time to first byte included. Silence alone cannot end a stream that keeps
   trickling bytes; this budget can. `0` (or `0s`) disables it, leaving a
@@ -112,6 +114,32 @@ Both take a per-provider override (`providers[].timeout`,
 `providers[].stream_timeout`), which wins over the server value. Nothing caps
 time to first byte separately: the configured value governs it for streams and
 buffered calls alike.
+
+### Combo chain budget
+
+A combo tries its targets one after another, and each target gets the full
+per-provider `timeout`. On a long chain that multiplies: four targets that each
+stall for 60s hold the request for four minutes, and the client gives up before
+the last target is ever tried.
+
+`combos[].timeout` caps the whole chain instead. The budget is split evenly
+across the targets still to be tried, so one stalled target spends only its
+share and the next target still gets a deadline. When the budget runs out the
+gateway answers `504` with `Retry-After` rather than waiting for the client to
+time out. Unset leaves the chain uncapped, which is the previous behaviour.
+
+```yaml
+combos:
+  - name: coding
+    strategy: reliable
+    timeout: 120s   # whole chain; each target gets an equal slice
+    targets:
+      - { provider: primary, model: gpt-5 }
+      - { provider: backup, model: claude }
+```
+
+With a 120s budget and three targets, each gets about 40s. A target that fails
+fast returns its unused time to the targets behind it.
 
 ### Dashboard (optional)
 

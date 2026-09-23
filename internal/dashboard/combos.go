@@ -24,6 +24,7 @@ func (s *Server) createCombo(w http.ResponseWriter, r *http.Request) {
 		Strategy: strategy,
 		Targets:  parseComboTargets(r),
 		DrainTTL: r.FormValue("drain_ttl"),
+		Timeout:  r.FormValue("timeout"),
 	}
 
 	if s.mutate != nil {

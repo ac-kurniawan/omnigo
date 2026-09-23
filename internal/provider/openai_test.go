@@ -185,8 +185,8 @@ func TestOpenAITimeoutConfigured(t *testing.T) {
 	// Default when unset or <= 0
 	p2 := NewOpenAI(Config{Name: "openai", BaseURL: "https://example.com"}, store)
 	op2, ok := p2.(*openAIProvider)
-	if !ok || op2.client.Timeout != 20*time.Second {
-		t.Fatalf("client.Timeout = %v, want default 20s", op2.client.Timeout)
+	if !ok || op2.client.Timeout != 60*time.Second {
+		t.Fatalf("client.Timeout = %v, want default 60s", op2.client.Timeout)
 	}
 }
 
