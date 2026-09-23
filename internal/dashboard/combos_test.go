@@ -317,8 +317,8 @@ func TestUpdateComboFullReplace(t *testing.T) {
 			t.Fatalf("targets[%d] = %+v, want %+v", i, got.Targets[i], want[i])
 		}
 	}
-	if got.DrainTTL != "90s" {
-		t.Fatalf("drain_ttl = %q, want preserved 90s", got.DrainTTL)
+	if got.DrainTTL != "" {
+		t.Fatalf("drain_ttl = %q, want cleared when the form omits it", got.DrainTTL)
 	}
 }
 
@@ -343,6 +343,58 @@ func TestUpdateComboRejectsEmptyTargets(t *testing.T) {
 	}
 	if len(cfg.Combos[0].Targets) != 1 || cfg.Combos[0].Targets[0].Model != "gemini-3.7-flash" {
 		t.Fatalf("combo mutated on rejected update: %+v", cfg.Combos[0])
+	}
+}
+
+func TestUpdateComboSetsAndClearsTimeout(t *testing.T) {
+	cfg := &config.Config{
+		Combos: []config.Combo{{
+			Name:     "smart",
+			Strategy: "priority",
+			Targets:  []config.ComboTarget{{Provider: "agy", Model: "gemini-3.7-flash"}},
+			DrainTTL: "90s",
+		}},
+	}
+	s := newComboTestServer(t, cfg, nil)
+
+	post := func(body string) *httptest.ResponseRecorder {
+		t.Helper()
+		req := httptest.NewRequest("POST", "/combos/smart", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		req.Header.Set("HX-Request", "true")
+		rr := httptest.NewRecorder()
+		s.routes().ServeHTTP(rr, req)
+		return rr
+	}
+
+	rr := post("strategy=priority&targets=agy/gemini-3.7-flash&timeout=2m&drain_ttl=45s")
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rr.Code, rr.Body.String())
+	}
+	if cfg.Combos[0].Timeout != "2m" {
+		t.Fatalf("timeout = %q, want 2m", cfg.Combos[0].Timeout)
+	}
+	if cfg.Combos[0].DrainTTL != "45s" {
+		t.Fatalf("drain_ttl = %q, want 45s", cfg.Combos[0].DrainTTL)
+	}
+	if !strings.Contains(rr.Body.String(), ">2m<") {
+		t.Fatalf("rendered combos missing timeout 2m: %s", rr.Body.String())
+	}
+
+	rr = post("strategy=priority&targets=agy/gemini-3.7-flash&timeout=&drain_ttl=")
+	if rr.Code != http.StatusOK {
+		t.Fatalf("clear status = %d, body = %s", rr.Code, rr.Body.String())
+	}
+	if cfg.Combos[0].Timeout != "" || cfg.Combos[0].DrainTTL != "" {
+		t.Fatalf("budgets = timeout %q drain_ttl %q, want both cleared", cfg.Combos[0].Timeout, cfg.Combos[0].DrainTTL)
+	}
+
+	rr = post("strategy=priority&targets=agy/gemini-3.7-flash&timeout=nope")
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("invalid timeout status = %d, want 400; body = %s", rr.Code, rr.Body.String())
+	}
+	if cfg.Combos[0].Timeout != "" {
+		t.Fatalf("rejected timeout was stored: %q", cfg.Combos[0].Timeout)
 	}
 }
 
@@ -447,7 +499,7 @@ func TestCombosRenderEditButtonAndHiddenTargets(t *testing.T) {
 	if !strings.Contains(body, wantHidden) {
 		t.Fatalf("rendered table missing hidden targets input: %s", body)
 	}
-	wantEditBtn := `openEditComboModal('smart', 'priority', 'agy/gemini-3.7-flash,openai-main/gpt-4o')`
+	wantEditBtn := `openEditComboModal('smart', 'priority', 'agy/gemini-3.7-flash,openai-main/gpt-4o', '', '')`
 	if !strings.Contains(body, wantEditBtn) {
 		t.Fatalf("rendered table missing openEditComboModal call: %s", body)
 	}

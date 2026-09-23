@@ -39,6 +39,7 @@ type viewData struct {
 	Tracker   *combo.Tracker
 	Version   string
 	Quota     *quota.Cache
+	Server    config.Server
 }
 
 // accountHealthy reports whether an OAuth account has usable credentials: a
@@ -375,6 +376,7 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("POST /oauth/{provider}/paste-callback", s.oauthPasteCallback)
 	mux.HandleFunc("GET /providers", s.getProviders)
 	mux.HandleFunc("POST /providers", s.createProvider)
+	mux.HandleFunc("POST /providers/{name}/timeouts", s.updateProviderTimeouts)
 	mux.HandleFunc("POST /providers/{name}/key", s.setProviderKey)
 	mux.HandleFunc("POST /providers/{name}/toggle", s.toggleProvider)
 	mux.HandleFunc("POST /providers/{name}/delete", s.deleteProvider)
@@ -393,6 +395,8 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("GET /keys", s.getKeys)
 	mux.HandleFunc("POST /keys", s.createKey)
 	mux.HandleFunc("POST /keys/{id}/revoke", s.revokeKey)
+	mux.HandleFunc("GET /settings", s.getSettings)
+	mux.HandleFunc("POST /settings/timeouts", s.updateServerTimeouts)
 	return mux
 }
 
@@ -423,6 +427,7 @@ func (s *Server) index(w http.ResponseWriter, r *http.Request) {
 		Tracker:   s.tracker,
 		Version:   s.version,
 		Quota:     s.quotaCache,
+		Server:    cfg.Server,
 	}
 	_ = s.tmpl.ExecuteTemplate(w, "index.html", data)
 }
