@@ -1,5 +1,6 @@
 // Package quota holds provider-agnostic quota snapshot types plus the
-// in-memory cache shared by the dashboard and the metrics exporter.
+// in-memory cache shared by the dashboard, the metrics exporter, and the
+// opt-in auto-drain syncer.
 //
 // It deliberately imports nothing from internal/provider: provider
 // implementations depend on this package for their snapshot type, so a

@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -68,8 +69,8 @@ func normalizeBaseURL(base string) string {
 func (p *Provider) Name() string { return p.name }
 
 func (p *Provider) Models(ctx context.Context) ([]provider.Model, error) {
-	accounts := p.pool.Available(p.store)
-	var lastErr error
+	accounts, drainErr := p.pool.AvailableWithError(p.store)
+	lastErr := drainErr
 	for _, account := range accounts {
 		tokens := p.tokenManager(account)
 		c, err := tokens.EnsureFreshToken(ctx)
@@ -91,7 +92,7 @@ func (p *Provider) Models(ctx context.Context) ([]provider.Model, error) {
 			}
 		}
 		lastErr = err
-
+		p.pool.MarkFailed(account, err)
 	}
 	if lastErr == nil {
 		lastErr = fmt.Errorf("antigravity: not authenticated")
@@ -112,8 +113,11 @@ func (p *Provider) Test(ctx context.Context) provider.TestResult {
 }
 
 func (p *Provider) ChatCompletion(ctx context.Context, req provider.ChatRequest, w http.ResponseWriter) error {
-	accounts := p.pool.Available(p.store)
+	accounts, drainErr := p.pool.AvailableWithError(p.store)
 	if len(accounts) == 0 {
+		if drainErr != nil {
+			return drainErr
+		}
 		return fmt.Errorf("antigravity: not authenticated")
 	}
 	var lastErr error
@@ -129,7 +133,7 @@ func (p *Provider) ChatCompletion(ctx context.Context, req provider.ChatRequest,
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-
+		p.pool.MarkFailed(account, lastErr)
 	}
 	return lastErr
 }
@@ -301,10 +305,16 @@ func aggregateSSE(r io.Reader) (string, error) {
 	bufp := sseBufferPool.Get().(*[]byte)
 	defer sseBufferPool.Put(bufp)
 	scanner.Buffer((*bufp)[:0], 1024*1024)
+	finished := false
 	for scanner.Scan() {
 		line := scanner.Text()
 		if !strings.HasPrefix(line, "data: ") {
 			continue
+		}
+		if reason, err := geminiFinishReason([]byte(line)); err != nil {
+			return "", err
+		} else if reason != "" {
+			finished = true
 		}
 		chunk, err := geminiChunkText([]byte(line))
 		if err != nil {
@@ -314,6 +324,11 @@ func aggregateSSE(r io.Reader) (string, error) {
 	}
 	if err := scanner.Err(); err != nil {
 		return "", err
+	}
+	// Same cut-off as the streaming path: a feed that closes without a finish
+	// reason is a truncated answer, not a short completion.
+	if !finished {
+		return "", errors.New("antigravity: incomplete SSE response")
 	}
 	return text.String(), nil
 }
@@ -325,6 +340,7 @@ func (p *Provider) streamToOpenAI(ctx context.Context, r io.Reader, w http.Respo
 	defer sseBufferPool.Put(bufp)
 	scanner.Buffer((*bufp)[:0], 1024*1024)
 	flusher, _ := w.(http.Flusher)
+	finished := false
 	for scanner.Scan() {
 		select {
 		case <-ctx.Done():
@@ -334,6 +350,11 @@ func (p *Provider) streamToOpenAI(ctx context.Context, r io.Reader, w http.Respo
 		line := scanner.Text()
 		if !strings.HasPrefix(line, "data: ") {
 			continue
+		}
+		if reason, err := geminiFinishReason([]byte(line)); err != nil {
+			return err
+		} else if reason != "" {
+			finished = true
 		}
 		out, err := TranslateSSE([]byte(line))
 		if err != nil || out == nil {
@@ -348,6 +369,13 @@ func (p *Provider) streamToOpenAI(ctx context.Context, r io.Reader, w http.Respo
 	}
 	if err := scanner.Err(); err != nil {
 		return err
+	}
+	// A stream that ends without a finish reason was cut off: the upstream
+	// closed before the generation completed. Closing it with [DONE] would make
+	// the client treat the truncated answer as final, so fail the attempt
+	// instead and let the combo fail over.
+	if !finished {
+		return errors.New("antigravity: incomplete SSE response")
 	}
 	if _, err := w.Write([]byte("data: [DONE]\n\n")); err != nil {
 		return err

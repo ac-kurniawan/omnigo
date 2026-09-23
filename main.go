@@ -187,9 +187,8 @@ func main() {
 	go state.watch(ctx, 2*time.Second, metrics)
 
 	// Quota state is collected by a background syncer that polls each
-	// provider's quota endpoint and stores the snapshot for the dashboard.
-	// Polling never changes routing: an exhausted reading stays a badge, and
-	// the next request still tries the account. The syncer reuses the
+	// provider's quota endpoint and, when auto_drain is enabled, pre-drains an
+	// exhausted account before traffic reaches it. The syncer reuses the
 	// router's provider instances, so polling and serving share one set of
 	// per-account token managers.
 	quotaCache := quota.NewCache()
@@ -198,13 +197,16 @@ func main() {
 		Cache:   quotaCache,
 		Targets: runtime.QuotaTargets(state.getCfg),
 		Fetch:   runtime.QuotaFetch(state.getCfg),
+		Drainer: runtime.QuotaDrainer(state.getCfg),
 		Sink:    metrics,
 		// Read live so a config reload applies on the next cycle.
-		Interval: func() time.Duration { return state.getCfg().Quota.ParsedInterval() },
+		Interval:    func() time.Duration { return state.getCfg().Quota.ParsedInterval() },
+		MaxCooldown: func() time.Duration { return state.getCfg().Quota.ParsedMaxCooldown() },
+		AutoDrain:   func() bool { return state.getCfg().Quota.AutoDrainEnabled() },
 	})
 	if state.getCfg().Quota.IsEnabled() {
 		go quotaSyncer.Run(ctx)
-		log.Printf("quota polling every %s", state.getCfg().Quota.ParsedInterval())
+		log.Printf("quota polling every %s (auto-drain: %v)", state.getCfg().Quota.ParsedInterval(), state.getCfg().Quota.AutoDrainEnabled())
 	}
 
 	addr := state.getCfg().Server.Host + ":" + strconv.Itoa(state.getCfg().Server.Port)

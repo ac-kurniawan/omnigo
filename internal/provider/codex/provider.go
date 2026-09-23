@@ -163,8 +163,8 @@ func fallbackModels() []provider.Model {
 // unexpired proves nothing about whether the upstream accepts it, so each
 // candidate account is probed with a real authenticated roundtrip against the
 // quota endpoint — the same authenticated surface ChatCompletion depends on.
-// A failed probe changes nothing about later requests: the account pool does
-// not remember failures.
+// Failures do not MarkFailed the pool: a manual probe must not cool an
+// account that live traffic may still serve.
 func (p *Provider) Test(ctx context.Context) provider.TestResult {
 	start := time.Now()
 	accounts := p.pool.Available(p.store)
@@ -264,7 +264,7 @@ func (p *Provider) ChatCompletion(ctx context.Context, req provider.ChatRequest,
 		if errors.Is(lastErr, context.Canceled) || errors.Is(lastErr, context.DeadlineExceeded) {
 			return lastErr
 		}
-
+		p.pool.MarkFailed(account, lastErr)
 	}
 	return lastErr
 }
