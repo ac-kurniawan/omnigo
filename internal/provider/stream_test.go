@@ -4,7 +4,11 @@ import (
 	"context"
 	"errors"
 	"io"
+	"net"
+	"net/http"
+	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -155,5 +159,94 @@ func TestIdleGuardKeepsStreamAliveWhileDataFlows(t *testing.T) {
 
 	if err := ctx.Err(); err != nil {
 		t.Fatalf("context canceled while data kept flowing: %v", err)
+	}
+}
+
+func TestStalledHTTP2StreamDoesNotBlockSibling(t *testing.T) {
+	const bound = 750 * time.Millisecond
+	release := make(chan struct{})
+	var conns atomic.Int32
+	var first atomic.Bool
+	upstream := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		flusher, ok := w.(http.Flusher)
+		if !ok {
+			t.Error("response writer cannot flush")
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, "data: start\n\n")
+		flusher.Flush()
+		if first.CompareAndSwap(false, true) {
+			select {
+			case <-release:
+			case <-r.Context().Done():
+			}
+		}
+		_, _ = io.WriteString(w, "data: done\n\n")
+		flusher.Flush()
+	}))
+	upstream.EnableHTTP2 = true
+	upstream.Config.HTTP2 = &http.HTTP2Config{MaxConcurrentStreams: 1}
+	upstream.Config.ConnState = func(_ net.Conn, state http.ConnState) {
+		if state == http.StateNew {
+			conns.Add(1)
+		}
+	}
+	upstream.StartTLS()
+	defer upstream.Close()
+	defer close(release)
+
+	base := upstream.Client().Transport.(*http.Transport)
+	base.HTTP2 = &http.HTTP2Config{StrictMaxConcurrentRequests: true}
+	client := &http.Client{Transport: base}
+	stream := StreamClient(client)
+
+	started := make(chan struct{}, 2)
+	errc := make(chan error, 2)
+	for range 2 {
+		go func() {
+			req, err := http.NewRequest(http.MethodGet, upstream.URL, nil)
+			if err != nil {
+				errc <- err
+				return
+			}
+			started <- struct{}{}
+			resp, err := stream.Do(req)
+			if err != nil {
+				errc <- err
+				return
+			}
+			defer resp.Body.Close()
+			_, err = io.ReadAll(resp.Body)
+			errc <- err
+		}()
+	}
+	for range 2 {
+		select {
+		case <-started:
+		case <-time.After(2 * time.Second):
+			t.Fatal("stream request did not start")
+		}
+	}
+
+	timer := time.NewTimer(bound)
+	defer timer.Stop()
+	select {
+	case err := <-errc:
+		if err != nil {
+			t.Fatalf("first completed stream: %v", err)
+		}
+	case <-timer.C:
+		t.Fatalf("stalled stream blocked its sibling past %s", bound)
+	}
+	if got := conns.Load(); got < 2 {
+		t.Fatalf("HTTPS connections = %d, want a dedicated connection for each in-flight stream", got)
+	}
+
+	select {
+	case err := <-errc:
+		t.Fatalf("both streams completed while the first was still stalled: %v", err)
+	default:
 	}
 }

@@ -21,11 +21,56 @@ var ErrUpstreamStall = errors.New("upstream stalled")
 // generations. Total generation time cannot bound a stream: a long answer and
 // a dead connection look identical to a clock. IdleGuard bounds silence
 // instead, and its stream budget bounds a generation that never finishes.
+//
+// Each streaming RoundTrip uses a fresh clone of the pooled transport. A
+// healthy HTTP/2 connection otherwise multiplexes every request to one host,
+// so one silent stream can hold the connection's flow-control window and stall
+// its siblings. Closing the response body closes only that clone's connections;
+// the pooled transport used by short unary calls is left in place.
 func StreamClient(client *http.Client) *http.Client {
 	if client == nil {
-		return &http.Client{}
+		return &http.Client{Transport: &isolatedTransport{}}
 	}
-	return &http.Client{Transport: client.Transport, CheckRedirect: client.CheckRedirect, Jar: client.Jar}
+	return &http.Client{
+		Transport:     &isolatedTransport{base: client.Transport},
+		CheckRedirect: client.CheckRedirect,
+		Jar:           client.Jar,
+	}
+}
+
+type isolatedTransport struct {
+	base http.RoundTripper
+}
+
+func (t *isolatedTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	base := t.base
+	if base == nil {
+		base = http.DefaultTransport
+	}
+	transport, ok := base.(*http.Transport)
+	if !ok {
+		return base.RoundTrip(req)
+	}
+	dedicated := transport.Clone()
+	resp, err := dedicated.RoundTrip(req)
+	if err != nil {
+		dedicated.CloseIdleConnections()
+		return nil, err
+	}
+	resp.Body = &isolatedBody{ReadCloser: resp.Body, transport: dedicated}
+	return resp, nil
+}
+
+type isolatedBody struct {
+	io.ReadCloser
+	transport *http.Transport
+	once      sync.Once
+}
+
+func (b *isolatedBody) Close() error {
+	err := b.ReadCloser.Close()
+	b.once.Do(func() { b.transport.CloseIdleConnections() })
+	return err
 }
 
 // StreamBudget returns the total wall-clock budget for one generation: the
