@@ -275,11 +275,26 @@ func (w *AttemptWriter) Flush() {
 		return
 	}
 	if !w.committed {
+		if flusher, ok := w.destination.(http.Flusher); ok {
+			flusher.Flush()
+		}
+		if !destinationCommitted(w.destination) {
+			return
+		}
 		_ = w.commitTo(w.destination)
 	}
 	if flusher, ok := w.destination.(http.Flusher); ok {
 		flusher.Flush()
 	}
+}
+
+func destinationCommitted(w http.ResponseWriter) bool {
+	type committed interface{ Committed() bool }
+	c, ok := w.(committed)
+	if !ok {
+		return true
+	}
+	return c.Committed()
 }
 
 func (w *AttemptWriter) Committed() bool {
