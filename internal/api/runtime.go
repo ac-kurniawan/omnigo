@@ -22,6 +22,15 @@ type ProviderRuntime struct {
 	cache    *quota.Cache
 }
 
+// CloseIdleConnections closes pooled connections in the shared transport,
+// including the ones token refresh and quota polls put there.
+func (rt *ProviderRuntime) CloseIdleConnections() {
+	if rt == nil || rt.registry == nil {
+		return
+	}
+	rt.registry.CloseIdleConnections()
+}
+
 // QuotaCache returns the cache the router publishes snapshots to.
 func (rt *ProviderRuntime) QuotaCache() *quota.Cache {
 	if rt == nil {
