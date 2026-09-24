@@ -44,6 +44,9 @@ func New(cfg provider.Config, store provider.CredStore) provider.Provider {
 	if timeout <= 0 {
 		timeout = 60 * time.Second
 	}
+	if cfg.Transport != nil {
+		SetHTTPTransport(cfg.Transport)
+	}
 	client := &http.Client{Timeout: timeout, Transport: cfg.Transport}
 	return &Provider{
 		name:          cfg.Name,
@@ -67,6 +70,10 @@ func normalizeBaseURL(base string) string {
 }
 
 func (p *Provider) Name() string { return p.name }
+
+// Client returns the streaming client so tests can prove it stays distinct
+// from the bounded unary client.
+func (p *Provider) Client() *http.Client { return p.stream }
 
 func (p *Provider) Models(ctx context.Context) ([]provider.Model, error) {
 	accounts, drainErr := p.pool.AvailableForModel(p.store, "")
