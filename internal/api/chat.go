@@ -36,50 +36,62 @@ func handleChat(getCfg func() *config.Config, registry *providerRegistry, tracke
 			writeError(w, http.StatusBadRequest, "invalid request body")
 			return
 		}
-		var body struct {
-			Model    string `json:"model"`
-			Stream   bool   `json:"stream"`
-			Messages []struct {
-				Role    string `json:"role"`
-				Content any    `json:"content"`
-			} `json:"messages"`
-		}
-		if err := json.Unmarshal(raw, &body); err != nil || body.Model == "" {
+		parsed := provider.ParseBody(raw)
+		if parsed == nil {
 			writeError(w, http.StatusBadRequest, "model is required")
 			return
 		}
-		cfg := getCfg()
-
-		msgs := make([]provider.Message, 0, len(body.Messages))
-		for _, m := range body.Messages {
-			msgs = append(msgs, provider.Message{Role: m.Role, Content: m.Content})
+		model, _ := parsed["model"].(string)
+		if model == "" {
+			writeError(w, http.StatusBadRequest, "model is required")
+			return
 		}
-		req := provider.ChatRequest{Model: body.Model, Stream: body.Stream, Messages: msgs, Raw: raw}
+		stream, _ := parsed["stream"].(bool)
+		msgs := messagesFromParsed(parsed)
+		cfg := getCfg()
+		req := provider.ChatRequest{Model: model, Stream: stream, Messages: msgs, Raw: raw, Parsed: parsed}
 
-		if cb, ok := findCombo(cfg, body.Model); ok {
+		if cb, ok := findCombo(cfg, model); ok {
 			runCombo(w, r, cfg, registry, cb, req, tracker, tc, startTime, metrics)
 			return
 		}
 
-		p, provName, model, ok := resolveDirect(cfg, registry, body.Model)
+		p, provName, resolvedModel, ok := resolveDirect(cfg, registry, model)
 		if !ok {
-			writeError(w, http.StatusNotFound, "model not found: "+body.Model)
+			writeError(w, http.StatusNotFound, "model not found: "+model)
 			return
 		}
-		req.Model = model
-		SetTelemetryHeaders(w, tc, provName, model, startTime)
+		req.Model = resolvedModel
+		SetTelemetryHeaders(w, tc, provName, resolvedModel, startTime)
 		// Providers stream straight to the client on this path, so a late failure
 		// must not be answered with a fresh JSON error envelope: the SSE body is
 		// already on the wire and the object would be parsed as a bad frame.
 		tracked := &commitTracker{ResponseWriter: w}
 		providerErr := p.ChatCompletion(r.Context(), req, tracked)
-		metrics.RecordProviderRequest(r.Context(), provName, knownModelLabel(cfg, provName, model), classifyProviderError(providerErr, tracked.committed, r.Context().Err() != nil))
+		metrics.RecordProviderRequest(r.Context(), provName, knownModelLabel(cfg, provName, resolvedModel), classifyProviderError(providerErr, tracked.committed, r.Context().Err() != nil))
 		if providerErr != nil && !tracked.committed {
 			writeProviderError(w, providerErr)
 		} else if providerErr != nil && req.Stream && r.Context().Err() == nil {
 			writeStreamError(w, sanitizeFailure(providerErr))
 		}
 	}
+}
+
+func messagesFromParsed(parsed map[string]any) []provider.Message {
+	rawMessages, ok := parsed["messages"].([]any)
+	if !ok {
+		return nil
+	}
+	messages := make([]provider.Message, 0, len(rawMessages))
+	for _, raw := range rawMessages {
+		message, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		role, _ := message["role"].(string)
+		messages = append(messages, provider.Message{Role: role, Content: message["content"]})
+	}
+	return messages
 }
 
 func findCombo(cfg *config.Config, name string) (config.Combo, bool) {
