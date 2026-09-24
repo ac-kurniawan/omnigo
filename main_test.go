@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ac-kurniawan/omnigo/internal/auth"
 	"github.com/ac-kurniawan/omnigo/internal/config"
@@ -301,6 +302,56 @@ func TestActuatorMetricsEndToEndWithApp(t *testing.T) {
 	app.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/actuator/metrics", nil))
 	if rr.Code != http.StatusNotFound {
 		t.Fatalf("disabled status = %d, want 404", rr.Code)
+	}
+}
+
+func TestServerTimeoutsFollowStreamBudget(t *testing.T) {
+	def := serverTimeouts(nil)
+	if def.Drain != 15*time.Minute {
+		t.Fatalf("default drain = %v, want 15m (server stream_timeout)", def.Drain)
+	}
+	if def.ReadTimeout <= 0 {
+		t.Fatalf("ReadTimeout = %v, want a positive body cap", def.ReadTimeout)
+	}
+	if def.ReadHeaderTimeout != 10*time.Second {
+		t.Fatalf("ReadHeaderTimeout = %v, want 10s", def.ReadHeaderTimeout)
+	}
+	if def.IdleTimeout != idleTimeout {
+		t.Fatalf("IdleTimeout = %v, want %v", def.IdleTimeout, idleTimeout)
+	}
+	if def.WriteTimeout != 0 {
+		t.Fatalf("WriteTimeout = %v, want 0 so a healthy generation is not cut", def.WriteTimeout)
+	}
+
+	short := serverTimeouts(&config.Config{Server: config.Server{StreamTimeout: "45s"}})
+	if short.Drain != 45*time.Second {
+		t.Fatalf("short drain = %v, want 45s", short.Drain)
+	}
+
+	huge := serverTimeouts(&config.Config{Server: config.Server{StreamTimeout: "2h"}})
+	if huge.Drain != maxShutdownDrain {
+		t.Fatalf("capped drain = %v, want hard cap %v", huge.Drain, maxShutdownDrain)
+	}
+
+	unbounded := serverTimeouts(&config.Config{Server: config.Server{StreamTimeout: "0s"}})
+	if unbounded.Drain != maxShutdownDrain {
+		t.Fatalf("unbounded drain = %v, want hard cap %v so a hung process still exits", unbounded.Drain, maxShutdownDrain)
+	}
+}
+
+func TestApplyServerTimeoutsLeavesWriteUnset(t *testing.T) {
+	cfg := &config.Config{Server: config.Server{StreamTimeout: "15m"}}
+	srv := &http.Server{}
+	applyServerTimeouts(srv, cfg)
+	want := serverTimeouts(cfg)
+	if srv.ReadTimeout != want.ReadTimeout || srv.ReadHeaderTimeout != want.ReadHeaderTimeout || srv.IdleTimeout != want.IdleTimeout {
+		t.Fatalf("server timeouts = read %v header %v idle %v, want %v %v %v", srv.ReadTimeout, srv.ReadHeaderTimeout, srv.IdleTimeout, want.ReadTimeout, want.ReadHeaderTimeout, want.IdleTimeout)
+	}
+	if srv.WriteTimeout != 0 {
+		t.Fatalf("WriteTimeout = %v, want unset", srv.WriteTimeout)
+	}
+	if got := shutdownDrain(cfg); got != want.Drain {
+		t.Fatalf("shutdown drain = %v, want %v", got, want.Drain)
 	}
 }
 

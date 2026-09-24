@@ -116,16 +116,74 @@ func newApp(getCfg func() *config.Config, store *vault.Store, mutate config.Muta
 	return metrics.Middleware(root), runtime
 }
 
-// Server lifecycle bounds are transport concerns, independent of the
-// configured upstream timeout: a request may legitimately wait longer than a
-// keep-alive or a shutdown drain should.
+// Server lifecycle bounds are transport concerns. Keep-alive stays fixed.
+// Shutdown drain follows the configured stream budget so a generation still
+// inside stream_timeout is not cut at a shorter deploy window, and is capped
+// so a hung process still exits. ReadTimeout caps a request body that never
+// finishes uploading. WriteTimeout stays unset: a value below stream_timeout
+// would kill a healthy generation.
 const (
 	// idleTimeout closes keep-alive connections abandoned between requests.
 	idleTimeout = 120 * time.Second
-	// shutdownDrainTimeout gives in-flight generations time to finish before
-	// the process exits.
-	shutdownDrainTimeout = 30 * time.Second
+	// readHeaderTimeout bounds how long a client may take to send headers.
+	readHeaderTimeout = 10 * time.Second
+	// readTimeout bounds the request body after the headers. It is independent
+	// of stream_timeout: the body is the client upload, not the generation.
+	readTimeout = 60 * time.Second
+	// maxShutdownDrain is the hard ceiling on how long Shutdown waits. A
+	// stream_timeout of 0 (unbounded) or longer than this still exits here.
+	maxShutdownDrain = 30 * time.Minute
 )
+
+// serverDeadlines is the http.Server timeout set derived from config.
+type serverDeadlines struct {
+	ReadTimeout       time.Duration
+	ReadHeaderTimeout time.Duration
+	WriteTimeout      time.Duration
+	IdleTimeout       time.Duration
+	Drain             time.Duration
+}
+
+// serverTimeouts returns the transport deadlines for cfg. A nil config uses
+// the same defaults an unset stream_timeout would.
+func serverTimeouts(cfg *config.Config) serverDeadlines {
+	stream := 15 * time.Minute
+	if cfg != nil {
+		stream = cfg.DefaultStreamTimeout()
+	}
+	return serverDeadlines{
+		ReadTimeout:       readTimeout,
+		ReadHeaderTimeout: readHeaderTimeout,
+		WriteTimeout:      0,
+		IdleTimeout:       idleTimeout,
+		Drain:             shutdownDrainFor(stream),
+	}
+}
+
+// shutdownDrainFor waits as long as the stream budget, but never past
+// maxShutdownDrain. A zero budget means streams are otherwise unbounded, so
+// shutdown uses the hard cap rather than waiting forever.
+func shutdownDrainFor(stream time.Duration) time.Duration {
+	if stream <= 0 || stream > maxShutdownDrain {
+		return maxShutdownDrain
+	}
+	return stream
+}
+
+// shutdownDrain is how long Shutdown waits for in-flight generations.
+func shutdownDrain(cfg *config.Config) time.Duration {
+	return serverTimeouts(cfg).Drain
+}
+
+// applyServerTimeouts copies the derived deadlines onto srv. WriteTimeout is
+// left at zero on purpose.
+func applyServerTimeouts(srv *http.Server, cfg *config.Config) {
+	d := serverTimeouts(cfg)
+	srv.ReadTimeout = d.ReadTimeout
+	srv.ReadHeaderTimeout = d.ReadHeaderTimeout
+	srv.WriteTimeout = d.WriteTimeout
+	srv.IdleTimeout = d.IdleTimeout
+}
 
 func main() {
 	dirFlag := flag.String("dir", "", "path to omnigo config directory (default: ~/.config/omnigo)")
@@ -215,11 +273,10 @@ func main() {
 		log.Printf("metrics enabled at http://%s/actuator/metrics", addr)
 	}
 	srv := &http.Server{
-		Addr:              addr,
-		Handler:           app,
-		ReadHeaderTimeout: 10 * time.Second,
-		IdleTimeout:       idleTimeout,
+		Addr:    addr,
+		Handler: app,
 	}
+	applyServerTimeouts(srv, state.getCfg())
 
 	serverErr := make(chan error, 1)
 	go func() {
@@ -233,7 +290,7 @@ func main() {
 		log.Fatalf("server: %v", err)
 	case <-sigCtx.Done():
 		log.Printf("shutting down OmniGo gracefully...")
-		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), shutdownDrainTimeout)
+		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), shutdownDrain(state.getCfg()))
 		defer shutdownCancel()
 		if err := srv.Shutdown(shutdownCtx); err != nil {
 			log.Printf("shutdown error: %v", err)

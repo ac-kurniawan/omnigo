@@ -96,19 +96,25 @@ Two knobs bound every upstream call, and both are hot-reloaded:
 ```yaml
 server:
   timeout: 60s          # default 60s
-  stream_timeout: 15m   # default 15m; 0 = no total bound
+  stream_timeout: 15m   # default 15m; 0 = no total bound; shutdown drain caps at 30m
 ```
 
 - `timeout` bounds how long the gateway waits on a provider. A buffered call is
   capped end to end; a streamed generation is capped per silence, so a long
   answer is not killed mid-flight. Sixty seconds is long enough to survive a
   slow first token and short enough that a stalled generation fails over before
-  a client gives up. Server keep-alive and shutdown bounds are fixed transport
-  constants, independent of this value.
+  a client gives up. Server keep-alive stays a fixed 120s, independent of this
+  value. The HTTP server also caps how long a client may spend sending the
+  request body (60s); that bound is not this setting.
 - `stream_timeout` caps the total wall-clock time of one streamed generation,
   time to first byte included. Silence alone cannot end a stream that keeps
   trickling bytes; this budget can. `0` (or `0s`) disables it, leaving a
-  generation bounded only by silence.
+  generation bounded only by silence. A restart does not ignore this budget:
+  on SIGTERM the process drains in-flight streams for `stream_timeout`, and
+  never longer than 30 minutes. `0` and any value above 30m both stop at that
+  hard cap, so a hung generation cannot hold the process open. Response writes
+  have no separate server write timeout; one shorter than this budget would
+  cut a healthy generation.
 
 Both take a per-provider override (`providers[].timeout`,
 `providers[].stream_timeout`), which wins over the server value. Nothing caps

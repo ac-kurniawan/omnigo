@@ -8,7 +8,9 @@ server:
   timeout: 60s
   # Total wall-clock budget for one streamed generation (default: 15m).
   # Bounds a stream that keeps trickling bytes and never finishes. 0 disables
-  # the bound, leaving only silence bounded.
+  # the bound, leaving only silence bounded. On SIGTERM, in-flight streams are
+  # drained for this long, capped at 30m so a hung process still exits. A
+  # stream_timeout of 0 or longer than 30m therefore cuts at 30m on restart.
   stream_timeout: 15m
 
 
