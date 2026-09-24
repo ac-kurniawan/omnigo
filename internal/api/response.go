@@ -10,6 +10,151 @@ import (
 	"github.com/ac-kurniawan/omnigo/internal/provider"
 )
 
+// sseCommitState watches a streaming combo body for the first content event.
+// Comment lines and ping/keepalive/heartbeat events are not content: a failure
+// before a content frame can still fail over. Once a content event is
+// complete, the bytes already read are committed so the client loses nothing.
+type sseCommitState struct {
+	scanned int
+	event   string
+	data    []byte
+	partial []byte
+	ready   bool
+}
+
+func (s *sseCommitState) feed(body []byte) bool {
+	if s.ready {
+		return true
+	}
+	rest := body[s.scanned:]
+	for len(rest) > 0 {
+		i := bytes.IndexByte(rest, '\n')
+		if i < 0 {
+			s.partial = append(s.partial, rest...)
+			s.scanned = len(body)
+			return false
+		}
+		var line []byte
+		if len(s.partial) > 0 {
+			s.partial = append(s.partial, rest[:i]...)
+			line = s.partial
+		} else {
+			line = rest[:i]
+		}
+		rest = rest[i+1:]
+		s.scanned = len(body) - len(rest)
+		if sseLineEndsEvent(line) && sseContentEvent(s.event, s.data) {
+			s.ready = true
+			s.partial = nil
+			s.scanned = len(body)
+			return true
+		}
+		s.consumeLine(line)
+		s.partial = s.partial[:0]
+	}
+	return false
+}
+
+func (s *sseCommitState) consumeLine(line []byte) {
+	if n := len(line); n > 0 && line[n-1] == '\r' {
+		line = line[:n-1]
+	}
+	trimmed := bytes.TrimSpace(line)
+	if len(trimmed) == 0 {
+		s.event, s.data = "", s.data[:0]
+		return
+	}
+	if trimmed[0] == ':' {
+		return
+	}
+	field, value, _ := bytes.Cut(trimmed, []byte(":"))
+	value = bytes.TrimLeft(value, " ")
+	switch string(field) {
+	case "event":
+		s.event = string(value)
+	case "data":
+		if len(s.data) > 0 {
+			s.data = append(s.data, '\n')
+		}
+		s.data = append(s.data, value...)
+	}
+}
+
+func sseLineEndsEvent(line []byte) bool {
+	if n := len(line); n > 0 && line[n-1] == '\r' {
+		line = line[:n-1]
+	}
+	return len(bytes.TrimSpace(line)) == 0
+}
+
+func sseContentEvent(event string, data []byte) bool {
+	if ssePingName(event) {
+		return false
+	}
+	payload := bytes.TrimSpace(data)
+	if len(payload) == 0 || bytes.Equal(payload, []byte("[DONE]")) {
+		return false
+	}
+	if !json.Valid(payload) {
+		return true
+	}
+	var decoded any
+	if err := json.Unmarshal(payload, &decoded); err != nil {
+		return true
+	}
+	return sseContentPayload(decoded, event)
+}
+
+func sseContentPayload(payload any, event string) bool {
+	switch v := payload.(type) {
+	case map[string]any:
+		if ssePingName(payloadType(v, event)) {
+			return false
+		}
+		if len(v) == 0 {
+			return false
+		}
+		return !sseErrorOnly(v)
+	case []any:
+		return len(v) > 0
+	default:
+		return v != nil
+	}
+}
+
+func payloadType(v map[string]any, event string) string {
+	for _, key := range []string{"type", "event", "object"} {
+		if s, ok := v[key].(string); ok {
+			return s
+		}
+	}
+	return event
+}
+
+func sseErrorOnly(v map[string]any) bool {
+	if _, ok := v["error"]; !ok {
+		return false
+	}
+	for _, key := range []string{
+		"choices", "candidates", "content_block", "delta", "output", "response",
+		"parts", "tool_calls", "tool_use", "function_call", "function_call_output",
+	} {
+		if _, ok := v[key]; ok {
+			return false
+		}
+	}
+	return true
+}
+
+func ssePingName(name string) bool {
+	switch strings.ToLower(name) {
+	case "ping", "keepalive", "heartbeat":
+		return true
+	default:
+		return false
+	}
+}
+
 var errResponseCommitted = errors.New("response already committed")
 
 type bufferedResponseWriter struct {
@@ -20,6 +165,7 @@ type bufferedResponseWriter struct {
 	stream        bool
 	headerWritten bool
 	committed     bool
+	sse           sseCommitState
 }
 
 func newBufferedResponseWriter(destination http.ResponseWriter, stream bool) *bufferedResponseWriter {
@@ -53,13 +199,13 @@ func (w *bufferedResponseWriter) Flush() {
 		return
 	}
 	if !w.committed {
-		if w.body.Len() == 0 {
+		if !w.sse.feed(w.body.Bytes()) {
 			return
 		}
 		w.commit()
 	}
-	// Every flush after the first commit must still reach the client: the
-	// remaining SSE chunks would otherwise sit in the server's buffer until EOF.
+	// Every flush after the first content frame must still reach the client:
+	// the remaining SSE chunks would otherwise sit in the server's buffer until EOF.
 	if flusher, ok := w.destination.(http.Flusher); ok {
 		flusher.Flush()
 	}
@@ -74,6 +220,12 @@ func (w *bufferedResponseWriter) commit() {
 	w.committed = true
 	_, _ = w.destination.Write(w.body.Bytes())
 	w.body.Reset()
+}
+
+// Committed reports whether a content frame has already reached the client.
+// Nested attempt writers use it to stop buffering once failover is impossible.
+func (w *bufferedResponseWriter) Committed() bool {
+	return w.committed
 }
 
 func (w *bufferedResponseWriter) finish(err error) error {
