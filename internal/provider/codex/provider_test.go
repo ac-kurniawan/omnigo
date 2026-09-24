@@ -179,6 +179,8 @@ func TestProviderAccountPoolFallsBackOnPreCommitFailure(t *testing.T) {
 }
 
 func TestProviderAccountPoolFallsBackOnTransportFailure(t *testing.T) {
+	saved := UnaryClient().Transport
+	t.Cleanup(func() { SetHTTPTransport(saved) })
 	transport := &failingTransport{}
 	store := &poolCredStore{creds: []provider.Credentials{
 		{AccessToken: "access-1", AccountID: "account-1", ExpiresAt: time.Now().Add(time.Hour)},
@@ -323,6 +325,62 @@ func TestProviderAccountPoolSkipsDrainedUntilCooldownExpires(t *testing.T) {
 	}
 	if firstCalls.Load() != 2 {
 		t.Fatalf("first account calls after expiry = %d", firstCalls.Load())
+	}
+}
+
+func TestProvider429OnOneModelLeavesAccountAvailableForAnother(t *testing.T) {
+	var calls []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Model string `json:"model"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		calls = append(calls, body.Model)
+		if body.Model == "gpt-a" {
+			w.WriteHeader(http.StatusTooManyRequests)
+			return
+		}
+		_, _ = io.WriteString(w, event("response.completed", map[string]any{"response": map[string]any{"status": "completed"}}))
+	}))
+	defer server.Close()
+	store := &poolCredStore{creds: []provider.Credentials{
+		{AccessToken: "access-1", AccountID: "account-1", ExpiresAt: time.Now().Add(time.Hour)},
+	}}
+	p := New(provider.Config{Name: "codex", BaseURL: server.URL}, store)
+	if err := p.ChatCompletion(context.Background(), provider.ChatRequest{Model: "gpt-a", Raw: []byte(`{"messages":[]}`)}, httptest.NewRecorder()); err == nil {
+		t.Fatal("gpt-a request succeeded, want quota failure")
+	}
+	if err := p.ChatCompletion(context.Background(), provider.ChatRequest{Model: "gpt-b", Raw: []byte(`{"messages":[]}`)}, httptest.NewRecorder()); err != nil {
+		t.Fatalf("gpt-b request = %v, want the account still available", err)
+	}
+	if len(calls) != 2 || calls[0] != "gpt-a" || calls[1] != "gpt-b" {
+		t.Fatalf("calls = %v, want both models attempted on the same account", calls)
+	}
+}
+
+func TestProvider401RemovesAccountForEveryModel(t *testing.T) {
+	var calls []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Model string `json:"model"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		calls = append(calls, body.Model)
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer server.Close()
+	store := &poolCredStore{creds: []provider.Credentials{
+		{AccessToken: "access-1", AccountID: "account-1", ExpiresAt: time.Now().Add(time.Hour)},
+	}}
+	p := New(provider.Config{Name: "codex", BaseURL: server.URL}, store)
+	if err := p.ChatCompletion(context.Background(), provider.ChatRequest{Model: "gpt-a", Raw: []byte(`{"messages":[]}`)}, httptest.NewRecorder()); err == nil {
+		t.Fatal("gpt-a request succeeded, want auth failure")
+	}
+	if err := p.ChatCompletion(context.Background(), provider.ChatRequest{Model: "gpt-b", Raw: []byte(`{"messages":[]}`)}, httptest.NewRecorder()); err == nil {
+		t.Fatal("gpt-b request reached upstream after an account-wide auth failure")
+	}
+	if len(calls) != 1 || calls[0] != "gpt-a" {
+		t.Fatalf("calls = %v, want only the first model", calls)
 	}
 }
 

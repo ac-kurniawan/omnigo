@@ -44,6 +44,9 @@ func New(cfg provider.Config, store provider.CredStore) provider.Provider {
 	if timeout <= 0 {
 		timeout = 60 * time.Second
 	}
+	if cfg.Transport != nil {
+		SetHTTPTransport(cfg.Transport)
+	}
 	client := &http.Client{Timeout: timeout, Transport: cfg.Transport}
 	return &Provider{
 		name:          cfg.Name,
@@ -68,8 +71,12 @@ func normalizeBaseURL(base string) string {
 
 func (p *Provider) Name() string { return p.name }
 
+// Client returns the streaming client so tests can prove it stays distinct
+// from the bounded unary client.
+func (p *Provider) Client() *http.Client { return p.stream }
+
 func (p *Provider) Models(ctx context.Context) ([]provider.Model, error) {
-	accounts, drainErr := p.pool.AvailableWithError(p.store)
+	accounts, drainErr := p.pool.AvailableForModel(p.store, "")
 	lastErr := drainErr
 	for _, account := range accounts {
 		tokens := p.tokenManager(account)
@@ -92,7 +99,7 @@ func (p *Provider) Models(ctx context.Context) ([]provider.Model, error) {
 			}
 		}
 		lastErr = err
-		p.pool.MarkFailed(account, err)
+		p.pool.MarkFailed(account, "", err)
 	}
 	if lastErr == nil {
 		lastErr = fmt.Errorf("antigravity: not authenticated")
@@ -113,7 +120,7 @@ func (p *Provider) Test(ctx context.Context) provider.TestResult {
 }
 
 func (p *Provider) ChatCompletion(ctx context.Context, req provider.ChatRequest, w http.ResponseWriter) error {
-	accounts, drainErr := p.pool.AvailableWithError(p.store)
+	accounts, drainErr := p.pool.AvailableForModel(p.store, req.Model)
 	if len(accounts) == 0 {
 		if drainErr != nil {
 			return drainErr
@@ -133,7 +140,7 @@ func (p *Provider) ChatCompletion(ctx context.Context, req provider.ChatRequest,
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-		p.pool.MarkFailed(account, lastErr)
+		p.pool.MarkFailed(account, req.Model, lastErr)
 	}
 	return lastErr
 }

@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -12,6 +13,8 @@ import (
 	"github.com/ac-kurniawan/omnigo/internal/auth"
 	"github.com/ac-kurniawan/omnigo/internal/config"
 	"github.com/ac-kurniawan/omnigo/internal/provider"
+	"github.com/ac-kurniawan/omnigo/internal/provider/antigravity"
+	"github.com/ac-kurniawan/omnigo/internal/provider/codex"
 	"github.com/ac-kurniawan/omnigo/internal/vault"
 )
 
@@ -123,6 +126,122 @@ func TestRegistryRebuildsProviderOnStreamTimeoutChange(t *testing.T) {
 	if got.StreamTimeout != 9*time.Minute {
 		t.Fatalf("stream timeout after reload = %v, want 9m (provider was reused)", got.StreamTimeout)
 	}
+}
+
+// Token refresh and quota polls must ride the registry pool, not a private
+// default transport, while keeping their own 15s client so they never inherit
+// the streaming client's unbounded deadline.
+func TestUnaryClientsShareRegistryTransport(t *testing.T) {
+	agyTransport := antigravity.UnaryClient().Transport
+	cxTransport := codex.UnaryClient().Transport
+	t.Cleanup(func() {
+		antigravity.SetHTTPTransport(agyTransport)
+		codex.SetHTTPTransport(cxTransport)
+	})
+
+	registry := newProviderRegistry(vault.NewMemoryStore(&vault.Vault{}))
+	cfg := &config.Config{Providers: []config.Provider{
+		{Name: "agy", Type: "antigravity"},
+		{Name: "cx", Type: "codex"},
+	}}
+	registry.ensure(cfg)
+
+	agy, ok := registry.Get(cfg, "agy")
+	if !ok {
+		t.Fatal("antigravity provider missing")
+	}
+	cx, ok := registry.Get(cfg, "cx")
+	if !ok {
+		t.Fatal("codex provider missing")
+	}
+
+	agyUnary := antigravity.UnaryClient()
+	cxUnary := codex.UnaryClient()
+	if agyUnary.Timeout != 15*time.Second || cxUnary.Timeout != 15*time.Second {
+		t.Fatalf("unary timeouts = %v, %v; want 15s", agyUnary.Timeout, cxUnary.Timeout)
+	}
+	if agyUnary.Transport != registry.transport || cxUnary.Transport != registry.transport {
+		t.Fatalf("unary transports = %T, %T; want the registry transport", agyUnary.Transport, cxUnary.Transport)
+	}
+
+	agyStream, ok := providerClient(agy)
+	if !ok || agyStream == agyUnary {
+		t.Fatal("antigravity streaming client must be distinct from the unary client")
+	}
+	cxStream, ok := providerClient(cx)
+	if !ok || cxStream == cxUnary {
+		t.Fatal("codex streaming client must be distinct from the unary client")
+	}
+	if agyStream.Timeout != 0 || cxStream.Timeout != 0 {
+		t.Fatalf("streaming timeouts = %v, %v; want unbounded", agyStream.Timeout, cxStream.Timeout)
+	}
+}
+
+func providerClient(p provider.Provider) (*http.Client, bool) {
+	type clientHolder interface{ Client() *http.Client }
+	holder, ok := p.(clientHolder)
+	if !ok {
+		return nil, false
+	}
+	return holder.Client(), true
+}
+
+// The bounded clients no longer own a transport, so the registry's one close
+// must reach the connections their token and quota calls parked.
+func TestCloseIdleConnectionsReachesUnaryClients(t *testing.T) {
+	agyTransport := antigravity.UnaryClient().Transport
+	t.Cleanup(func() {
+		antigravity.SetHTTPTransport(agyTransport)
+	})
+	var mu sync.Mutex
+	open := map[net.Conn]bool{}
+	upstream := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	upstream.Config.ConnState = func(c net.Conn, state http.ConnState) {
+		mu.Lock()
+		defer mu.Unlock()
+		switch state {
+		case http.StateNew:
+			open[c] = true
+		case http.StateClosed:
+			delete(open, c)
+		}
+	}
+	upstream.Start()
+	defer upstream.Close()
+
+	registry := newProviderRegistry(vault.NewMemoryStore(&vault.Vault{}))
+	cfg := &config.Config{Providers: []config.Provider{{Name: "agy", Type: "antigravity"}}}
+	registry.ensure(cfg)
+
+	saved := antigravity.BaseURL()
+	antigravity.SetBaseURL(upstream.URL)
+	t.Cleanup(func() { antigravity.SetBaseURL(saved) })
+
+	resp, err := antigravity.UnaryClient().Get(upstream.URL + "/v1internal:fetchAvailableModels")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if countOpen(open, &mu) == 0 {
+		t.Fatal("unary call opened no pooled connection")
+	}
+
+	registry.CloseIdleConnections()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) && countOpen(open, &mu) != 0 {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if got := countOpen(open, &mu); got != 0 {
+		t.Fatalf("idle connections after close = %d, want 0", got)
+	}
+}
+
+func countOpen(open map[net.Conn]bool, mu *sync.Mutex) int {
+	mu.Lock()
+	defer mu.Unlock()
+	return len(open)
 }
 
 func BenchmarkBuildProviderPerRequest(b *testing.B) {
