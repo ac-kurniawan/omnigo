@@ -164,6 +164,12 @@ func (g *IdleGuard) touch() {
 	if g.stallErr != nil || g.timer == nil {
 		return
 	}
+	// A fast stream resets the timer many times a second. Skip the runtime
+	// reset until the countdown has run past its halfway point; a stall still
+	// fires after a full idle of silence, and onIdle rechecks a late timer.
+	if since := time.Since(g.last); since < g.idle/2 {
+		return
+	}
 	g.last = time.Now()
 	g.timer.Reset(g.idle)
 }
