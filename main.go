@@ -238,5 +238,6 @@ func main() {
 		if err := srv.Shutdown(shutdownCtx); err != nil {
 			log.Printf("shutdown error: %v", err)
 		}
+		runtime.CloseIdleConnections()
 	}
 }

@@ -77,6 +77,8 @@ func (b *closeTrackingBody) Close() error {
 }
 
 func TestChatCompletionClosesUpstreamResponseBody(t *testing.T) {
+	saved := UnaryClient().Transport
+	t.Cleanup(func() { SetHTTPTransport(saved) })
 	body := &closeTrackingBody{Reader: strings.NewReader(`data: {"candidates":[{"content":{"parts":[{"text":"ok"}]},"finishReason":"STOP"}]}` + "\n\n")}
 	transport := roundTripFunc(func(*http.Request) (*http.Response, error) {
 		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: body}, nil
@@ -96,6 +98,8 @@ func TestChatCompletionClosesUpstreamResponseBody(t *testing.T) {
 // [DONE] makes the client treat the truncated answer as final, so the gateway
 // must fail the attempt instead.
 func TestStreamEndsWithoutFinishReasonIsIncomplete(t *testing.T) {
+	saved := UnaryClient().Transport
+	t.Cleanup(func() { SetHTTPTransport(saved) })
 	body := io.NopCloser(strings.NewReader("data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"partial\"}]}}]}\n\n"))
 	transport := roundTripFunc(func(*http.Request) (*http.Response, error) {
 		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: body}, nil
@@ -118,6 +122,8 @@ func TestStreamEndsWithoutFinishReasonIsIncomplete(t *testing.T) {
 // A mid-stream connection reset is the same failure: bytes already delivered,
 // then the socket dies. It must surface as an error, not a finished answer.
 func TestStreamReaderErrorIsIncomplete(t *testing.T) {
+	saved := UnaryClient().Transport
+	t.Cleanup(func() { SetHTTPTransport(saved) })
 	body := io.NopCloser(io.MultiReader(
 		strings.NewReader("data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"partial\"}]}}]}\n\n"),
 		errReader{errors.New("connection reset by peer")},
@@ -143,6 +149,8 @@ func (r errReader) Read([]byte) (int, error) { return 0, r.err }
 // The non-streaming path aggregates the same SSE feed, so a feed that closes
 // before a finish reason is a truncated answer too, not a short completion.
 func TestCompleteEndsWithoutFinishReasonIsIncomplete(t *testing.T) {
+	saved := UnaryClient().Transport
+	t.Cleanup(func() { SetHTTPTransport(saved) })
 	body := io.NopCloser(strings.NewReader("data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"partial\"}]}}]}\n\n"))
 	transport := roundTripFunc(func(*http.Request) (*http.Response, error) {
 		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: body}, nil
