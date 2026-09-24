@@ -43,6 +43,13 @@ func (p *AccountPool) Available(store CredStore) []Credentials {
 }
 
 func (p *AccountPool) AvailableWithError(store CredStore) ([]Credentials, error) {
+	return p.AvailableForModel(store, "")
+}
+
+// AvailableForModel returns credentials that can still serve model. An empty
+// model is account-wide: a model-specific drain does not hide the account,
+// but an account-wide drain does.
+func (p *AccountPool) AvailableForModel(store CredStore, model string) ([]Credentials, error) {
 	accounts := accountsFromStore(store)
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -54,9 +61,8 @@ func (p *AccountPool) AvailableWithError(store CredStore) ([]Credentials, error)
 	var unavailable error
 	for i, account := range accounts {
 		key := accountKey(account, i)
-		drain := p.drains[key]
-		if drain.until.IsZero() || !now.Before(drain.until) {
-			delete(p.drains, key)
+		drain, drained := p.activeDrainLocked(key, model, now)
+		if !drained {
 			healthy = append(healthy, account)
 			continue
 		}
@@ -67,7 +73,29 @@ func (p *AccountPool) AvailableWithError(store CredStore) ([]Credentials, error)
 	return healthy, unavailable
 }
 
-func (p *AccountPool) MarkFailed(account Credentials, err error) {
+func (p *AccountPool) activeDrainLocked(key, model string, now time.Time) (accountDrain, bool) {
+	if drain, ok := p.liveDrainLocked(key, now); ok {
+		return drain, true
+	}
+	if model == "" {
+		return accountDrain{}, false
+	}
+	return p.liveDrainLocked(modelDrainKey(key, model), now)
+}
+
+func (p *AccountPool) liveDrainLocked(key string, now time.Time) (accountDrain, bool) {
+	drain, ok := p.drains[key]
+	if !ok {
+		return accountDrain{}, false
+	}
+	if drain.until.IsZero() || !now.Before(drain.until) {
+		delete(p.drains, key)
+		return accountDrain{}, false
+	}
+	return drain, true
+}
+
+func (p *AccountPool) MarkFailed(account Credentials, model string, err error) {
 	cooldown := DefaultAccountCooldown
 	var withCooldown interface{ Cooldown() time.Duration }
 	if errors.As(err, &withCooldown) && withCooldown.Cooldown() > 0 {
@@ -83,27 +111,18 @@ func (p *AccountPool) MarkFailed(account Credentials, err error) {
 	if p.drains == nil {
 		p.drains = make(map[string]accountDrain)
 	}
-	p.drains[accountKey(account, 0)] = accountDrain{until: p.currentTimeLocked().Add(cooldown), reason: reason, clientError: clientErr}
+	key := accountKey(account, 0)
+	if modelScopedFailure(err) {
+		key = modelDrainKey(key, model)
+	}
+	p.drains[key] = accountDrain{until: p.currentTimeLocked().Add(cooldown), reason: reason, clientError: clientErr}
 	p.mu.Unlock()
 }
-
-// MarkQuotaDrained cools one credential because its upstream quota is now
-// exhausted, before any request has had to fail with a 429.
-//
-// The identity must match Credentials.Identity() of a stored account; the
-// drain is dropped otherwise. Callers MUST bound cooldown: a quota drain is
-// derived from upstream metadata that can be stale or misreported, so an
-// unbounded drain could park a healthy account.
-func (p *AccountPool) MarkQuotaDrained(identity string, cooldown time.Duration, reason string) {
-	if cooldown <= 0 || identity == "" {
-		return
+func (p *AccountPool) currentTimeLocked() time.Time {
+	if p.now != nil {
+		return p.now()
 	}
-	p.mu.Lock()
-	if p.drains == nil {
-		p.drains = make(map[string]accountDrain)
-	}
-	p.drains[identity] = accountDrain{until: p.currentTimeLocked().Add(cooldown), reason: reason}
-	p.mu.Unlock()
+	return time.Now()
 }
 
 // isClientError reports whether an upstream failure is the caller's fault (a
@@ -121,11 +140,44 @@ func isClientError(err error) bool {
 	return false
 }
 
-func (p *AccountPool) currentTimeLocked() time.Time {
-	if p.now != nil {
-		return p.now()
+// MarkQuotaDrained cools one credential for one model because that model's
+// upstream quota is now exhausted, before any request has had to fail with a
+// 429. An empty model is account-wide.
+//
+// The identity must match Credentials.Identity() of a stored account; the
+// drain is dropped otherwise. Callers MUST bound cooldown: a quota drain is
+// derived from upstream metadata that can be stale or misreported, so an
+// unbounded drain could park a healthy account.
+func (p *AccountPool) MarkQuotaDrained(identity, model string, cooldown time.Duration, reason string) {
+	if cooldown <= 0 || identity == "" {
+		return
 	}
-	return time.Now()
+	key := identity
+	if model != "" {
+		key = modelDrainKey(identity, model)
+	}
+	p.mu.Lock()
+	if p.drains == nil {
+		p.drains = make(map[string]accountDrain)
+	}
+	p.drains[key] = accountDrain{until: p.currentTimeLocked().Add(cooldown), reason: reason}
+	p.mu.Unlock()
+}
+
+// modelScopedFailure reports a failure that belongs to one model rather than
+// the credential. 429 and other quota errors are model-scoped; auth failures
+// and everything else stay account-wide.
+func modelScopedFailure(err error) bool {
+	var status interface{ HTTPStatus() int }
+	if errors.As(err, &status) && status.HTTPStatus() == http.StatusTooManyRequests {
+		return true
+	}
+	var quota interface{ QuotaExhausted() bool }
+	return errors.As(err, &quota) && quota.QuotaExhausted()
+}
+
+func modelDrainKey(identity, model string) string {
+	return identity + "\x00" + model
 }
 
 func (p *AccountPool) SetClock(now func() time.Time) {

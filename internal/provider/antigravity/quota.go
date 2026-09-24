@@ -186,10 +186,10 @@ func bucketLabel(group quotaGroup, b quotaBucket) string {
 	return group.DisplayName
 }
 
-// MarkQuotaDrained cools one credential in this provider's account pool
-// because its upstream quota is exhausted. It lets the syncer pre-drain an
-// account through the same pool the request path uses, without exposing the
-// pool itself.
-func (p *Provider) MarkQuotaDrained(identity string, cooldown time.Duration, reason string) {
-	p.pool.MarkQuotaDrained(identity, cooldown, reason)
+// MarkQuotaDrained cools one model on one credential in this provider's
+// account pool because that model's upstream quota is exhausted. An empty
+// model cools the whole account. It lets the syncer pre-drain through the
+// same pool the request path uses, without exposing the pool itself.
+func (p *Provider) MarkQuotaDrained(identity, model string, cooldown time.Duration, reason string) {
+	p.pool.MarkQuotaDrained(identity, model, cooldown, reason)
 }

@@ -56,6 +56,13 @@ func newSharedTransport() *http.Transport {
 	return t
 }
 
+// CloseIdleConnections drains the shared pool on shutdown. Every provider and
+// the bounded unary clients ride this transport, so one close reaches them
+// all; they no longer own a private transport.
+func (r *providerRegistry) CloseIdleConnections() {
+	r.transport.CloseIdleConnections()
+}
+
 func (r *providerRegistry) Get(cfg *config.Config, name string) (provider.Provider, bool) {
 	r.ensure(cfg)
 	r.mu.RLock()

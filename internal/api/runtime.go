@@ -22,6 +22,15 @@ type ProviderRuntime struct {
 	cache    *quota.Cache
 }
 
+// CloseIdleConnections closes pooled connections in the shared transport,
+// including the ones token refresh and quota polls put there.
+func (rt *ProviderRuntime) CloseIdleConnections() {
+	if rt == nil || rt.registry == nil {
+		return
+	}
+	rt.registry.CloseIdleConnections()
+}
+
 // QuotaCache returns the cache the router publishes snapshots to.
 func (rt *ProviderRuntime) QuotaCache() *quota.Cache {
 	if rt == nil {
@@ -59,17 +68,17 @@ func (rt *ProviderRuntime) QuotaDrainer(getCfg func() *config.Config) quota.Drai
 
 // runtimeDrainer adapts the registry's drain function to quota.Drainer.
 type runtimeDrainer struct {
-	drain func(provider, identity string, cooldown time.Duration, reason string)
+	drain func(provider, identity, model string, cooldown time.Duration, reason string)
 }
 
-func (d runtimeDrainer) MarkQuotaDrained(provider, identity string, cooldown time.Duration, reason string) {
-	d.drain(provider, identity, cooldown, reason)
+func (d runtimeDrainer) MarkQuotaDrained(provider, identity, model string, cooldown time.Duration, reason string) {
+	d.drain(provider, identity, model, cooldown, reason)
 }
 
 // noopDrainer drops drains when no runtime is available.
 type noopDrainer struct{}
 
-func (noopDrainer) MarkQuotaDrained(string, string, time.Duration, string) {}
+func (noopDrainer) MarkQuotaDrained(string, string, string, time.Duration, string) {}
 
 // RefreshQuota performs one synchronous poll and stores the result, backing
 // the dashboard's per-account Refresh button.

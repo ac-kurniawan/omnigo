@@ -16,6 +16,15 @@ import (
 // client with the configured provider timeout.
 var unaryClient = &http.Client{Timeout: 15 * time.Second}
 
+// UnaryClient is the bounded client used by token, identity, and quota calls.
+func UnaryClient() *http.Client { return unaryClient }
+
+// SetHTTPTransport swaps the bounded client onto the shared transport without
+// touching its 15s timeout. A nil transport restores the default transport.
+func SetHTTPTransport(t http.RoundTripper) {
+	unaryClient.Transport = t
+}
+
 // defaultBaseURL is the Cloud Code host the official Antigravity CLI uses.
 // The legacy cloudcode-pa.googleapis.com host returns a detail-free
 // 429 RESOURCE_EXHAUSTED for consumer accounts even when quota remains;
@@ -24,6 +33,13 @@ const defaultBaseURL = "https://daily-cloudcode-pa.googleapis.com"
 
 // baseURL is a var so tests can override it with an httptest server.
 var baseURL = defaultBaseURL
+
+// BaseURL reports the host unary calls target, so tests can point them at an
+// httptest server and restore it afterwards.
+func BaseURL() string { return baseURL }
+
+// SetBaseURL redirects unary calls for the duration of a test.
+func SetBaseURL(u string) { baseURL = u }
 
 const (
 	antigravityUserAgent = "antigravity/ide/0.0.0 darwin/arm64 google-api-nodejs-client/10.3.0"

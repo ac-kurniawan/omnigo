@@ -30,6 +30,8 @@ func (e *quotaError) DrainReason() string {
 	return e.Error()
 }
 
+func (e *quotaError) QuotaExhausted() bool { return true }
+
 func newQuotaError(headers http.Header) error {
 	cooldown := quotaCooldown(headers, timeNow())
 	return &quotaError{cooldown: cooldown}
