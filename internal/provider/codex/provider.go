@@ -247,7 +247,7 @@ func (p *Provider) ChatCompletion(ctx context.Context, req provider.ChatRequest,
 	if err != nil {
 		return fmt.Errorf("codex: encode upstream request: %w", err)
 	}
-	accounts := p.pool.Available(p.store)
+	accounts, _ := p.pool.AvailableForModel(p.store, req.Model)
 	if len(accounts) == 0 {
 		return fmt.Errorf("codex: not authenticated")
 	}
@@ -264,7 +264,7 @@ func (p *Provider) ChatCompletion(ctx context.Context, req provider.ChatRequest,
 		if errors.Is(lastErr, context.Canceled) || errors.Is(lastErr, context.DeadlineExceeded) {
 			return lastErr
 		}
-		p.pool.MarkFailed(account, lastErr)
+		p.pool.MarkFailed(account, req.Model, lastErr)
 	}
 	return lastErr
 }

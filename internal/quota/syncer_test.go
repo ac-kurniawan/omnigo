@@ -20,7 +20,7 @@ type drainCall struct {
 	reason   string
 }
 
-func (d *recordingDrainer) MarkQuotaDrained(provider, identity string, cooldown time.Duration, reason string) {
+func (d *recordingDrainer) MarkQuotaDrained(provider, identity, model string, cooldown time.Duration, reason string) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.drains = append(d.drains, drainCall{provider, identity, cooldown, reason})

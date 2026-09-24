@@ -96,8 +96,8 @@ func (r *providerRegistry) quotaFetch(cfg func() *config.Config) func(context.Co
 // quotaDrainer routes a quota exhaustion into the named provider's account
 // pool, so auto-drain removes exactly one credential from rotation while the
 // provider and its combo targets stay routable through the other accounts.
-func (r *providerRegistry) quotaDrainer(getCfg func() *config.Config) func(providerName, identity string, cooldown time.Duration, reason string) {
-	return func(providerName, identity string, cooldown time.Duration, reason string) {
+func (r *providerRegistry) quotaDrainer(getCfg func() *config.Config) func(providerName, identity, model string, cooldown time.Duration, reason string) {
+	return func(providerName, identity, model string, cooldown time.Duration, reason string) {
 		cfg := getCfg()
 		if cfg == nil {
 			return
@@ -107,11 +107,11 @@ func (r *providerRegistry) quotaDrainer(getCfg func() *config.Config) func(provi
 			return
 		}
 		pooled, ok := p.(interface {
-			MarkQuotaDrained(identity string, cooldown time.Duration, reason string)
+			MarkQuotaDrained(identity, model string, cooldown time.Duration, reason string)
 		})
 		if !ok {
 			return
 		}
-		pooled.MarkQuotaDrained(identity, cooldown, reason)
+		pooled.MarkQuotaDrained(identity, model, cooldown, reason)
 	}
 }

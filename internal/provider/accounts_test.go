@@ -47,7 +47,7 @@ func TestAccountPoolPreservesOrderAndCooldown(t *testing.T) {
 	if len(accounts) != 2 || accounts[0].AccountID != "one" || accounts[1].AccountID != "two" {
 		t.Fatalf("accounts = %+v", accounts)
 	}
-	pool.MarkFailed(accounts[0], accountCooldownError(2*time.Minute))
+	pool.MarkFailed(accounts[0], "", accountCooldownError(2*time.Minute))
 	accounts, reason := pool.AvailableWithError(store)
 	if len(accounts) != 1 || accounts[0].AccountID != "two" {
 		t.Fatalf("healthy accounts = %+v", accounts)
@@ -80,7 +80,7 @@ func TestAccountPoolKeepsClientErrorClassificationAcrossCooldown(t *testing.T) {
 	pool := AccountPool{}
 	store := &accountTestStore{accounts: []Credentials{{AccountID: "one"}}}
 	accounts, _ := pool.AvailableWithError(store)
-	pool.MarkFailed(accounts[0], NewHTTPStatusError(http.StatusBadRequest, "antigravity: status 400"))
+	pool.MarkFailed(accounts[0], "", NewHTTPStatusError(http.StatusBadRequest, "antigravity: status 400"))
 
 	healthy, err := pool.AvailableWithError(store)
 	if len(healthy) != 0 || err == nil {
@@ -103,7 +103,7 @@ func TestAccountPoolKeepsUpstreamFaultDrainable(t *testing.T) {
 	pool := AccountPool{}
 	store := &accountTestStore{accounts: []Credentials{{AccountID: "one"}}}
 	accounts, _ := pool.AvailableWithError(store)
-	pool.MarkFailed(accounts[0], NewHTTPStatusError(http.StatusBadGateway, "antigravity: status 502"))
+	pool.MarkFailed(accounts[0], "", NewHTTPStatusError(http.StatusBadGateway, "antigravity: status 502"))
 
 	_, err := pool.AvailableWithError(store)
 	if err == nil {
@@ -239,7 +239,7 @@ func TestMarkQuotaDrainedExcludesOnlyNamedIdentity(t *testing.T) {
 	pool.SetClock(func() time.Time { return now })
 	store := &accountTestStore{accounts: []Credentials{{AccountID: "one", Email: "one@example.com"}, {AccountID: "two", Email: "two@example.com"}}}
 
-	pool.MarkQuotaDrained("one:one@example.com", 10*time.Minute, "claude-opus-4-6-thinking")
+	pool.MarkQuotaDrained("one:one@example.com", "", 10*time.Minute, "claude-opus-4-6-thinking")
 
 	accounts, reason := pool.AvailableWithError(store)
 	if len(accounts) != 1 || accounts[0].AccountID != "two" {
@@ -260,7 +260,7 @@ func TestMarkQuotaDrainedExpiresWithCooldown(t *testing.T) {
 	pool.SetClock(func() time.Time { return now })
 	store := &accountTestStore{accounts: []Credentials{{AccountID: "one", Email: "one@example.com"}}}
 
-	pool.MarkQuotaDrained("one:one@example.com", 5*time.Minute, "exhausted")
+	pool.MarkQuotaDrained("one:one@example.com", "", 5*time.Minute, "exhausted")
 	if got := pool.Available(store); len(got) != 0 {
 		t.Fatalf("accounts while drained = %+v, want none", got)
 	}
@@ -274,9 +274,61 @@ func TestMarkQuotaDrainedExpiresWithCooldown(t *testing.T) {
 func TestMarkQuotaDrainedIgnoresInvalidInput(t *testing.T) {
 	pool := AccountPool{}
 	store := &accountTestStore{accounts: []Credentials{{AccountID: "one"}}}
-	pool.MarkQuotaDrained("one", 0, "zero cooldown")
-	pool.MarkQuotaDrained("", time.Hour, "no identity")
+	pool.MarkQuotaDrained("one", "", 0, "zero cooldown")
+	pool.MarkQuotaDrained("", "", time.Hour, "no identity")
 	if got := pool.Available(store); len(got) != 1 {
 		t.Fatalf("accounts = %+v, want the account untouched", got)
+	}
+}
+
+func TestMarkFailed429CoolsOnlyRequestedModel(t *testing.T) {
+	now := time.Unix(1_000, 0)
+	pool := AccountPool{}
+	pool.SetClock(func() time.Time { return now })
+	store := &accountTestStore{accounts: []Credentials{{AccountID: "one"}}}
+	account := store.Accounts()[0]
+
+	pool.MarkFailed(account, "gemini", NewHTTPStatusError(http.StatusTooManyRequests, "antigravity: rate limited"))
+
+	gemini, geminiErr := pool.AvailableForModel(store, "gemini")
+	if len(gemini) != 0 || geminiErr == nil {
+		t.Fatalf("gemini accounts = %+v, err = %v; want the failed model cooled", gemini, geminiErr)
+	}
+	claude, claudeErr := pool.AvailableForModel(store, "claude")
+	if len(claude) != 1 || claude[0].AccountID != "one" || claudeErr != nil {
+		t.Fatalf("claude accounts = %+v, err = %v; want the other model still available", claude, claudeErr)
+	}
+}
+
+func TestMarkFailed401CoolsEveryModel(t *testing.T) {
+	pool := AccountPool{}
+	store := &accountTestStore{accounts: []Credentials{{AccountID: "one"}}}
+	account := store.Accounts()[0]
+
+	pool.MarkFailed(account, "gemini", NewHTTPStatusError(http.StatusUnauthorized, "antigravity: status 401"))
+
+	for _, model := range []string{"gemini", "claude"} {
+		accounts, err := pool.AvailableForModel(store, model)
+		if len(accounts) != 0 || err == nil {
+			t.Fatalf("%s accounts = %+v, err = %v; want auth failure to cool every model", model, accounts, err)
+		}
+	}
+}
+
+func TestMarkQuotaDrainedCoolsOnlyNamedModel(t *testing.T) {
+	now := time.Unix(1_000, 0)
+	pool := AccountPool{}
+	pool.SetClock(func() time.Time { return now })
+	store := &accountTestStore{accounts: []Credentials{{AccountID: "one", Email: "one@example.com"}}}
+
+	pool.MarkQuotaDrained("one:one@example.com", "gemini", 10*time.Minute, "gemini quota")
+
+	gemini, _ := pool.AvailableForModel(store, "gemini")
+	if len(gemini) != 0 {
+		t.Fatalf("gemini accounts = %+v, want the drained model cooled", gemini)
+	}
+	claude, err := pool.AvailableForModel(store, "claude")
+	if len(claude) != 1 || err != nil {
+		t.Fatalf("claude accounts = %+v, err = %v; want the other model still available", claude, err)
 	}
 }
