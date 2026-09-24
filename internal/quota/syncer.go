@@ -12,7 +12,7 @@ import (
 // A drain MUST be bounded: the syncer clamps the cooldown so a stale or
 // misread window can never park an account indefinitely.
 type Drainer interface {
-	MarkQuotaDrained(provider, identity string, cooldown time.Duration, reason string)
+	MarkQuotaDrained(provider, identity, model string, cooldown time.Duration, reason string)
 }
 
 // Sample is one quota observation for metrics export. Status carries the
@@ -210,7 +210,7 @@ func (s *Syncer) drain(target Target, snapshot AccountSnapshot) {
 	if cooldown <= 0 {
 		return
 	}
-	s.drainer.MarkQuotaDrained(target.Provider, target.Identity, cooldown, snapshot.Reason)
+	s.drainer.MarkQuotaDrained(target.Provider, target.Identity, "", cooldown, snapshot.Reason)
 }
 
 // cooldownFor derives the drain duration from the earliest future reset.
