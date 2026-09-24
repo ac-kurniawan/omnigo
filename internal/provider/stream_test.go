@@ -157,3 +157,64 @@ func TestIdleGuardKeepsStreamAliveWhileDataFlows(t *testing.T) {
 		t.Fatalf("context canceled while data kept flowing: %v", err)
 	}
 }
+
+// A stream that emits faster than idle/2 must not be canceled early; after a
+// real silence of idle the guard must still cancel it.
+func TestIdleGuardFastStreamCancelsOnlyAfterIdleSilence(t *testing.T) {
+	const idle = 200 * time.Millisecond
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	guard := NewIdleGuard(idle, 0, cancel)
+	defer guard.Stop()
+
+	pr, pw := io.Pipe()
+	defer pw.Close()
+	reader := guard.Wrap(pr)
+
+	// Read in the background so writes never block.
+	go func() {
+		buf := make([]byte, 8)
+		for {
+			if _, err := reader.Read(buf); err != nil {
+				return
+			}
+		}
+	}()
+
+	// Emit faster than idle/2 for longer than idle; if touch reset the timer
+	// on every chunk the stream would still survive, but a correct half-window
+	// implementation must also not cancel while data is flowing.
+	start := time.Now()
+	for time.Since(start) < idle+idle/2 {
+		if _, err := pw.Write([]byte("x")); err != nil {
+			t.Fatalf("write: %v", err)
+		}
+		time.Sleep(idle / 8)
+	}
+	if err := ctx.Err(); err != nil {
+		t.Fatalf("canceled while emitting faster than idle/2: %v", err)
+	}
+
+	// Now stop writing. The guard must cancel only after a real silence of
+	// idle — not early, and not never.
+	silent := time.Now()
+	select {
+	case <-ctx.Done():
+	case <-time.After(3 * time.Second):
+		t.Fatal("context not canceled after the stream went silent")
+	}
+	elapsed := time.Since(silent)
+	// A reset just past the halfway mark leaves about idle/2 of the armed
+	// countdown, so the floor is idle/4 rather than idle.
+	if elapsed < idle/4 {
+		t.Fatalf("canceled after %s of silence, want about %s", elapsed, idle)
+	}
+	if elapsed > idle+idle {
+		t.Fatalf("canceled after %s of silence, want about %s", elapsed, idle)
+	}
+
+	got := guard.Err(context.Canceled)
+	if !errors.Is(got, ErrUpstreamStall) || !strings.Contains(got.Error(), "no data within") {
+		t.Fatalf("guard.Err = %v, want the idle bound named", got)
+	}
+}
