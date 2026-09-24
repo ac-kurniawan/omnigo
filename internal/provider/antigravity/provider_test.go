@@ -608,6 +608,65 @@ func TestChatAccountPoolExhaustsEachAccountOnceAfter429(t *testing.T) {
 	}
 }
 
+func TestChat429OnOneModelLeavesAccountAvailableForAnother(t *testing.T) {
+	var calls []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Model string `json:"model"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		calls = append(calls, body.Model)
+		if body.Model == "gemini" {
+			w.WriteHeader(http.StatusTooManyRequests)
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"ok\"}]},\"finishReason\":\"STOP\"}]}\n\n"))
+	}))
+	defer srv.Close()
+
+	store := &antigravityPoolStore{accounts: []provider.Credentials{
+		{AccessToken: "only", AccountID: "google-1", ProjectID: "p", ExpiresAt: time.Now().Add(time.Hour)},
+	}}
+	p := New(provider.Config{Name: "agy", BaseURL: srv.URL}, store)
+	if err := p.ChatCompletion(context.Background(), provider.ChatRequest{Model: "gemini", Messages: []provider.Message{{Role: "user", Content: "hi"}}}, httptest.NewRecorder()); err == nil {
+		t.Fatal("gemini request succeeded, want rate limit")
+	}
+	if err := p.ChatCompletion(context.Background(), provider.ChatRequest{Model: "claude", Messages: []provider.Message{{Role: "user", Content: "hi"}}}, httptest.NewRecorder()); err != nil {
+		t.Fatalf("claude request = %v, want the account still available", err)
+	}
+	if len(calls) != 2 || calls[0] != "gemini" || calls[1] != "claude" {
+		t.Fatalf("calls = %v, want both models attempted on the same account", calls)
+	}
+}
+
+func TestChat401RemovesAccountForEveryModel(t *testing.T) {
+	var calls []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Model string `json:"model"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		calls = append(calls, body.Model)
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer srv.Close()
+
+	store := &antigravityPoolStore{accounts: []provider.Credentials{
+		{AccessToken: "only", AccountID: "google-1", ProjectID: "p", ExpiresAt: time.Now().Add(time.Hour)},
+	}}
+	p := New(provider.Config{Name: "agy", BaseURL: srv.URL}, store)
+	if err := p.ChatCompletion(context.Background(), provider.ChatRequest{Model: "gemini", Messages: []provider.Message{{Role: "user", Content: "hi"}}}, httptest.NewRecorder()); err == nil {
+		t.Fatal("gemini request succeeded, want auth failure")
+	}
+	if err := p.ChatCompletion(context.Background(), provider.ChatRequest{Model: "claude", Messages: []provider.Message{{Role: "user", Content: "hi"}}}, httptest.NewRecorder()); err == nil {
+		t.Fatal("claude request reached upstream after an account-wide auth failure")
+	}
+	if len(calls) != 1 || calls[0] != "gemini" {
+		t.Fatalf("calls = %v, want only the first model", calls)
+	}
+}
+
 func TestChatNonStreamingReturnsOpenAIJSON(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
