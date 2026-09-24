@@ -74,6 +74,57 @@ func TestChatRequestBodyNormalizesDeveloperRole(t *testing.T) {
 		t.Fatalf("expected user role preserved, got %+v", got.Messages[1])
 	}
 }
+
+func TestChatRequestBodyReusesParsedPayloadAndCachesEncodedBytes(t *testing.T) {
+	raw := []byte(`{"model":"auto","messages":[{"role":"developer","content":"system instructions"},{"role":"user","content":"hi"}],"temperature":0.7}`)
+	parsed := ParseBody(raw)
+	if parsed == nil {
+		t.Fatal("ParseBody returned nil for valid request")
+	}
+	req := ChatRequest{Model: "gpt-a", Raw: raw, Parsed: parsed}
+
+	first, err := req.Body()
+	if err != nil {
+		t.Fatalf("Body: %v", err)
+	}
+	second, err := req.Body()
+	if err != nil {
+		t.Fatalf("Body: %v", err)
+	}
+	if &first[0] != &second[0] {
+		t.Fatal("Body re-encoded instead of reusing cached bytes")
+	}
+
+	req.Model = "gpt-b"
+	other, err := req.Body()
+	if err != nil {
+		t.Fatalf("Body: %v", err)
+	}
+	if &first[0] == &other[0] {
+		t.Fatal("Body reused bytes across models")
+	}
+
+	var got map[string]any
+	if err := json.Unmarshal(other, &got); err != nil {
+		t.Fatalf("unmarshal body: %v", err)
+	}
+	if got["model"] != "gpt-b" || got["temperature"] != 0.7 {
+		t.Fatalf("body = %#v", got)
+	}
+	messages := got["messages"].([]any)
+	if messages[0].(map[string]any)["role"] != "system" {
+		t.Fatalf("developer role not normalized: %#v", messages)
+	}
+
+	// The shared parsed payload stays untouched for non-OpenAI translators.
+	if parsed["model"] != "auto" {
+		t.Fatalf("shared payload model mutated to %v", parsed["model"])
+	}
+	messages = parsed["messages"].([]any)
+	if messages[0].(map[string]any)["role"] != "developer" {
+		t.Fatalf("shared payload role mutated: %#v", messages)
+	}
+}
 func TestHTTPStatusErrorDrainability(t *testing.T) {
 	err400 := NewHTTPStatusError(400, "bad request")
 	if err400.Drainable() {

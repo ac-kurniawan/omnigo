@@ -15,13 +15,16 @@ var errInvalidTranslation = errors.New("invalid Codex translation")
 
 func ToResponsesRequest(req provider.ChatRequest) (map[string]any, error) {
 	var root map[string]any
-	if len(req.Raw) == 0 {
+	switch {
+	case req.Parsed != nil:
+		root = requestRoot(req.Parsed)
+	case len(req.Raw) == 0:
 		messages := make([]any, 0, len(req.Messages))
 		for _, message := range req.Messages {
 			messages = append(messages, map[string]any{"role": message.Role, "content": message.Content})
 		}
 		root = map[string]any{"messages": messages}
-	} else {
+	default:
 		dec := json.NewDecoder(bytes.NewReader(req.Raw))
 		dec.UseNumber()
 		if err := dec.Decode(&root); err != nil {
@@ -140,6 +143,17 @@ func ToResponsesRequest(req provider.ChatRequest) (map[string]any, error) {
 		}
 	}
 	return out, nil
+}
+
+func requestRoot(parsed map[string]any) map[string]any {
+	root := make(map[string]any, len(parsed))
+	for key, value := range parsed {
+		if key == provider.OpenAIBodyCacheKey() {
+			continue
+		}
+		root[key] = value
+	}
+	return root
 }
 
 func ensureEOF(dec *json.Decoder) error {
