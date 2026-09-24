@@ -26,6 +26,15 @@ var tokenURL = "https://auth.openai.com/oauth/token"
 
 var httpClient = &http.Client{Timeout: 15 * time.Second}
 
+// UnaryClient is the bounded client used by token exchange and refresh.
+func UnaryClient() *http.Client { return httpClient }
+
+// SetHTTPTransport swaps the bounded client onto the shared transport without
+// touching its 15s timeout. A nil transport restores the default transport.
+func SetHTTPTransport(t http.RoundTripper) {
+	httpClient.Transport = t
+}
+
 type Token struct {
 	AccessToken  string
 	RefreshToken string

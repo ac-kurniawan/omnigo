@@ -179,6 +179,8 @@ func TestProviderAccountPoolFallsBackOnPreCommitFailure(t *testing.T) {
 }
 
 func TestProviderAccountPoolFallsBackOnTransportFailure(t *testing.T) {
+	saved := UnaryClient().Transport
+	t.Cleanup(func() { SetHTTPTransport(saved) })
 	transport := &failingTransport{}
 	store := &poolCredStore{creds: []provider.Credentials{
 		{AccessToken: "access-1", AccountID: "account-1", ExpiresAt: time.Now().Add(time.Hour)},
