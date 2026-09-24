@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"time"
 
@@ -21,28 +22,78 @@ type ChatRequest struct {
 	Stream   bool
 	Messages []Message
 	Raw      []byte
+	// Parsed is the one JSON decode of Raw. It is shared across targets and
+	// must not be mutated by callers.
+	Parsed map[string]any
+}
+
+const openAIBodyCacheKey = "\x00omnigo-openai-body-cache"
+
+// OpenAIBodyCacheKey is the internal parsed-map slot holding encoded payloads.
+// Translators that range over Parsed must ignore it.
+func OpenAIBodyCacheKey() string { return openAIBodyCacheKey }
+
+// ParseBody decodes a chat request once. Invalid JSON returns nil so callers
+// can preserve the existing fallback to Raw or the typed message fields.
+func ParseBody(raw []byte) map[string]any {
+	if len(raw) == 0 {
+		return nil
+	}
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.UseNumber()
+	var parsed map[string]any
+	if err := dec.Decode(&parsed); err != nil || parsed == nil {
+		return nil
+	}
+	var extra any
+	if err := dec.Decode(&extra); err != io.EOF {
+		return nil
+	}
+	parsed[openAIBodyCacheKey] = &openAIBodyCache{bodies: make(map[string][]byte)}
+	return parsed
+}
+
+type openAIBodyCache struct {
+	bodies map[string][]byte
 }
 
 // Body returns the request JSON payload intended for upstream forwarding,
 // ensuring the "model" field reflects req.Model (the resolved bare model id)
 // and normalizes "developer" role messages to "system" for broad provider compatibility.
+// A parsed body is encoded once per model. The cache is attached to the shared
+// parsed map, so value copies of the request reuse the same bytes.
 func (r ChatRequest) Body() ([]byte, error) {
+	if cache := openAICache(r.Parsed); cache != nil {
+		if body, ok := cache.bodies[r.Model]; ok {
+			return body, nil
+		}
+	}
+	body, err := encodeChatBody(r)
+	if err != nil || len(body) == 0 {
+		return body, err
+	}
+	if cache := openAICache(r.Parsed); cache != nil {
+		cache.bodies[r.Model] = body
+	}
+	return body, nil
+}
+
+func openAICache(parsed map[string]any) *openAIBodyCache {
+	if parsed == nil {
+		return nil
+	}
+	cache, _ := parsed[openAIBodyCacheKey].(*openAIBodyCache)
+	return cache
+}
+
+func encodeChatBody(r ChatRequest) ([]byte, error) {
+	if r.Parsed != nil {
+		return json.Marshal(openAIPayload(r.Parsed, r.Model))
+	}
 	if len(r.Raw) > 0 {
-		var rawMap map[string]any
-		dec := json.NewDecoder(bytes.NewReader(r.Raw))
-		dec.UseNumber()
-		if err := dec.Decode(&rawMap); err == nil {
-			rawMap["model"] = r.Model
-			if rawMsgs, ok := rawMap["messages"].([]any); ok {
-				for _, item := range rawMsgs {
-					if msgMap, ok := item.(map[string]any); ok {
-						if role, ok := msgMap["role"].(string); ok && role == "developer" {
-							msgMap["role"] = "system"
-						}
-					}
-				}
-			}
-			return json.Marshal(rawMap)
+		parsed := ParseBody(r.Raw)
+		if parsed != nil {
+			return json.Marshal(openAIPayload(parsed, r.Model))
 		}
 	}
 	msgs := make([]Message, len(r.Messages))
@@ -57,6 +108,41 @@ func (r ChatRequest) Body() ([]byte, error) {
 		"stream":   r.Stream,
 		"messages": msgs,
 	})
+}
+
+func openAIPayload(parsed map[string]any, model string) map[string]any {
+	out := make(map[string]any, len(parsed)-1)
+	for key, value := range parsed {
+		if key == openAIBodyCacheKey {
+			continue
+		}
+		out[key] = value
+	}
+	out["model"] = model
+	rawMessages, ok := out["messages"].([]any)
+	if !ok {
+		return out
+	}
+	messages := make([]any, len(rawMessages))
+	copy(messages, rawMessages)
+	for i, item := range messages {
+		message, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		role, ok := message["role"].(string)
+		if !ok || role != "developer" {
+			continue
+		}
+		copied := make(map[string]any, len(message))
+		for key, value := range message {
+			copied[key] = value
+		}
+		copied["role"] = "system"
+		messages[i] = copied
+	}
+	out["messages"] = messages
+	return out
 }
 
 type Model struct {

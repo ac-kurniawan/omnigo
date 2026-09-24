@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -111,6 +112,79 @@ func TestChatAcceptsMultimodalContent(t *testing.T) {
 	}
 	if !strings.Contains(string(forwarded), `"image_url"`) || !strings.Contains(string(forwarded), "data:image/png;base64,abc") {
 		t.Fatalf("forwarded payload lost image part: %s", forwarded)
+	}
+}
+
+func TestComboOpenAITargetsMarshalOnceAndReuseParsedBody(t *testing.T) {
+	var mu sync.Mutex
+	var bodies [][]byte
+	provider.Register("openai", func(cfg provider.Config, store provider.CredStore) provider.Provider {
+		return &fakeProvider{name: cfg.Name, chat: func(r provider.ChatRequest) error {
+			body, err := (&r).Body()
+			if err != nil {
+				return err
+			}
+			mu.Lock()
+			bodies = append(bodies, body)
+			mu.Unlock()
+			if cfg.Name != "third" {
+				return provider.NewHTTPStatusError(http.StatusTooManyRequests, "rate limited")
+			}
+			return nil
+		}}
+	})
+	cfg := &config.Config{
+		Providers: []config.Provider{
+			{Name: "first", Type: "openai", BaseURL: "https://first.example"},
+			{Name: "second", Type: "openai", BaseURL: "https://second.example"},
+			{Name: "third", Type: "openai", BaseURL: "https://third.example"},
+		},
+		Combos: []config.Combo{{
+			Name:     "auto",
+			Strategy: "priority",
+			Targets: []config.ComboTarget{
+				{Provider: "first", Model: "gpt-a"},
+				{Provider: "second", Model: "gpt-b"},
+				{Provider: "third", Model: "gpt-b"},
+			},
+		}},
+	}
+	rawKey, hash, prefix, _ := auth.GenerateKey()
+	v := &vault.Vault{ClientKeys: []vault.ClientKey{{ID: "k1", KeyHash: hash, Prefix: prefix, Active: true}}}
+	body := `{"model":"auto","messages":[{"role":"developer","content":"instructions"},{"role":"user","content":"hi"}],"temperature":0.2}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+rawKey)
+	rr := httptest.NewRecorder()
+
+	testRouter(t, cfg, v).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rr.Code, rr.Body.String())
+	}
+	if len(bodies) != 3 {
+		t.Fatalf("targets encoded = %d, want 3", len(bodies))
+	}
+	if &bodies[1][0] != &bodies[2][0] {
+		t.Fatal("identical OpenAI targets did not share encoded bytes")
+	}
+	for i, encoded := range bodies {
+		var got struct {
+			Model    string `json:"model"`
+			Messages []struct {
+				Role string `json:"role"`
+			} `json:"messages"`
+			Temperature float64 `json:"temperature"`
+		}
+		if err := json.Unmarshal(encoded, &got); err != nil {
+			t.Fatalf("target %d body: %v", i, err)
+		}
+		wantModel := "gpt-a"
+		if i > 0 {
+			wantModel = "gpt-b"
+		}
+		if got.Model != wantModel || got.Temperature != 0.2 || len(got.Messages) != 2 || got.Messages[0].Role != "system" {
+			t.Fatalf("target %d body = %+v", i, got)
+		}
 	}
 }
 
