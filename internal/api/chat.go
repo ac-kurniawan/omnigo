@@ -172,11 +172,13 @@ func runCombo(w http.ResponseWriter, r *http.Request, cfg *config.Config, regist
 		if errors.Is(err, errResponseCommitted) {
 			responseCommitted = true
 			// A client abort mid-stream cancels the request context; that is not an
-			// upstream fault, so the target stays healthy. A stalled upstream leaves
-			// the request context alive and is still drained.
+			// upstream fault, so the target stays healthy. A deadline this process
+			// imposed on the attempt is not one either. A stalled upstream leaves
+			// both contexts alive and is still drained.
 			clientGone := r.Context().Err() != nil
+			gatewayDeadline := ctx.Err() != nil && !clientGone
 			metrics.RecordProviderRequest(ctx, t.Provider, t.Model, classifyProviderError(err, true, clientGone))
-			if tracker != nil && cb.Strategy != "priority" && !clientGone {
+			if tracker != nil && cb.Strategy != "priority" && !clientGone && !gatewayDeadline {
 				tracker.MarkDrained(t, cb.ParsedDrainTTL(), sanitizeFailure(err))
 			}
 			// The client already has part of the answer and no failover is

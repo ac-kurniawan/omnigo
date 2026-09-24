@@ -472,10 +472,9 @@ func TestRunDoesNotDrainOnClientError(t *testing.T) {
 	}
 }
 
-// A combo budget is shared across the chain. One target that stalls for its
-// whole slice must not consume the budget of the targets behind it: the next
-// target still gets a deadline, and the request ends once the budget is spent
-// instead of running on past it.
+// A combo budget is a chain deadline, not a slice per target. The first
+// attempt may use the whole budget; once it is spent the chain stops instead
+// of handing the next target a shrinking remainder.
 func TestComboTimeoutBoundsTheChain(t *testing.T) {
 	c := Combo{
 		Name:     "safe",
@@ -488,27 +487,281 @@ func TestComboTimeoutBoundsTheChain(t *testing.T) {
 		},
 	}
 
-	var attempts []time.Duration
+	var attempts int
 	start := time.Now()
 	_, err := c.Run(context.Background(), func(ctx context.Context, target Target) error {
-		deadline, ok := ctx.Deadline()
-		if !ok {
+		if _, ok := ctx.Deadline(); !ok {
 			t.Errorf("target %s got no deadline", target.Provider)
 			return errors.New("no deadline")
 		}
-		attempts = append(attempts, time.Until(deadline))
+		attempts++
 		<-ctx.Done()
 		return ctx.Err()
 	})
 	elapsed := time.Since(start)
 
-	if len(attempts) < 2 {
-		t.Fatalf("only %d targets were attempted before the budget ran out; want at least 2", len(attempts))
+	if attempts != 1 {
+		t.Fatalf("%d targets were attempted; the first one spent the whole budget", attempts)
 	}
 	if elapsed > 600*time.Millisecond {
 		t.Fatalf("chain ran %s, want it bounded near 200ms", elapsed)
 	}
+	if !errors.Is(err, ErrComboTimeout) {
+		t.Fatalf("err = %v, want ErrComboTimeout", err)
+	}
+}
+
+// A healthy generation that needs 25s must finish inside a 60s combo budget
+// even when two more targets sit behind it.
+func TestComboTimeoutGivesEachAttemptTheFullBudget(t *testing.T) {
+	c := Combo{
+		Name:     "safe",
+		Strategy: "reliable",
+		Timeout:  60 * time.Second,
+		Targets: []Target{
+			{Provider: "a", Model: "m1"},
+			{Provider: "b", Model: "m2"},
+			{Provider: "c", Model: "m3"},
+		},
+	}
+
+	_, err := c.Run(context.Background(), func(ctx context.Context, target Target) error {
+		if target.Provider != "a" {
+			t.Fatalf("later target %s was attempted before the first finished", target.Provider)
+		}
+		deadline, ok := ctx.Deadline()
+		if !ok {
+			t.Fatal("first target got no deadline")
+		}
+		if remaining := time.Until(deadline); remaining < 25*time.Second {
+			t.Fatalf("first target deadline is %s away, want at least 25s of a 60s budget", remaining)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("first target should have been allowed to finish, got %v", err)
+	}
+}
+
+// A target that simply runs out the gateway's own combo deadline is not an
+// upstream failure, so the next request must still be able to select it.
+func TestComboDeadlineDoesNotDrainTarget(t *testing.T) {
+	tr := NewTracker("")
+	t1 := Target{Provider: "a", Model: "m1"}
+	t2 := Target{Provider: "b", Model: "m2"}
+	c := Combo{
+		Name:     "safe",
+		Strategy: "reliable",
+		Timeout:  40 * time.Millisecond,
+		DrainTTL: time.Minute,
+		Tracker:  tr,
+		Targets:  []Target{t1, t2},
+	}
+
+	_, err := c.Run(context.Background(), func(ctx context.Context, _ Target) error {
+		<-ctx.Done()
+		return ctx.Err()
+	})
+	if !errors.Is(err, ErrComboTimeout) && !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("err = %v, want the combo deadline", err)
+	}
+	if tr.IsDrained(t1) || tr.IsDrained(t2) {
+		t.Fatal("a combo-imposed deadline drained a target")
+	}
+
+	var called []string
+	got, err := c.Run(context.Background(), func(_ context.Context, target Target) error {
+		called = append(called, target.Provider)
+		if target == t1 {
+			return nil
+		}
+		return errors.New("should not be reached")
+	})
+	if err != nil {
+		t.Fatalf("second run: %v", err)
+	}
+	if got != t1 || len(called) != 1 || called[0] != "a" {
+		t.Fatalf("second run called %v and returned %+v, want only a/m1", called, got)
+	}
+}
+
+// A real upstream stall is still an upstream fault and must drain.
+func TestUpstreamStallStillDrains(t *testing.T) {
+	tr := NewTracker("")
+	t1 := Target{Provider: "a", Model: "m1"}
+	t2 := Target{Provider: "b", Model: "m2"}
+	c := Combo{Name: "safe", Strategy: "fill-first", Targets: []Target{t1, t2}, Tracker: tr, DrainTTL: time.Minute}
+
+	_, err := c.Run(context.Background(), func(_ context.Context, target Target) error {
+		if target == t1 {
+			return fmt.Errorf("silent: %w", provider.ErrUpstreamStall)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("fallback failed: %v", err)
+	}
+	if !tr.IsDrained(t1) {
+		t.Fatal("upstream stall did not drain the target")
+	}
+}
+
+func TestSingle5xxDoesNotDrainButRepeatedDoes(t *testing.T) {
+	tr := NewTracker("")
+	t1 := Target{Provider: "a", Model: "m1"}
+	t2 := Target{Provider: "b", Model: "m2"}
+	c := Combo{Name: "safe", Strategy: "fill-first", Targets: []Target{t1, t2}, Tracker: tr, DrainTTL: time.Minute}
+	boom := mockClientError{status: http.StatusBadGateway}
+
+	if _, err := c.Run(context.Background(), func(_ context.Context, target Target) error {
+		if target == t1 {
+			return boom
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("first run: %v", err)
+	}
+	if tr.IsDrained(t1) {
+		t.Fatal("a single 502 drained the target")
+	}
+
+	for range 4 {
+		_, _ = c.Run(context.Background(), func(_ context.Context, target Target) error {
+			if target == t1 {
+				return boom
+			}
+			return nil
+		})
+	}
+	if !tr.IsDrained(t1) {
+		t.Fatal("repeated 502s did not drain the target")
+	}
+}
+
+func Test429DrainsImmediately(t *testing.T) {
+	tr := NewTracker("")
+	t1 := Target{Provider: "a", Model: "m1"}
+	t2 := Target{Provider: "b", Model: "m2"}
+	c := Combo{Name: "safe", Strategy: "reliable", Targets: []Target{t1, t2}, Tracker: tr, DrainTTL: time.Minute}
+
+	_, err := c.Run(context.Background(), func(_ context.Context, target Target) error {
+		if target == t1 {
+			return mockUpstreamRateLimit{mockClientError{status: http.StatusTooManyRequests}}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("fallback failed: %v", err)
+	}
+	if !tr.IsDrained(t1) {
+		t.Fatal("429 did not drain the target immediately")
+	}
+}
+
+func TestLastHealthyTargetIsNeverDrained(t *testing.T) {
+	tr := NewTracker("")
+	only := Target{Provider: "a", Model: "m1"}
+	c := Combo{Name: "safe", Strategy: "reliable", Targets: []Target{only}, Tracker: tr, DrainTTL: time.Minute}
+
+	_, err := c.Run(context.Background(), func(context.Context, Target) error {
+		return mockClientError{status: http.StatusBadGateway}
+	})
 	if err == nil {
-		t.Fatal("expected the chain to fail once its budget was spent")
+		t.Fatal("expected the upstream error")
+	}
+	if tr.IsDrained(only) {
+		t.Fatal("the last healthy target was drained")
+	}
+
+	for range 6 {
+		_, _ = c.Run(context.Background(), func(context.Context, Target) error {
+			return mockClientError{status: http.StatusBadGateway}
+		})
+	}
+	if tr.IsDrained(only) {
+		t.Fatal("repeated 502s drained the last healthy target")
+	}
+}
+
+func Test429BackoffGrowsWithoutRetryAfter(t *testing.T) {
+	tr := NewTracker("")
+	t1 := Target{Provider: "a", Model: "m1"}
+	t2 := Target{Provider: "b", Model: "m2"}
+	c := Combo{Name: "safe", Strategy: "fill-first", Targets: []Target{t1, t2}, Tracker: tr, DrainTTL: time.Minute}
+	limited := mockClientError{status: http.StatusTooManyRequests}
+
+	fail := func(_ context.Context, target Target) error {
+		if target == t1 {
+			return limited
+		}
+		return nil
+	}
+	_, _ = c.Run(context.Background(), fail)
+	first := tr.DrainRemaining(t1)
+	tr.Clear(t1)
+
+	for range 3 {
+		_, _ = c.Run(context.Background(), fail)
+		tr.Clear(t1)
+	}
+	_, _ = c.Run(context.Background(), fail)
+	later := tr.DrainRemaining(t1)
+	if later <= first+time.Second {
+		t.Fatalf("429 cooldown did not grow: first %s, later %s", first, later)
+	}
+}
+
+// A blip 502 is retried once on the same target. The second attempt succeeding
+// means the target is not drained and the caller sees the success.
+func Test502RetriesOnceOnTheSameTarget(t *testing.T) {
+	tr := NewTracker("")
+	t1 := Target{Provider: "a", Model: "m1"}
+	t2 := Target{Provider: "b", Model: "m2"}
+	c := Combo{Name: "safe", Strategy: "fill-first", Targets: []Target{t1, t2}, Tracker: tr, DrainTTL: time.Minute}
+
+	var calls int
+	got, err := c.Run(context.Background(), func(_ context.Context, target Target) error {
+		if target != t1 {
+			t.Fatalf("fell over to %s before retrying a", target.Provider)
+		}
+		calls++
+		if calls == 1 {
+			return mockClientError{status: http.StatusBadGateway}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("retry should have succeeded, got %v", err)
+	}
+	if got != t1 {
+		t.Fatalf("returned %+v, want a/m1", got)
+	}
+	if calls != 2 {
+		t.Fatalf("target was called %d times, want 2", calls)
+	}
+	if tr.IsDrained(t1) {
+		t.Fatal("a recovered 502 drained the target")
+	}
+}
+
+func Test429IsNotRetriedOnTheSameTarget(t *testing.T) {
+	tr := NewTracker("")
+	t1 := Target{Provider: "a", Model: "m1"}
+	t2 := Target{Provider: "b", Model: "m2"}
+	c := Combo{Name: "safe", Strategy: "reliable", Targets: []Target{t1, t2}, Tracker: tr, DrainTTL: time.Minute}
+
+	var calls int
+	_, err := c.Run(context.Background(), func(_ context.Context, target Target) error {
+		if target == t1 {
+			calls++
+			return mockClientError{status: http.StatusTooManyRequests}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("fallback failed: %v", err)
+	}
+	if calls != 1 {
+		t.Fatalf("429 was retried %d times on the same target", calls)
 	}
 }
