@@ -157,6 +157,19 @@ func (b geminiBody) usageMap() map[string]any {
 	}
 }
 
+// tokenUsage is the accounting a frame reported. Present is false when the
+// frame carried no usageMetadata, which is not the same as zero tokens.
+func (b geminiBody) tokenUsage() provider.TokenUsage {
+	if b.UsageMetadata == nil {
+		return provider.TokenUsage{}
+	}
+	return provider.TokenUsage{
+		InputTokens:  b.UsageMetadata.PromptTokens,
+		OutputTokens: b.UsageMetadata.CompletionTokens,
+		Present:      true,
+	}
+}
+
 // content splits the candidate's parts into visible text, thinking text, and
 // function calls. next indexes the calls already seen in this generation, so a
 // call keeps the same id when a later frame repeats it.

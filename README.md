@@ -221,11 +221,11 @@ Recorded series:
 | `http_server_request_time_to_first_byte_seconds` | histogram | `http_route`, `http_request_method`, `api_key_id` |
 | `http_server_active_requests` | up/down counter | `http_request_method` |
 | `omnigo_provider_requests_total` | counter | `gen_ai_system`, `gen_ai_request_model`, `result`, `api_key_id` |
+| `omnigo_tokens_total` | counter | `gen_ai_system`, `gen_ai_request_model`, `account`, `api_key_id`, `omnigo_combo_name`, `omnigo_token_kind` |
 | `omnigo_combo_attempts_total` | counter | `omnigo_combo_name`, `result`, `api_key_id` |
 | `omnigo_config_reloads_total` | counter | `result` |
 | `omnigo_provider_quota_remaining_ratio` | gauge | `gen_ai_system`, `account`, `window` |
 | `omnigo_provider_quota_status` | gauge | `gen_ai_system`, `account` |
-| `omnigo_provider_quota_resets_in_seconds` | gauge | `gen_ai_system`, `account`, `window` |
 
 Every label is bounded, because a client able to mint one label value per
 request can grow series without limit:
@@ -254,6 +254,26 @@ request can grow series without limit:
   suffix so distinct accounts never collapse into one series.
 - `window` is a quota window name: `primary`/`secondary` for Codex, or a model
   id for Antigravity. A sample with no window records only the status gauge.
+- `omnigo_token_kind` is a fixed set: `input`, `output`, `cached`,
+  `cache_creation`, `reasoning`. A kind the response did not report is absent,
+  not zero.
+
+#### Token totals
+
+`omnigo_tokens_total` is a cumulative counter. A period is
+`increase(omnigo_tokens_total[1h])` (or any other range) in Prometheus; the
+gateway does not keep its own buckets.
+
+Codex and Antigravity report a sample after a completed response that carried
+usage. OpenAI-compatible providers are not counted: their body is forwarded
+unchanged. A response with no usage object is dropped, and a failed attempt
+that never completed is dropped too. A combo that fails over counts every
+upstream that completed and reported usage, not only the one the client kept.
+
+`cached` and `cache_creation` are slices of `input`, and `reasoning` is a
+slice of `output`. They are recorded beside those totals, not subtracted, so
+summing every kind double-counts. Antigravity reports only `input` and
+`output`. A direct call uses `omnigo_combo_name="none"`.
 
 #### Quota metrics
 
