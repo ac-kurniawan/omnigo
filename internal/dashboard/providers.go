@@ -111,6 +111,7 @@ func (s *Server) deleteProvider(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 			c.Providers = kept
+			config.PruneComboTargets(c)
 			return nil
 		})
 		if err != nil {
