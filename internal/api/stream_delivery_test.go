@@ -338,6 +338,83 @@ func TestComboFailureBeforeContentFrameTriesNextTarget(t *testing.T) {
 	}
 }
 
+// A finished stream with no assistant text and no tool call is not a reply.
+// Role, reasoning, and an empty stop frame must not commit, or a reliable
+// combo accepts the empty turn and never tries the next target.
+func TestReliableEmptyCompletionFallsBack(t *testing.T) {
+	var calls []string
+	provider.Register("openai", func(cfg provider.Config, store provider.CredStore) provider.Provider {
+		return &responseProvider{name: cfg.Name, chat: func(_ context.Context, _ provider.ChatRequest, w http.ResponseWriter) error {
+			calls = append(calls, cfg.Name)
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.WriteHeader(http.StatusOK)
+			flusher := w.(http.Flusher)
+			if cfg.Name == "bad" {
+				frames := []string{
+					`data: {"choices":[{"delta":{"role":"assistant"}}]}` + "\n\n",
+					`data: {"choices":[{"delta":{"reasoning_content":"thinking"}}]}` + "\n\n",
+					`data: {"choices":[{"delta":{},"finish_reason":"stop"}]}` + "\n\n",
+					"data: [DONE]\n\n",
+				}
+				for _, frame := range frames {
+					_, _ = w.Write([]byte(frame))
+					flusher.Flush()
+				}
+				return nil
+			}
+			_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"ok\"}}]}\n\n"))
+			flusher.Flush()
+			_, _ = w.Write([]byte("data: [DONE]\n\n"))
+			flusher.Flush()
+			return nil
+		}}
+	})
+	rr := performChat(t, reliableTestConfig(), combo.NewTracker(""), `{"model":"safe","stream":true,"messages":[]}`)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %q", rr.Code, rr.Body.String())
+	}
+	if strings.Contains(rr.Body.String(), "thinking") || strings.Contains(rr.Body.String(), `"role":"assistant"`) {
+		t.Fatalf("empty turn leaked: %q", rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), `"content":"ok"`) {
+		t.Fatalf("next target did not deliver text: %q", rr.Body.String())
+	}
+	if len(calls) != 2 || calls[0] != "bad" || calls[1] != "good" {
+		t.Fatalf("calls = %v, want [bad good]", calls)
+	}
+}
+
+// A tool call is a reply even when the assistant wrote no text. It commits
+// and the combo does not replace it with the next target.
+func TestReliableToolCallDoesNotFallBack(t *testing.T) {
+	var calls []string
+	provider.Register("openai", func(cfg provider.Config, store provider.CredStore) provider.Provider {
+		return &responseProvider{name: cfg.Name, chat: func(_ context.Context, _ provider.ChatRequest, w http.ResponseWriter) error {
+			calls = append(calls, cfg.Name)
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.WriteHeader(http.StatusOK)
+			flusher := w.(http.Flusher)
+			_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"type\":\"function\",\"function\":{\"name\":\"weather\",\"arguments\":\"{}\"}}]}}]}\n\n"))
+			flusher.Flush()
+			_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n"))
+			flusher.Flush()
+			_, _ = w.Write([]byte("data: [DONE]\n\n"))
+			flusher.Flush()
+			return nil
+		}}
+	})
+	rr := performChat(t, reliableTestConfig(), combo.NewTracker(""), `{"model":"safe","stream":true,"messages":[]}`)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %q", rr.Code, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), `"name":"weather"`) {
+		t.Fatalf("tool call dropped: %q", rr.Body.String())
+	}
+	if len(calls) != 1 || calls[0] != "bad" {
+		t.Fatalf("calls = %v, want [bad]", calls)
+	}
+}
+
 func readUntilContains(t *testing.T, r io.Reader, want string, timeout time.Duration) string {
 	t.Helper()
 	type result struct {
