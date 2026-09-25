@@ -769,6 +769,26 @@ func TestProviderAcceptsResponseDoneAsCompletion(t *testing.T) {
 	}
 }
 
+// A Codex stream that closes after a delta and never emits a terminal event is
+// truncated. Content without response.completed, response.incomplete, or
+// response.done stays an error, and no [DONE] is written.
+func TestProviderStreamWithoutTerminalEventIsIncomplete(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.WriteString(w, event("response.output_text.delta", map[string]any{"delta": "partial"}))
+	}))
+	defer server.Close()
+	store := &memoryCredStore{creds: provider.Credentials{AccessToken: "access", AccountID: "account", ExpiresAt: time.Now().Add(time.Hour)}}
+	p := New(provider.Config{Name: "codex", BaseURL: server.URL, Timeout: time.Second}, store)
+	rr := httptest.NewRecorder()
+	err := p.ChatCompletion(context.Background(), provider.ChatRequest{Model: "gpt", Stream: true, Raw: []byte(`{"messages":[{"role":"user","content":"hi"}]}`)}, rr)
+	if err == nil || !strings.Contains(err.Error(), "incomplete SSE response") {
+		t.Fatalf("error = %v", err)
+	}
+	if strings.Contains(rr.Body.String(), "data: [DONE]") {
+		t.Fatalf("truncated stream was closed with [DONE]: %s", rr.Body.String())
+	}
+}
+
 func TestProviderModelsUsesLiveCatalog(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/models.json" {
