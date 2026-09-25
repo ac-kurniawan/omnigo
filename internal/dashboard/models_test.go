@@ -132,6 +132,51 @@ func TestDashboardDeleteModel(t *testing.T) {
 	}
 }
 
+func TestDashboardDeleteModelRemovesComboTargets(t *testing.T) {
+	cfg := &config.Config{
+		Providers: []config.Provider{
+			{Name: "openai", Type: "openai", Models: []string{"gpt-4o", "gpt-4o-mini"}},
+			{Name: "other", Type: "openai", Models: []string{"keep"}},
+		},
+		Combos: []config.Combo{
+			{
+				Name:     "mixed",
+				Strategy: "priority",
+				Targets: []config.ComboTarget{
+					{Provider: "openai", Model: "gpt-4o"},
+					{Provider: "openai", Model: "gpt-4o-mini"},
+					{Provider: "other", Model: "keep"},
+				},
+			},
+			{
+				Name:     "only-gone",
+				Strategy: "priority",
+				Targets:  []config.ComboTarget{{Provider: "openai", Model: "gpt-4o"}},
+			},
+		},
+	}
+	store := vault.NewMemoryStore(&vault.Vault{})
+	mutate := func(fn func(*config.Config) error) error { return fn(cfg) }
+	s := newServer(func() *config.Config { return cfg }, store, mutate)
+
+	req := httptest.NewRequest("POST", "/providers/openai/models/delete", strings.NewReader("model_id=gpt-4o"))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("HX-Request", "true")
+	rr := httptest.NewRecorder()
+	s.routes().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rr.Code, rr.Body.String())
+	}
+	if len(cfg.Combos) != 1 || cfg.Combos[0].Name != "mixed" {
+		t.Fatalf("combos = %+v", cfg.Combos)
+	}
+	got := cfg.Combos[0].Targets
+	if len(got) != 2 || got[0].Model != "gpt-4o-mini" || got[1].Model != "keep" {
+		t.Fatalf("targets = %+v", got)
+	}
+}
+
 func TestDashboardBulkDisableAndEnableModels(t *testing.T) {
 	cfg := &config.Config{
 		Providers: []config.Provider{
