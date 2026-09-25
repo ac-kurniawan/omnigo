@@ -38,6 +38,36 @@ func Mutate(path string, fn func(*Config) error) error {
 // Callers inject it; main wires it to config.Mutate(path, fn) plus a reload.
 type MutateFunc func(fn func(*Config) error) error
 
+// PruneComboTargets drops combo targets whose provider is gone or whose model
+// is no longer in that provider's active catalog. A provider with an empty
+// catalog has not been fetched yet, so its targets stay. A combo left with no
+// targets is removed; a combo is never left invalid.
+func PruneComboTargets(c *Config) {
+	known := make(map[string]Provider, len(c.Providers))
+	for _, p := range c.Providers {
+		known[p.Name] = p
+	}
+	var kept []Combo
+	for _, cb := range c.Combos {
+		var targets []ComboTarget
+		for _, t := range cb.Targets {
+			p, ok := known[t.Provider]
+			if !ok {
+				continue
+			}
+			if len(p.Models) == 0 || p.HasModel(t.Model) {
+				targets = append(targets, t)
+			}
+		}
+		if len(targets) == 0 {
+			continue
+		}
+		cb.Targets = targets
+		kept = append(kept, cb)
+	}
+	c.Combos = kept
+}
+
 // SetModels updates a provider's cached model list within an in-memory Config,
 // filtering out any models that are currently in DisabledModels.
 func SetModels(c *Config, providerName string, models []string) error {
@@ -50,6 +80,7 @@ func SetModels(c *Config, providerName string, models []string) error {
 				}
 			}
 			c.Providers[i].Models = active
+			PruneComboTargets(c)
 			return nil
 		}
 	}

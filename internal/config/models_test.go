@@ -138,6 +138,111 @@ func TestSetModelsPreservesDisabledModels(t *testing.T) {
 	}
 }
 
+func TestSetModelsDropsGoneComboTargets(t *testing.T) {
+	c := &Config{
+		Providers: []Provider{
+			{Name: "openai-main", Type: "openai", Models: []string{"gpt-4o", "gpt-4o-mini"}},
+			{Name: "other", Type: "openai", Models: []string{"keep-me"}},
+		},
+		Combos: []Combo{{
+			Name:     "auto",
+			Strategy: "priority",
+			Targets: []ComboTarget{
+				{Provider: "openai-main", Model: "gpt-4o"},
+				{Provider: "openai-main", Model: "gone"},
+				{Provider: "other", Model: "keep-me"},
+			},
+		}},
+	}
+
+	if err := SetModels(c, "openai-main", []string{"gpt-4o"}); err != nil {
+		t.Fatal(err)
+	}
+
+	got := c.Combos[0].Targets
+	want := []ComboTarget{
+		{Provider: "openai-main", Model: "gpt-4o"},
+		{Provider: "other", Model: "keep-me"},
+	}
+	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("targets = %+v, want %+v", got, want)
+	}
+}
+
+func TestSetModelsDropsComboWhenEveryTargetGone(t *testing.T) {
+	c := &Config{
+		Providers: []Provider{
+			{Name: "openai-main", Type: "openai", Models: []string{"gpt-4o"}},
+		},
+		Combos: []Combo{
+			{
+				Name:     "only-gone",
+				Strategy: "priority",
+				Targets:  []ComboTarget{{Provider: "openai-main", Model: "gpt-4o"}},
+			},
+			{
+				Name:     "kept",
+				Strategy: "priority",
+				Targets:  []ComboTarget{{Provider: "openai-main", Model: "stays"}},
+			},
+		},
+	}
+
+	if err := SetModels(c, "openai-main", []string{"stays"}); err != nil {
+		t.Fatal(err)
+	}
+	if len(c.Combos) != 1 || c.Combos[0].Name != "kept" {
+		t.Fatalf("combos = %+v", c.Combos)
+	}
+}
+
+func TestSetModelsKeepsTargetsWhenCatalogEmpty(t *testing.T) {
+	c := &Config{
+		Providers: []Provider{
+			{Name: "openai-main", Type: "openai", Models: []string{}},
+		},
+		Combos: []Combo{{
+			Name:     "auto",
+			Strategy: "priority",
+			Targets:  []ComboTarget{{Provider: "openai-main", Model: "gpt-4o"}},
+		}},
+	}
+
+	if err := SetModels(c, "openai-main", nil); err != nil {
+		t.Fatal(err)
+	}
+	if len(c.Combos[0].Targets) != 1 {
+		t.Fatalf("empty catalog must not drop targets: %+v", c.Combos[0].Targets)
+	}
+}
+
+func TestSetModelsDropsDisabledModelTargets(t *testing.T) {
+	c := &Config{
+		Providers: []Provider{{
+			Name:           "openai-main",
+			Type:           "openai",
+			Models:         []string{"gpt-4o", "old"},
+			DisabledModels: []string{"old"},
+		}},
+		Combos: []Combo{{
+			Name:     "auto",
+			Strategy: "priority",
+			Targets: []ComboTarget{
+				{Provider: "openai-main", Model: "gpt-4o"},
+				{Provider: "openai-main", Model: "old"},
+			},
+		}},
+	}
+
+	if err := SetModels(c, "openai-main", []string{"gpt-4o", "old"}); err != nil {
+		t.Fatal(err)
+	}
+	got := c.Combos[0].Targets
+	if len(got) != 1 || got[0].Model != "gpt-4o" {
+		t.Fatalf("disabled model must leave the combo: %+v", got)
+	}
+}
+
 func TestSetProviderDisabled(t *testing.T) {
 	c := &Config{
 		Providers: []Provider{{Name: "openai-main", Type: "openai"}},

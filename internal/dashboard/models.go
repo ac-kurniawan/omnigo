@@ -223,6 +223,7 @@ func (s *Server) deleteModel(w http.ResponseWriter, r *http.Request) {
 						}
 					}
 					p.DisabledModels = newDisabled
+					config.PruneComboTargets(c)
 					return nil
 				}
 			}

@@ -89,6 +89,48 @@ func TestDeleteProvider(t *testing.T) {
 	}
 }
 
+func TestDeleteProviderRemovesComboTargets(t *testing.T) {
+	cfg := &config.Config{
+		Providers: []config.Provider{
+			{Name: "groq", Type: "openai", Models: []string{"llama"}},
+			{Name: "openai", Type: "openai", Models: []string{"gpt-4o"}},
+		},
+		Combos: []config.Combo{
+			{
+				Name:     "mixed",
+				Strategy: "priority",
+				Targets: []config.ComboTarget{
+					{Provider: "groq", Model: "llama"},
+					{Provider: "openai", Model: "gpt-4o"},
+				},
+			},
+			{
+				Name:     "only-groq",
+				Strategy: "priority",
+				Targets:  []config.ComboTarget{{Provider: "groq", Model: "llama"}},
+			},
+		},
+	}
+	store := vault.NewMemoryStore(&vault.Vault{})
+	mutate := func(fn func(*config.Config) error) error { return fn(cfg) }
+	s := newServer(func() *config.Config { return cfg }, store, mutate)
+
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest("POST", "/providers/groq/delete", nil)
+	req.Header.Set("HX-Request", "true")
+	s.routes().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rr.Code, rr.Body.String())
+	}
+	if len(cfg.Combos) != 1 || cfg.Combos[0].Name != "mixed" {
+		t.Fatalf("combos = %+v", cfg.Combos)
+	}
+	if len(cfg.Combos[0].Targets) != 1 || cfg.Combos[0].Targets[0].Provider != "openai" {
+		t.Fatalf("targets = %+v", cfg.Combos[0].Targets)
+	}
+}
+
 func TestSetProviderKey(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")
