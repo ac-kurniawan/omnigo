@@ -67,9 +67,9 @@ func handleChat(getCfg func() *config.Config, registry *providerRegistry, tracke
 		// must not be answered with a fresh JSON error envelope: the SSE body is
 		// already on the wire and the object would be parsed as a bad frame.
 		tracked := &commitTracker{ResponseWriter: w}
-		providerCtx := withTokenUsage(r.Context(), metrics, provName, knownModelLabel(cfg, provName, resolvedModel), "")
+		providerCtx := withTokenUsage(r.Context(), metrics, provName, resolvedModel, "")
 		providerErr := p.ChatCompletion(providerCtx, req, tracked)
-		metrics.RecordProviderRequest(r.Context(), provName, knownModelLabel(cfg, provName, resolvedModel), classifyProviderError(providerErr, tracked.committed, r.Context().Err() != nil))
+		metrics.RecordProviderRequest(r.Context(), provName, resolvedModel, classifyProviderError(providerErr, tracked.committed, r.Context().Err() != nil))
 		if providerErr != nil && !tracked.committed {
 			writeProviderError(w, providerErr)
 		} else if providerErr != nil && req.Stream && r.Context().Err() == nil {
@@ -209,9 +209,8 @@ func runCombo(w http.ResponseWriter, r *http.Request, cfg *config.Config, regist
 }
 
 // withTokenUsage installs the sink that turns one completed upstream response
-// into token counters. combo is empty on a direct call. The model label is the
-// target the combo asked for; a direct call has already collapsed an unknown
-// model to "other" because the request can name it.
+// into token counters. combo is empty on a direct call. model is the id that
+// was dispatched: a combo target, or the bare model on a direct call.
 func withTokenUsage(ctx context.Context, metrics Metrics, providerName, model, combo string) context.Context {
 	return provider.WithUsageSink(ctx, func(usage provider.TokenUsage) {
 		metrics.RecordTokenUsage(ctx, providerName, model, usage.Account, combo, usage)
