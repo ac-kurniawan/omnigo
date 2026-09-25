@@ -105,11 +105,16 @@ type geminiFrame struct {
 	geminiBody
 }
 
-// parseGeminiFrame decodes one SSE `data:` line. Frames are decoded once: the
-// stream loop needs the finish reason, the content, and the usage of the same
-// frame, and decoding it per question cost three passes.
+// parseGeminiFrame decodes one SSE data field. The spec allows the value to
+// follow the colon with or without a space, so both shapes decode. Frames are
+// decoded once: the stream loop needs the finish reason, the content, and the
+// usage of the same frame.
 func parseGeminiFrame(chunk []byte) (geminiBody, error) {
-	payload := strings.TrimSpace(strings.TrimPrefix(string(chunk), "data: "))
+	payload := string(chunk)
+	if rest, ok := strings.CutPrefix(payload, "data:"); ok {
+		payload = rest
+	}
+	payload = strings.TrimSpace(payload)
 	var frame geminiFrame
 	if err := json.Unmarshal([]byte(payload), &frame); err != nil {
 		return geminiBody{}, fmt.Errorf("parse gemini chunk: %w", err)
@@ -200,6 +205,8 @@ func finishReason(reason string, calls int) string {
 		return "tool_calls"
 	case reason == "MAX_TOKENS":
 		return "length"
+	case reason == "SAFETY":
+		return "content_filter"
 	default:
 		return "stop"
 	}

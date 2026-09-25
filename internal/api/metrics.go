@@ -52,10 +52,10 @@ func orNoop(m Metrics) Metrics {
 }
 
 // knownModelLabel returns model only when it is a model the operator actually
-// configured for that provider; otherwise "other". The direct path accepts a
-// client-supplied "<provider>/<model>" string that resolveDirect does not
-// validate against the provider's catalog, so catalog membership — not string
-// shape — is what bounds this label.
+// configured for that provider; otherwise "other". Direct requests are already
+// refused unless the model is listed, and combo failures can name a model that
+// is only in the disabled list, so membership in either list — not the shape
+// of the string — is what bounds this label.
 func knownModelLabel(cfg *config.Config, providerName, model string) string {
 	for _, pc := range cfg.Providers {
 		if pc.Name != providerName {

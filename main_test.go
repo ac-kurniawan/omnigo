@@ -20,6 +20,8 @@ import (
 )
 
 func TestAppServesDashboardAndGateV1(t *testing.T) {
+	t.Setenv("OMNIGO_DASH_USER", "operator")
+	t.Setenv("OMNIGO_DASH_PASS", "s3cret")
 	cfg := &config.Config{
 		Server:    config.Server{Host: "127.0.0.1", Port: 8080},
 		Providers: []config.Provider{{Name: "openai", Type: "openai", BaseURL: "https://x", Models: []string{"gpt-4o"}}},
@@ -46,7 +48,7 @@ func TestAppServesDashboardAndGateV1(t *testing.T) {
 	// Authenticated request to dashboard with default credentials succeeds (200)
 	rr = httptest.NewRecorder()
 	dashReq := httptest.NewRequest("GET", "/", nil)
-	dashReq.SetBasicAuth("admin", "admin")
+	dashReq.SetBasicAuth("operator", "s3cret")
 	app.ServeHTTP(rr, dashReq)
 	if rr.Code != http.StatusOK || !strings.Contains(rr.Body.String(), "openai") {
 		t.Fatalf("dashboard with default auth: status %d body %s", rr.Code, rr.Body.String())
@@ -75,6 +77,8 @@ func TestAppKeepsV1ProtectedFromDashboardCredentials(t *testing.T) {
 }
 
 func TestAppDashboardDisabledInConfig(t *testing.T) {
+	t.Setenv("OMNIGO_DASH_USER", "operator")
+	t.Setenv("OMNIGO_DASH_PASS", "s3cret")
 	off := false
 	cfg := &config.Config{Dashboard: config.Dashboard{Enabled: &off}}
 	app, _ := newApp(func() *config.Config { return cfg }, vault.NewMemoryStore(&vault.Vault{}), nil, nil, nil, nil)
@@ -83,7 +87,7 @@ func TestAppDashboardDisabledInConfig(t *testing.T) {
 	for _, path := range []string{"/", "/providers", "/static/htmx.min.js"} {
 		rr := httptest.NewRecorder()
 		req := httptest.NewRequest(http.MethodGet, path, nil)
-		req.SetBasicAuth("admin", "admin")
+		req.SetBasicAuth("operator", "s3cret")
 		app.ServeHTTP(rr, req)
 		if rr.Code != http.StatusNotFound {
 			t.Fatalf("%s: status = %d, want 404", path, rr.Code)
@@ -112,7 +116,7 @@ func TestAppDashboardDisabledInConfig(t *testing.T) {
 	}
 	rr = httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
-	req.SetBasicAuth("admin", "admin")
+	req.SetBasicAuth("operator", "s3cret")
 	app.ServeHTTP(rr, req)
 	if rr.Code != http.StatusOK {
 		t.Fatalf("re-enabled authenticated: status = %d, want 200", rr.Code)
@@ -148,6 +152,8 @@ func TestReloadSwapsConfig(t *testing.T) {
 }
 
 func TestPlaygroundDashboardAndV1TelemetryIntegration(t *testing.T) {
+	t.Setenv("OMNIGO_DASH_USER", "operator")
+	t.Setenv("OMNIGO_DASH_PASS", "s3cret")
 	rawKey, hash, prefix, err := auth.GenerateKey()
 	if err != nil {
 		t.Fatal(err)
@@ -181,7 +187,7 @@ func TestPlaygroundDashboardAndV1TelemetryIntegration(t *testing.T) {
 
 	// 1. Dashboard renders the Inspector & Playground
 	dashReq := httptest.NewRequest(http.MethodGet, "/", nil)
-	dashReq.SetBasicAuth("admin", "admin")
+	dashReq.SetBasicAuth("operator", "s3cret")
 	dashRec := httptest.NewRecorder()
 	app.ServeHTTP(dashRec, dashReq)
 	if dashRec.Code != http.StatusOK {

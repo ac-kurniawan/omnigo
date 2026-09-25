@@ -26,7 +26,7 @@ func TestDashboardBasicAuthDisabled(t *testing.T) {
 	}
 }
 
-func TestDashboardBasicAuthDefaultAdminAdmin(t *testing.T) {
+func TestDashboardBasicAuthRejectsUnsetCredentials(t *testing.T) {
 	t.Setenv("OMNIGO_DASH_USER", "")
 	t.Setenv("OMNIGO_DASH_PASS", "")
 	t.Setenv("OMNIGO_DASHBOARD_USER", "")
@@ -34,38 +34,24 @@ func TestDashboardBasicAuthDefaultAdminAdmin(t *testing.T) {
 	t.Setenv("OMNIGO_DASH_PASSWORD", "")
 	t.Setenv("OMNIGO_DASHBOARD_PASSWORD", "")
 
+	if err := DashboardCredentials(); err == nil {
+		t.Fatal("unset dashboard credentials were accepted")
+	}
+
 	mw := DashboardBasicAuth(func() bool { return true })
 	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
 
-	// 1. Missing auth
 	rr := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.SetBasicAuth("admin", "admin")
 	handler.ServeHTTP(rr, req)
 	if rr.Code != http.StatusUnauthorized {
-		t.Fatalf("missing auth: status = %d, want 401", rr.Code)
+		t.Fatalf("admin/admin with no credentials configured: status = %d, want 401", rr.Code)
 	}
 	if authHeader := rr.Header().Get("WWW-Authenticate"); authHeader != `Basic realm="OmniGo Dashboard"` {
 		t.Fatalf("WWW-Authenticate = %q, want Basic realm=\"OmniGo Dashboard\"", authHeader)
-	}
-
-	// 2. Wrong auth
-	rr = httptest.NewRecorder()
-	req = httptest.NewRequest(http.MethodGet, "/", nil)
-	req.SetBasicAuth("admin", "wrong")
-	handler.ServeHTTP(rr, req)
-	if rr.Code != http.StatusUnauthorized {
-		t.Fatalf("wrong auth: status = %d, want 401", rr.Code)
-	}
-
-	// 3. Correct default admin/admin
-	rr = httptest.NewRecorder()
-	req = httptest.NewRequest(http.MethodGet, "/", nil)
-	req.SetBasicAuth("admin", "admin")
-	handler.ServeHTTP(rr, req)
-	if rr.Code != http.StatusOK {
-		t.Fatalf("correct auth: status = %d, want 200", rr.Code)
 	}
 }
 

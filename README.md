@@ -66,7 +66,7 @@ docker run -d \
   ghcr.io/ac-kurniawan/omnigo:latest
 ```
 
-Dashboard: `http://localhost:8080` (HTTP Basic Auth: `admin`/`admin` by default, or set via `OMNIGO_DASH_USER` / `OMNIGO_DASH_PASS`; toggle with `dashboard.auth` in `config.yaml`; serve with `dashboard.enabled`, default `true`) · API: `http://localhost:8080/v1`
+Dashboard: `http://localhost:8080` (HTTP Basic Auth via `OMNIGO_DASH_USER` / `OMNIGO_DASH_PASS`; required when `dashboard.auth` is on, which is the default. There is no built-in account. Serve with `dashboard.enabled`, default `true`) · API: `http://localhost:8080/v1`
 
 ```bash
 curl http://localhost:8080/v1/chat/completions \
