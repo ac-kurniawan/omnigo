@@ -91,6 +91,9 @@ func (m *testMetrics) RecordCombinationAttempt(ctx context.Context, combo, resul
 	m.comboCalls = append(m.comboCalls, [2]string{combo, result})
 }
 
+func (m *testMetrics) RecordTokenUsage(context.Context, string, string, string, string, provider.TokenUsage) {
+}
+
 // newRecordingRouter builds an authenticated router that records outcomes.
 func newRecordingRouter(t *testing.T, cfg *config.Config, m Metrics) (http.Handler, string) {
 	t.Helper()
@@ -400,6 +403,69 @@ func TestMetricsCarryClientKeyIDLabel(t *testing.T) {
 		t.Fatalf("no provider request series for solo\n%s", body)
 	} else if !strings.Contains(line, `api_key_id="k1"`) {
 		t.Errorf("provider request series missing the client key label: %s", line)
+	}
+}
+
+// A completed upstream that reports usage reaches the token counter with the
+// client key, the combo, and the account the provider served. A target that
+// fails before completion does not, even when a later target does.
+func TestChatRecordsTokenUsagePerUpstream(t *testing.T) {
+	provider.Register("openai", func(pcfg provider.Config, store provider.CredStore) provider.Provider {
+		name := pcfg.Name
+		return &fakeProvider{name: name, chatCtx: func(ctx context.Context, req provider.ChatRequest) error {
+			if name == "bad" {
+				return provider.NewHTTPStatusError(http.StatusInternalServerError, "upstream down")
+			}
+			provider.ReportUsage(ctx, provider.TokenUsage{
+				InputTokens: 11, OutputTokens: 4, CachedTokens: 2, Account: name + "-acct", Present: true,
+			})
+			return nil
+		}}
+	})
+	on := true
+	cfg := &config.Config{
+		Observability: config.Observability{Metrics: &on},
+		Providers: []config.Provider{
+			{Name: "bad", Type: "openai", Models: []string{"m-bad"}},
+			{Name: "good", Type: "openai", Models: []string{"m-good"}},
+		},
+		Combos: []config.Combo{{Name: "auto", Strategy: "priority", Targets: []config.ComboTarget{
+			{Provider: "bad", Model: "m-bad"},
+			{Provider: "good", Model: "m-good"},
+		}}},
+	}
+	metrics, err := observability.New(func() bool { return true }, "test-version")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = metrics.Shutdown(context.Background()) }()
+
+	raw, hash, prefix, err := auth.GenerateKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	v := &vault.Vault{ClientKeys: []vault.ClientKey{{ID: "k1", KeyHash: hash, Prefix: prefix, Active: true}}}
+	app := metrics.Middleware(NewRouter(func() *config.Config { return cfg }, vault.NewMemoryStore(v), nil, nil, "test-version", metrics))
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"auto","messages":[]}`))
+	req.Header.Set("Authorization", "Bearer "+raw)
+	rr := httptest.NewRecorder()
+	app.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("chat status = %d, body = %s", rr.Code, rr.Body.String())
+	}
+
+	scrape := httptest.NewRecorder()
+	metrics.Handler().ServeHTTP(scrape, httptest.NewRequest(http.MethodGet, "/actuator/metrics", nil))
+	body := scrape.Body.String()
+	line := seriesLine(body, "omnigo_tokens_total", `omnigo_token_kind="input"`, `gen_ai_system="good"`, `account="good-acct"`, `omnigo_combo_name="auto"`, `api_key_id="k1"`)
+	if line == "" || !strings.HasSuffix(line, " 11") {
+		t.Fatalf("input series = %q\n%s", line, body)
+	}
+	for _, row := range strings.Split(body, "\n") {
+		if strings.HasPrefix(row, "omnigo_tokens_total{") && strings.Contains(row, `gen_ai_system="bad"`) {
+			t.Fatalf("failed target recorded tokens: %s", row)
+		}
 	}
 }
 
