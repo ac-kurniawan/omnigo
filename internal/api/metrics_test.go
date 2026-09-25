@@ -198,10 +198,10 @@ type wrappedErr struct{ err error }
 func (w wrappedErr) Error() string { return "wrapped: " + w.err.Error() }
 func (w wrappedErr) Unwrap() error { return w.err }
 
-// Metric labels must never be client-controlled: an attacker who can mint a
-// distinct label value per request can grow the series set without bound.
-// These two paths are reachable by anyone holding an API key.
-func TestModelLabelIsBoundedToConfiguredCatalog(t *testing.T) {
+// A direct request for a model the operator did not configure is refused
+// before any provider dispatch, so it must not create a series. Cardinality
+// stays bounded by the models that actually run, not by collapsing them.
+func TestUnlistedModelDoesNotCreateSeries(t *testing.T) {
 	provider.Register("probe", func(pcfg provider.Config, store provider.CredStore) provider.Provider {
 		return &fakeProvider{name: pcfg.Name, chat: func(r provider.ChatRequest) error {
 			return provider.NewHTTPStatusError(http.StatusInternalServerError, "nope")
@@ -225,23 +225,84 @@ func TestModelLabelIsBoundedToConfiguredCatalog(t *testing.T) {
 	v := &vault.Vault{ClientKeys: []vault.ClientKey{{ID: "k1", KeyHash: hash, Prefix: prefix, Active: true}}}
 	router := NewRouter(func() *config.Config { return cfg }, vault.NewMemoryStore(v), nil, nil, "test-version", metrics)
 
-	// Each of these is accepted by the provider resolver but is not in the
-	// provider's configured catalog.
 	for _, suffix := range []string{"a1", "a2", "a3", "a4", "a5", "a6", "a7", "a8", "a9", "b1"} {
 		req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions",
 			strings.NewReader(`{"model":"probe/ATTACK-`+suffix+`","messages":[]}`))
 		req.Header.Set("Authorization", "Bearer "+raw)
-		router.ServeHTTP(httptest.NewRecorder(), req)
+		rr := httptest.NewRecorder()
+		router.ServeHTTP(rr, req)
+		if rr.Code != http.StatusNotFound {
+			t.Fatalf("unlisted model status = %d, want 404", rr.Code)
+		}
 	}
 
 	rr := httptest.NewRecorder()
 	metrics.Handler().ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/actuator/metrics", nil))
 	body := rr.Body.String()
-	if strings.Contains(body, "ATTACK-") {
-		t.Fatalf("client-controlled model became a metric label\n%s", body)
+	if strings.Contains(body, "ATTACK-") || strings.Contains(body, `gen_ai_request_model="`) {
+		t.Fatalf("refused model created a provider request series\n%s", body)
 	}
-	if n := strings.Count(body, `gen_ai_request_model="`); n > 2 {
-		t.Fatalf("model label cardinality = %d, want the configured catalog size\n%s", n, body)
+}
+
+// Provider request series must name the model that was actually dispatched.
+// A model that is not in the operator catalog, or that contains characters
+// outside the old identifier alphabet, still has to keep its own series:
+// collapsing those into "other" hides which model failed.
+func TestProviderRequestKeepsExactModelLabel(t *testing.T) {
+	provider.Register("probe", func(pcfg provider.Config, store provider.CredStore) provider.Provider {
+		return &fakeProvider{name: pcfg.Name, chat: func(r provider.ChatRequest) error {
+			return provider.NewHTTPStatusError(http.StatusInternalServerError, "nope")
+		}}
+	})
+	on := true
+	cfg := &config.Config{
+		Observability: config.Observability{Metrics: &on},
+		Providers: []config.Provider{{
+			Name: "probe", Type: "probe",
+			Models: []string{"gemini-3.8-flash-tiered", "my.router/model+v1"},
+		}},
+		Combos: []config.Combo{{
+			Name:     "smart",
+			Strategy: "priority",
+			Targets:  []config.ComboTarget{{Provider: "probe", Model: "my.router/model+v1"}},
+		}},
+	}
+	metrics, err := observability.New(func() bool { return true }, "test-version")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = metrics.Shutdown(context.Background()) }()
+
+	raw, hash, prefix, err := auth.GenerateKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	v := &vault.Vault{ClientKeys: []vault.ClientKey{{ID: "k1", KeyHash: hash, Prefix: prefix, Active: true}}}
+	router := NewRouter(func() *config.Config { return cfg }, vault.NewMemoryStore(v), nil, nil, "test-version", metrics)
+
+	direct := httptest.NewRequest(http.MethodPost, "/v1/chat/completions",
+		strings.NewReader(`{"model":"probe/gemini-3.8-flash-tiered","messages":[]}`))
+	direct.Header.Set("Authorization", "Bearer "+raw)
+	router.ServeHTTP(httptest.NewRecorder(), direct)
+
+	combo := httptest.NewRequest(http.MethodPost, "/v1/chat/completions",
+		strings.NewReader(`{"model":"smart","messages":[]}`))
+	combo.Header.Set("Authorization", "Bearer "+raw)
+	router.ServeHTTP(httptest.NewRecorder(), combo)
+
+	rr := httptest.NewRecorder()
+	metrics.Handler().ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/actuator/metrics", nil))
+	body := rr.Body.String()
+	for _, want := range []string{
+		`gen_ai_request_model="gemini-3.8-flash-tiered"`,
+		`gen_ai_request_model="my.router/model+v1"`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("scrape missing %s\n%s", want, body)
+		}
+	}
+	if strings.Contains(body, `gen_ai_request_model="other"`) {
+		t.Fatalf("provider request model collapsed to other\n%s", body)
 	}
 }
 
