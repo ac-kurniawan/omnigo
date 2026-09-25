@@ -234,8 +234,11 @@ request can grow series without limit:
   `unmatched`, so a request path is never a label.
 - `http_request_method` is limited to the standard methods; anything else
   becomes `other`.
-- `gen_ai_request_model` only takes values from the provider's configured
-  catalog; the client-supplied `<provider>/<model>` form is otherwise `other`.
+- `gen_ai_request_model` is the model id that was dispatched. A request for a
+  model that is not configured never reaches a provider, so it creates no
+  series. An id longer than 64 characters keeps a prefix plus a short digest,
+  so two long ids do not share a series. Punctuation such as `/` and `+` is
+  kept: collapsing it would merge unrelated models.
 - `result` is a fixed set (`success`, `failure`, `client_abort`,
   `upstream_stall`, `backpressure`, `rate_limited`, `stream_failed`,
   `upstream_error`, `unavailable`).
