@@ -88,6 +88,18 @@ func (p Provider) IsModelDisabled(model string) bool {
 	return false
 }
 
+// HasModel reports whether model is in this provider's configured catalog.
+// Direct "<provider>/<model>" requests are accepted only for listed models, so
+// the catalog is the allowlist rather than a display cache.
+func (p Provider) HasModel(model string) bool {
+	for _, m := range p.Models {
+		if m == model {
+			return true
+		}
+	}
+	return false
+}
+
 type ComboTarget struct {
 	Provider string `yaml:"provider"`
 	Model    string `yaml:"model"`
@@ -286,10 +298,32 @@ func (c *Config) Validate() error {
 			return fmt.Errorf("invalid timeout %q", c.Timeout)
 		}
 	}
+	seenProvider := map[string]bool{}
+	models := map[string]map[string]bool{}
 	for _, p := range c.Providers {
+		if p.Name == "" {
+			return fmt.Errorf("provider: name is required")
+		}
+		if seenProvider[p.Name] {
+			return fmt.Errorf("provider %q: duplicate name", p.Name)
+		}
+		seenProvider[p.Name] = true
 		if !validTypes[p.Type] {
 			return fmt.Errorf("provider %q: unknown type %q", p.Name, p.Type)
 		}
+		listed := map[string]bool{}
+		for _, m := range p.Models {
+			if m == "" {
+				return fmt.Errorf("provider %q: model name is required", p.Name)
+			}
+			listed[m] = true
+		}
+		for _, m := range p.DisabledModels {
+			if m != "" {
+				listed[m] = true
+			}
+		}
+		models[p.Name] = listed
 		if p.Timeout != "" {
 			d, err := time.ParseDuration(p.Timeout)
 			if err != nil || d <= 0 {
@@ -305,7 +339,15 @@ func (c *Config) Validate() error {
 			return fmt.Errorf("provider %q: invalid max_concurrency %d", p.Name, p.MaxConcurrency)
 		}
 	}
+	seenCombo := map[string]bool{}
 	for _, cb := range c.Combos {
+		if cb.Name == "" {
+			return fmt.Errorf("combo: name is required")
+		}
+		if seenCombo[cb.Name] {
+			return fmt.Errorf("combo %q: duplicate name", cb.Name)
+		}
+		seenCombo[cb.Name] = true
 		if !validStrategies[cb.Strategy] {
 			return fmt.Errorf("combo %q: unknown strategy %q", cb.Name, cb.Strategy)
 		}
@@ -319,6 +361,30 @@ func (c *Config) Validate() error {
 			d, err := time.ParseDuration(cb.Timeout)
 			if err != nil || d <= 0 {
 				return fmt.Errorf("combo %q: invalid timeout %q", cb.Name, cb.Timeout)
+			}
+		}
+		if len(cb.Targets) == 0 {
+			return fmt.Errorf("combo %q: at least one target is required", cb.Name)
+		}
+		seenTarget := map[string]bool{}
+		for _, t := range cb.Targets {
+			key := t.Provider + "\x00" + t.Model
+			if seenTarget[key] {
+				return fmt.Errorf("combo %q: duplicate target %s/%s", cb.Name, t.Provider, t.Model)
+			}
+			seenTarget[key] = true
+			if t.Provider == "" || t.Model == "" {
+				return fmt.Errorf("combo %q: target provider and model are required", cb.Name)
+			}
+			listed, ok := models[t.Provider]
+			if !ok {
+				return fmt.Errorf("combo %q: unknown provider %q", cb.Name, t.Provider)
+			}
+			// An empty catalog has not been fetched yet, so it cannot reject a
+			// reference. Once it has entries, the target must be one of them:
+			// listed, or listed and then disabled.
+			if len(listed) > 0 && !listed[t.Model] {
+				return fmt.Errorf("combo %q: provider %q has no model %q", cb.Name, t.Provider, t.Model)
 			}
 		}
 	}

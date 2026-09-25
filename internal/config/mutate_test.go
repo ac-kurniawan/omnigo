@@ -13,7 +13,7 @@ providers:
   - name: openai-main
     type: openai
     base_url: https://api.openai.com/v1
-    models: [gpt-4o]
+    models: [gpt-4o, gpt-4o-mini]
 combos:
   - name: auto
     strategy: priority

@@ -179,6 +179,29 @@ func TestTranslateSSEMapsMaxTokensToLength(t *testing.T) {
 	}
 }
 
+func TestTranslateSSEMapsSafetyToContentFilter(t *testing.T) {
+	gemini := []byte(`data: {"candidates":[{"finishReason":"SAFETY","content":{"parts":[]}}]}`)
+	out, err := TranslateSSE(gemini)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out == nil || !strings.Contains(string(out), `"finish_reason":"content_filter"`) {
+		t.Fatalf("safety finish was not content_filter: %s", out)
+	}
+}
+
+func TestParseGeminiFrameAcceptsDataWithoutSpace(t *testing.T) {
+	frame := []byte(`data:{"candidates":[{"content":{"parts":[{"text":"hi"}]}}]}`)
+	body, err := parseGeminiFrame(frame)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text, _, _ := body.content(0)
+	if text != "hi" {
+		t.Fatalf("text = %q, want hi", text)
+	}
+}
+
 func TestTranslateSSEForwardsThoughtAsReasoning(t *testing.T) {
 	gemini := []byte(`data: {"candidates":[{"content":{"parts":[{"thought":true,"text":"because"}]}}]}`)
 	out, err := TranslateSSE(gemini)
