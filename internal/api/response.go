@@ -10,10 +10,11 @@ import (
 	"github.com/ac-kurniawan/omnigo/internal/provider"
 )
 
-// sseCommitState watches a streaming combo body for the first content event.
-// Comment lines and ping/keepalive/heartbeat events are not content: a failure
-// before a content frame can still fail over. Once a content event is
-// complete, the bytes already read are committed so the client loses nothing.
+// sseCommitState watches a streaming combo body for the first reply. Comment
+// lines, pings, a role frame, reasoning, and an empty stop are not one: a
+// finished stream with none can still fail over. Once assistant text or a tool
+// call is complete, the bytes already read are committed so the client loses
+// nothing.
 type sseCommitState struct {
 	scanned int
 	event   string
@@ -96,54 +97,69 @@ func sseContentEvent(event string, data []byte) bool {
 		return false
 	}
 	if !json.Valid(payload) {
-		return true
+		return false
 	}
 	var decoded any
 	if err := json.Unmarshal(payload, &decoded); err != nil {
-		return true
-	}
-	return sseContentPayload(decoded, event)
-}
-
-func sseContentPayload(payload any, event string) bool {
-	switch v := payload.(type) {
-	case map[string]any:
-		if ssePingName(payloadType(v, event)) {
-			return false
-		}
-		if len(v) == 0 {
-			return false
-		}
-		return !sseErrorOnly(v)
-	case []any:
-		return len(v) > 0
-	default:
-		return v != nil
-	}
-}
-
-func payloadType(v map[string]any, event string) string {
-	for _, key := range []string{"type", "event", "object"} {
-		if s, ok := v[key].(string); ok {
-			return s
-		}
-	}
-	return event
-}
-
-func sseErrorOnly(v map[string]any) bool {
-	if _, ok := v["error"]; !ok {
 		return false
 	}
-	for _, key := range []string{
-		"choices", "candidates", "content_block", "delta", "output", "response",
-		"parts", "tool_calls", "tool_use", "function_call", "function_call_output",
-	} {
-		if _, ok := v[key]; ok {
-			return false
+	return sseReplyPayload(decoded)
+}
+
+// sseReplyPayload reports whether a decoded SSE payload carries assistant text
+// or a tool call. A role, reasoning, usage, or an empty finish frame does not:
+// those can finish a generation the client still has no reply from.
+func sseReplyPayload(payload any) bool {
+	switch v := payload.(type) {
+	case map[string]any:
+		if sseText(v["content"]) || sseToolCall(v) {
+			return true
+		}
+		for _, key := range []string{"choices", "candidates", "delta", "message", "output", "content", "parts"} {
+			if sseReplyPayload(v[key]) {
+				return true
+			}
+		}
+		return false
+	case []any:
+		for _, item := range v {
+			if sseReplyPayload(item) {
+				return true
+			}
+		}
+		return false
+	default:
+		return false
+	}
+}
+
+func sseText(v any) bool {
+	text, ok := v.(string)
+	return ok && strings.TrimSpace(text) != ""
+}
+
+func sseToolCall(v map[string]any) bool {
+	for _, key := range []string{"tool_calls", "tool_use", "function_call"} {
+		if present, ok := v[key]; ok && present != nil {
+			return true
 		}
 	}
-	return true
+	return false
+}
+
+// chatJSONWithoutReply reports a finished chat completion whose message has
+// neither text nor a tool call. Any other JSON body is left alone: not every
+// successful response is a chat completion.
+func chatJSONWithoutReply(body []byte) bool {
+	var decoded map[string]any
+	if err := json.Unmarshal(body, &decoded); err != nil {
+		return false
+	}
+	choices, ok := decoded["choices"].([]any)
+	if !ok || len(choices) == 0 {
+		return false
+	}
+	return !sseReplyPayload(decoded)
 }
 
 func ssePingName(name string) bool {
@@ -244,8 +260,17 @@ func (w *bufferedResponseWriter) finish(err error) error {
 	if w.body.Len() == 0 {
 		return errors.New("upstream returned an empty response")
 	}
-	if !w.stream && strings.Contains(w.header.Get("Content-Type"), "application/json") && !json.Valid(w.body.Bytes()) {
-		return errors.New("upstream returned malformed JSON")
+	if w.stream {
+		if !w.sse.feed(w.body.Bytes()) {
+			return errors.New("upstream returned no reply")
+		}
+	} else if strings.Contains(w.header.Get("Content-Type"), "application/json") {
+		if !json.Valid(w.body.Bytes()) {
+			return errors.New("upstream returned malformed JSON")
+		}
+		if chatJSONWithoutReply(w.body.Bytes()) {
+			return errors.New("upstream returned no reply")
+		}
 	}
 	w.commit()
 	return nil
