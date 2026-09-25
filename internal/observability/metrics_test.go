@@ -307,6 +307,38 @@ func TestQuotaLabelBoundedForOverlongIdentity(t *testing.T) {
 	}
 }
 
+func TestExactModelLabelKeepsDispatchedModel(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{name: "dotted model", input: "gemini-3.8-flash-tiered", want: "gemini-3.8-flash-tiered"},
+		{name: "slash and plus", input: "my.router/model+v1", want: "my.router/model+v1"},
+		{name: "empty", input: "", want: labelFallback},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := exactModelLabel(tt.input); got != tt.want {
+				t.Fatalf("exactModelLabel(%q) = %q, want %q", tt.input, got, tt.want)
+			}
+		})
+	}
+
+	longA := strings.Repeat("m", 80) + "/alpha"
+	longB := strings.Repeat("m", 80) + "/beta"
+	a, b := exactModelLabel(longA), exactModelLabel(longB)
+	if a == labelFallback || b == labelFallback {
+		t.Fatalf("overlong models collapsed to %q (a=%q b=%q)", labelFallback, a, b)
+	}
+	if a == b {
+		t.Fatalf("distinct overlong models share label %q", a)
+	}
+	if len(a) > maxLabelLen || len(b) > maxLabelLen {
+		t.Fatalf("label exceeds %d (a=%d b=%d)", maxLabelLen, len(a), len(b))
+	}
+}
+
 // An unavailable read has no windows; emitting a ratio for a synthetic window
 // would report a fabricated 0% for a window that does not exist.
 func TestUnavailableSnapshotEmitsStatusWithoutRatioSeries(t *testing.T) {

@@ -321,16 +321,18 @@ func (w *instrumentedWriter) statusCode() int {
 }
 
 // RecordProviderRequest counts a provider dispatch outcome. result is a bounded
-// classifier label. Both provider and model are guarded: the model can arrive
-// from a client-supplied "<provider>/<model>" request, so it never becomes a
-// raw label value. The authenticated client key id is read from ctx.
+// classifier label. provider is a configured name and is still alphabet-checked.
+// model is the model actually dispatched — the resolved direct model, or the
+// combo target's model after routing — and is recorded as that string. Only an
+// empty or overlong value is bounded, so distinct models never share a series.
+// The authenticated client key id is read from ctx.
 func (m *Metrics) RecordProviderRequest(ctx context.Context, provider, model, result string) {
 	if !m.Enabled() {
 		return
 	}
 	m.providerRequests.Add(context.Background(), 1, metric.WithAttributes(
 		attribute.String(attrProvider, providerLabel(provider)),
-		attribute.String(attrModel, modelLabel(model)),
+		attribute.String(attrModel, exactModelLabel(model)),
 		attribute.String(attrResult, result),
 		attribute.String(attrClientKey, clientKeyLabel(auth.CallerFrom(ctx).ID())),
 	))
@@ -349,9 +351,9 @@ func (m *Metrics) RecordCombinationAttempt(ctx context.Context, combo, result st
 	))
 }
 
-// Attribute label guards. Every label value must come from a bounded set, and
-// provider/model/method all have client-reachable paths, so each is validated
-// at the sink rather than trusted from callers.
+// Attribute label guards. provider, client key, and method are bounded sets.
+// Model ids are recorded exactly: they come from the dispatched request, not
+// from a closed alphabet.
 const (
 	maxLabelLen   = 64
 	labelFallback = "other"
@@ -389,8 +391,23 @@ func clientKeyLabel(id string) string {
 // providerLabel guards a provider name.
 func providerLabel(provider string) string { return safeLabel(provider) }
 
-// modelLabel guards a model id.
-func modelLabel(model string) string { return safeLabel(model) }
+// exactModelLabel records the dispatched model id. Model ids are not a closed
+// alphabet — they contain '/', '+', and other punctuation — so rejecting those
+// characters would merge unrelated models into one series. A value longer than
+// the label budget keeps a prefix plus a digest of the whole id, same as an
+// overlong account, so two long models never share a series.
+func exactModelLabel(model string) string {
+	if model == "" {
+		return labelFallback
+	}
+	if len(model) <= maxLabelLen {
+		return model
+	}
+	sum := sha256.Sum256([]byte(model))
+	suffix := hex.EncodeToString(sum[:4])
+	room := maxLabelLen - len(suffix) - 1
+	return model[:room] + "-" + suffix
+}
 
 // methodLabel guards the HTTP method. Go's server accepts arbitrary method
 // tokens, so a client could otherwise mint a series per request.
@@ -466,7 +483,7 @@ func (m *Metrics) RecordQuotaSample(sample quota.Sample) {
 	if sample.Window == "" {
 		return
 	}
-	withWindow := metric.WithAttributes(append(base, attribute.String(attrWindow, modelLabel(sample.Window)))...)
+	withWindow := metric.WithAttributes(append(base, attribute.String(attrWindow, exactModelLabel(sample.Window)))...)
 	m.quotaRemainingRatio.Record(ctx, sample.RemainingRatio, withWindow)
 	m.quotaResetsIn.Record(ctx, sample.ResetsInSecond, withWindow)
 }
