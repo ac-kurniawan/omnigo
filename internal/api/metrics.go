@@ -5,7 +5,6 @@ import (
 	"errors"
 	"net/http"
 
-	"github.com/ac-kurniawan/omnigo/internal/config"
 	"github.com/ac-kurniawan/omnigo/internal/provider"
 )
 
@@ -49,31 +48,6 @@ func orNoop(m Metrics) Metrics {
 		return noopMetrics{}
 	}
 	return m
-}
-
-// knownModelLabel returns model only when it is a model the operator actually
-// configured for that provider; otherwise "other". Direct requests are already
-// refused unless the model is listed, and combo failures can name a model that
-// is only in the disabled list, so membership in either list — not the shape
-// of the string — is what bounds this label.
-func knownModelLabel(cfg *config.Config, providerName, model string) string {
-	for _, pc := range cfg.Providers {
-		if pc.Name != providerName {
-			continue
-		}
-		for _, m := range pc.Models {
-			if m == model {
-				return model
-			}
-		}
-		for _, m := range pc.DisabledModels {
-			if m == model {
-				return model
-			}
-		}
-		break
-	}
-	return "other"
 }
 
 // classifyProviderError maps a provider failure to one of the bounded result
