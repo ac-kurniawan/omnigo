@@ -204,7 +204,7 @@ func TestDashboardAuthEnabledByDefaultRejectsUnauthenticated(t *testing.T) {
 	}
 }
 
-func TestDashboardAuthAllowsDefaultAdminAdmin(t *testing.T) {
+func TestDashboardAuthRejectsDefaultAdminAdmin(t *testing.T) {
 	t.Setenv("OMNIGO_DASH_USER", "")
 	t.Setenv("OMNIGO_DASH_PASS", "")
 
@@ -216,8 +216,8 @@ func TestDashboardAuthAllowsDefaultAdminAdmin(t *testing.T) {
 	req.SetBasicAuth("admin", "admin")
 	h.ServeHTTP(rr, req)
 
-	if rr.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200", rr.Code)
+	if rr.Code != http.StatusUnauthorized {
+		t.Fatalf("admin/admin with no credentials configured: status = %d, want 401", rr.Code)
 	}
 }
 

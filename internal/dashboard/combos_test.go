@@ -48,7 +48,7 @@ func TestAddCombo(t *testing.T) {
 func TestAddComboAcceptsReliableAndRoundRobin(t *testing.T) {
 	for _, strategy := range []string{"reliable", "round-robin"} {
 		t.Run(strategy, func(t *testing.T) {
-			cfg := &config.Config{Providers: []config.Provider{{Name: "openai", Type: "openai"}}}
+			cfg := &config.Config{Providers: []config.Provider{{Name: "openai", Type: "openai", Models: []string{"gpt-4o"}}}}
 			store := vault.NewMemoryStore(&vault.Vault{})
 			mutate := func(fn func(*config.Config) error) error {
 				if err := fn(cfg); err != nil {
@@ -279,6 +279,7 @@ func newComboTestServer(t *testing.T, cfg *config.Config, tracker *combo.Tracker
 
 func TestUpdateComboFullReplace(t *testing.T) {
 	cfg := &config.Config{
+		Providers: []config.Provider{{Name: "agy", Type: "antigravity"}, {Name: "openai-main", Type: "openai"}},
 		Combos: []config.Combo{{
 			Name:     "smart",
 			Strategy: "priority",
@@ -348,6 +349,7 @@ func TestUpdateComboRejectsEmptyTargets(t *testing.T) {
 
 func TestUpdateComboSetsAndClearsTimeout(t *testing.T) {
 	cfg := &config.Config{
+		Providers: []config.Provider{{Name: "agy", Type: "antigravity"}},
 		Combos: []config.Combo{{
 			Name:     "smart",
 			Strategy: "priority",
@@ -443,6 +445,7 @@ func TestUpdateComboResetsCooldownsForNewChain(t *testing.T) {
 	drained := combo.Target{Provider: "openai-main", Model: "gpt-4o"}
 	untouched := combo.Target{Provider: "other", Model: "m1"}
 	cfg := &config.Config{
+		Providers: []config.Provider{{Name: "openai-main", Type: "openai"}},
 		Combos: []config.Combo{{
 			Name:     "smart",
 			Strategy: "priority",

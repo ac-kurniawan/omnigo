@@ -197,6 +197,26 @@ func TestStreamFinishOnlyFrameReachesClient(t *testing.T) {
 	}
 }
 
+func TestStreamAcceptsDataFieldWithoutSpace(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data:{\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"hi\"}]},\"finishReason\":\"STOP\"}]}\n\n"))
+	}))
+	defer srv.Close()
+
+	p := New(provider.Config{Name: "agy", BaseURL: srv.URL}, staticStore{provider.Credentials{AccessToken: "tok", ProjectID: "p", ExpiresAt: time.Now().Add(time.Hour)}})
+	rec := httptest.NewRecorder()
+	err := p.ChatCompletion(context.Background(), provider.ChatRequest{
+		Model: "gemini", Stream: true, Messages: []provider.Message{{Role: "user", Content: "hi"}},
+	}, rec)
+	if err != nil {
+		t.Fatalf("space-less data field was dropped: %v", err)
+	}
+	if !strings.Contains(rec.Body.String(), `"content":"hi"`) {
+		t.Fatalf("body = %s", rec.Body.String())
+	}
+}
+
 // A thinking-only generation has no candidate text. Treating that as a
 // truncated stream fails a request the upstream completed.
 func TestStreamThoughtOnlyIsComplete(t *testing.T) {

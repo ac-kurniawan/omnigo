@@ -412,7 +412,7 @@ func scanSSE(r io.Reader, consume func(geminiBody) error) error {
 	scanner.Buffer((*bufp)[:0], 1024*1024)
 	for scanner.Scan() {
 		line := scanner.Text()
-		if !strings.HasPrefix(line, "data: ") {
+		if !strings.HasPrefix(line, "data:") {
 			continue
 		}
 		body, err := parseGeminiFrame([]byte(line))

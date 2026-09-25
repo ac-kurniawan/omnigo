@@ -22,11 +22,10 @@ func TestAddModel(t *testing.T) {
 		t.Fatal(err)
 	}
 	models := cfg.Providers[0].Models
-	if len(models) != 2 || models[1] != "gpt-4.5-preview" {
+	if len(models) != 3 || models[2] != "gpt-4.5-preview" {
 		t.Fatalf("models = %v", models)
 	}
 }
-
 func TestAddModelNoDuplicate(t *testing.T) {
 	dir := t.TempDir()
 	p := filepath.Join(dir, "config.yaml")
@@ -39,8 +38,8 @@ func TestAddModelNoDuplicate(t *testing.T) {
 	}
 
 	cfg, _ := Load(p)
-	if len(cfg.Providers[0].Models) != 1 {
-		t.Fatalf("expected 1 model, got %v", cfg.Providers[0].Models)
+	if len(cfg.Providers[0].Models) != 2 {
+		t.Fatalf("expected 2 models, got %v", cfg.Providers[0].Models)
 	}
 }
 
@@ -58,8 +57,8 @@ func TestDisableAndEnableModel(t *testing.T) {
 
 	cfg, _ := Load(p)
 	prov := cfg.Providers[0]
-	if len(prov.Models) != 0 {
-		t.Fatalf("expected 0 active models, got %v", prov.Models)
+	if len(prov.Models) != 1 || prov.Models[0] != "gpt-4o-mini" {
+		t.Fatalf("expected gpt-4o-mini to stay active, got %v", prov.Models)
 	}
 	if len(prov.DisabledModels) != 1 || prov.DisabledModels[0] != "gpt-4o" {
 		t.Fatalf("disabled models = %v", prov.DisabledModels)
@@ -75,7 +74,7 @@ func TestDisableAndEnableModel(t *testing.T) {
 
 	cfg, _ = Load(p)
 	prov = cfg.Providers[0]
-	if len(prov.Models) != 1 || prov.Models[0] != "gpt-4o" {
+	if len(prov.Models) != 2 || prov.Models[0] != "gpt-4o-mini" || prov.Models[1] != "gpt-4o" {
 		t.Fatalf("active models = %v", prov.Models)
 	}
 	if len(prov.DisabledModels) != 0 {
@@ -90,10 +89,8 @@ func TestDeleteModel(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_ = AddModel(p, "openai-main", "gpt-4o-mini")
 	_ = DisableModel(p, "openai-main", "gpt-4o")
 
-	// Delete both active and disabled model
 	if err := DeleteModel(p, "openai-main", "gpt-4o-mini"); err != nil {
 		t.Fatal(err)
 	}

@@ -109,7 +109,7 @@ func resolveDirect(cfg *config.Config, registry *providerRegistry, model string)
 		modelID := model[i+1:]
 		for _, pc := range cfg.Providers {
 			if pc.Name == provName {
-				if pc.Disabled || pc.IsModelDisabled(modelID) {
+				if pc.Disabled || !pc.HasModel(modelID) || pc.IsModelDisabled(modelID) {
 					return nil, "", "", false
 				}
 				p, ok := registry.Get(cfg, pc.Name)
