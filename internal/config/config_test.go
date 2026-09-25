@@ -63,12 +63,16 @@ func TestValidateRejectsUnknownStrategy(t *testing.T) {
 
 func TestValidateAcceptsKnownValues(t *testing.T) {
 	cfg := &Config{
-		Providers: []Provider{{Name: "a", Type: "openai"}, {Name: "b", Type: "antigravity"}, {Name: "c", Type: "codex"}},
+		Providers: []Provider{
+			{Name: "a", Type: "openai", Models: []string{"m"}},
+			{Name: "b", Type: "antigravity", Models: []string{"m"}},
+			{Name: "c", Type: "codex", Models: []string{"m"}},
+		},
 		Combos: []Combo{
-			{Name: "auto", Strategy: "priority"},
-			{Name: "x", Strategy: "fill-first", DrainTTL: "30s"},
-			{Name: "safe", Strategy: "reliable", DrainTTL: "30s"},
-			{Name: "balanced", Strategy: "round-robin", DrainTTL: "30s"},
+			{Name: "auto", Strategy: "priority", Targets: []ComboTarget{{Provider: "a", Model: "m"}}},
+			{Name: "x", Strategy: "fill-first", DrainTTL: "30s", Targets: []ComboTarget{{Provider: "b", Model: "m"}}},
+			{Name: "safe", Strategy: "reliable", DrainTTL: "30s", Targets: []ComboTarget{{Provider: "c", Model: "m"}}},
+			{Name: "balanced", Strategy: "round-robin", DrainTTL: "30s", Targets: []ComboTarget{{Provider: "a", Model: "m"}, {Provider: "b", Model: "m"}}},
 		},
 	}
 	if err := cfg.Validate(); err != nil {
@@ -474,5 +478,38 @@ func TestValidateAcceptsDefaultQuota(t *testing.T) {
 	cfg := &Config{}
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("default quota config must validate: %v", err)
+	}
+}
+
+func TestValidateRejectsDuplicateAndDanglingReferences(t *testing.T) {
+	cases := []struct {
+		name string
+		cfg  *Config
+	}{
+		{name: "duplicate provider", cfg: &Config{Providers: []Provider{{Name: "a", Type: "openai"}, {Name: "a", Type: "codex"}}}},
+		{name: "duplicate combo", cfg: &Config{Combos: []Combo{{Name: "auto", Strategy: "priority"}, {Name: "auto", Strategy: "fill-first"}}}},
+		{name: "empty combo", cfg: &Config{Combos: []Combo{{Name: "auto", Strategy: "priority"}}}},
+		{name: "unknown provider", cfg: &Config{
+			Providers: []Provider{{Name: "a", Type: "openai", Models: []string{"m"}}},
+			Combos:    []Combo{{Name: "auto", Strategy: "priority", Targets: []ComboTarget{{Provider: "missing", Model: "m"}}}},
+		}},
+		{name: "unknown model", cfg: &Config{
+			Providers: []Provider{{Name: "a", Type: "openai", Models: []string{"m"}}},
+			Combos:    []Combo{{Name: "auto", Strategy: "priority", Targets: []ComboTarget{{Provider: "a", Model: "other"}}}},
+		}},
+		{name: "duplicate target", cfg: &Config{
+			Providers: []Provider{{Name: "a", Type: "openai", Models: []string{"m"}}},
+			Combos: []Combo{{Name: "auto", Strategy: "priority", Targets: []ComboTarget{
+				{Provider: "a", Model: "m"},
+				{Provider: "a", Model: "m"},
+			}}},
+		}},
+	}
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			if err := tt.cfg.Validate(); err == nil {
+				t.Fatal("expected validation error")
+			}
+		})
 	}
 }

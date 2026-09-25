@@ -3,6 +3,7 @@ package auth
 import (
 	"crypto/subtle"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/url"
 	"os"
@@ -99,10 +100,22 @@ func unauthorized(w http.ResponseWriter) {
 	_, _ = w.Write([]byte(`{"error":{"message":"invalid API key","type":"invalid_request_error","code":"invalid_api_key"}}`))
 }
 
+// DashboardCredentials reports whether the process has an explicit dashboard
+// username and password. Auth stays on by default, and there is no built-in
+// account: a deployment that forgets the variables must not come up behind
+// admin/admin.
+func DashboardCredentials() error {
+	if getDashUser() == "" || getDashPass() == "" {
+		return errors.New("dashboard auth is enabled but OMNIGO_DASH_USER and OMNIGO_DASH_PASS are unset")
+	}
+	return nil
+}
+
 // DashboardBasicAuth returns a middleware enforcing HTTP Basic Authentication
 // when enabled() returns true. It bypasses auth for static assets under /static/.
-// Username and password are read from environment variables (OMNIGO_DASH_USER,
-// OMNIGO_DASH_PASS), falling back to "admin"/"admin" if unset or empty.
+// Username and password come from OMNIGO_DASH_USER and OMNIGO_DASH_PASS (the
+// longer OMNIGO_DASHBOARD_* names are accepted too). When either is unset the
+// check fails closed: no request is accepted.
 func DashboardBasicAuth(enabled func() bool) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -117,9 +130,8 @@ func DashboardBasicAuth(enabled func() bool) func(http.Handler) http.Handler {
 
 			user := getDashUser()
 			pass := getDashPass()
-
 			u, p, ok := r.BasicAuth()
-			if !ok || subtle.ConstantTimeCompare([]byte(u), []byte(user)) != 1 || subtle.ConstantTimeCompare([]byte(p), []byte(pass)) != 1 {
+			if user == "" || pass == "" || !ok || subtle.ConstantTimeCompare([]byte(u), []byte(user)) != 1 || subtle.ConstantTimeCompare([]byte(p), []byte(pass)) != 1 {
 				w.Header().Set("WWW-Authenticate", `Basic realm="OmniGo Dashboard"`)
 				http.Error(w, "Unauthorized", http.StatusUnauthorized)
 				return
@@ -134,10 +146,7 @@ func getDashUser() string {
 	if v := os.Getenv("OMNIGO_DASH_USER"); v != "" {
 		return v
 	}
-	if v := os.Getenv("OMNIGO_DASHBOARD_USER"); v != "" {
-		return v
-	}
-	return "admin"
+	return os.Getenv("OMNIGO_DASHBOARD_USER")
 }
 
 func getDashPass() string {
@@ -150,8 +159,5 @@ func getDashPass() string {
 	if v := os.Getenv("OMNIGO_DASH_PASSWORD"); v != "" {
 		return v
 	}
-	if v := os.Getenv("OMNIGO_DASHBOARD_PASSWORD"); v != "" {
-		return v
-	}
-	return "admin"
+	return os.Getenv("OMNIGO_DASHBOARD_PASSWORD")
 }

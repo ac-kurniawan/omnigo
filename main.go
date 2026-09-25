@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/ac-kurniawan/omnigo/internal/api"
+	"github.com/ac-kurniawan/omnigo/internal/auth"
 	"github.com/ac-kurniawan/omnigo/internal/combo"
 	"github.com/ac-kurniawan/omnigo/internal/config"
 	"github.com/ac-kurniawan/omnigo/internal/dashboard"
@@ -215,6 +216,11 @@ func main() {
 	state, err := newState(paths.Config, paths.Auth, key)
 	if err != nil {
 		log.Fatalf("startup: %v", err)
+	}
+	if state.getCfg().Dashboard.IsEnabled() && state.getCfg().Dashboard.AuthEnabled() {
+		if err := auth.DashboardCredentials(); err != nil {
+			log.Fatalf("startup: %v", err)
+		}
 	}
 
 	tracker := combo.NewTracker(paths.Drains)

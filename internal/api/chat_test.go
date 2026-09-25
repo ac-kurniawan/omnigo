@@ -391,6 +391,25 @@ func TestChatDisabledModelRejected(t *testing.T) {
 	}
 }
 
+func TestChatDirectModelMustBeListed(t *testing.T) {
+	provider.Register("openai", func(cfg provider.Config, store provider.CredStore) provider.Provider {
+		return &fakeProvider{name: cfg.Name}
+	})
+	cfg := &config.Config{
+		Providers: []config.Provider{{Name: "openai", Type: "openai", Models: []string{"gpt-4o"}}},
+	}
+	raw, hash, prefix, _ := auth.GenerateKey()
+	v := &vault.Vault{ClientKeys: []vault.ClientKey{{ID: "k1", KeyHash: hash, Prefix: prefix, Active: true}}}
+
+	req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(`{"model":"openai/gpt-4o-expensive","messages":[]}`))
+	req.Header.Set("Authorization", "Bearer "+raw)
+	rr := httptest.NewRecorder()
+	testRouter(t, cfg, v).ServeHTTP(rr, req)
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404 for a model not in the provider catalog", rr.Code)
+	}
+}
+
 func TestComboFallsBackWhenFirstModelDisabled(t *testing.T) {
 	var gotModel string
 	provider.Register("openai", func(cfg provider.Config, store provider.CredStore) provider.Provider {
