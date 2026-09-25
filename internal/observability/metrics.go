@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/ac-kurniawan/omnigo/internal/auth"
+	"github.com/ac-kurniawan/omnigo/internal/provider"
 	"github.com/ac-kurniawan/omnigo/internal/quota"
 	prom "github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -42,6 +43,11 @@ const (
 	// the same short identifier the dashboard lists, never the key material or
 	// its hash.
 	attrClientKey = "api_key_id"
+
+	// attrTokenKind distinguishes the token counts one upstream response
+	// reported. The set is fixed: input, output, and the splits an upstream
+	// may name inside those two.
+	attrTokenKind = "omnigo.token.kind"
 
 	// Quota label keys. account carries a provider account identifier, never a
 	// secret: it is the ChatGPT account id (a UUID) or the Google subject (a
@@ -69,6 +75,7 @@ type Metrics struct {
 	providerRequests metric.Int64Counter
 	comboAttempts    metric.Int64Counter
 	configReloads    metric.Int64Counter
+	tokens           metric.Int64Counter
 
 	quotaRemainingRatio metric.Float64Gauge
 	quotaStatus         metric.Int64Gauge
@@ -158,6 +165,13 @@ func (m *Metrics) init(provider *sdkmetric.MeterProvider) error {
 	if m.configReloads, err = meter.Int64Counter(
 		"omnigo.config.reloads",
 		metric.WithDescription("Config reload attempts by outcome"),
+	); err != nil {
+		return err
+	}
+	if m.tokens, err = meter.Int64Counter(
+		"omnigo.tokens",
+		metric.WithDescription("Tokens reported by a completed upstream response, by kind"),
+		metric.WithUnit("{token}"),
 	); err != nil {
 		return err
 	}
@@ -496,4 +510,50 @@ func (m *Metrics) RecordConfigReload(ok bool) {
 	m.configReloads.Add(context.Background(), 1, metric.WithAttributes(
 		attribute.String(attrResult, strconv.FormatBool(ok)),
 	))
+}
+
+// RecordTokenUsage adds the token counts one completed upstream response
+// reported. A response that carried no usage object is dropped: zero would
+// look like a quiet period. A kind the upstream reported as zero is also
+// skipped, so a provider that has no cached or reasoning split does not mint
+// those series.
+//
+// Cached and cache-creation counts are slices of input, and reasoning is a
+// slice of output. They are recorded beside input and output, not subtracted,
+// so a sum of every kind is not a total.
+//
+// combo is empty for a direct provider call and is stored as "none", matching
+// an unauthenticated client key. account is the credential identity, guarded
+// the same way quota series are, so two logins in one workspace stay apart.
+func (m *Metrics) RecordTokenUsage(ctx context.Context, providerName, model, account, combo string, usage provider.TokenUsage) {
+	if !m.Enabled() || !usage.Present {
+		return
+	}
+	if combo == "" {
+		combo = clientKeyNone
+	}
+	base := []attribute.KeyValue{
+		attribute.String(attrProvider, providerLabel(providerName)),
+		attribute.String(attrModel, exactModelLabel(model)),
+		attribute.String(attrAccount, quotaAccountLabel(account)),
+		attribute.String(attrClientKey, clientKeyLabel(auth.CallerFrom(ctx).ID())),
+		attribute.String(attrCombo, combo),
+	}
+	for _, sample := range []struct {
+		kind  string
+		count int
+	}{
+		{kind: "input", count: usage.InputTokens},
+		{kind: "output", count: usage.OutputTokens},
+		{kind: "cached", count: usage.CachedTokens},
+		{kind: "cache_creation", count: usage.CacheCreationInputTokens},
+		{kind: "reasoning", count: usage.ReasoningTokens},
+	} {
+		if sample.count == 0 {
+			continue
+		}
+		attrs := append([]attribute.KeyValue{}, base...)
+		attrs = append(attrs, attribute.String(attrTokenKind, sample.kind))
+		m.tokens.Add(context.Background(), int64(sample.count), metric.WithAttributes(attrs...))
+	}
 }
