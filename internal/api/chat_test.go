@@ -824,7 +824,7 @@ func TestReliablePostCommitStreamFailureDoesNotMixTargets(t *testing.T) {
 			calls = append(calls, cfg.Name)
 			if cfg.Name == "first" {
 				w.Header().Set("Content-Type", "text/event-stream")
-				_, _ = w.Write([]byte("data: {\"model\":\"first\"}\n\n"))
+				_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"first\"}}]}\n\n"))
 				w.(http.Flusher).Flush()
 				return io.ErrUnexpectedEOF
 			}
@@ -1177,7 +1177,7 @@ func TestComboClientAbortMidStreamDoesNotDrain(t *testing.T) {
 		return &responseProvider{name: cfg.Name, chat: func(ctx context.Context, _ provider.ChatRequest, w http.ResponseWriter) error {
 			w.Header().Set("Content-Type", "text/event-stream")
 			w.WriteHeader(http.StatusOK)
-			_, _ = w.Write([]byte("data: {\"chunk\":1}\n\n"))
+			_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"partial\"}}]}\n\n"))
 			w.(http.Flusher).Flush() // commit: the client is now mid-stream
 			close(started)
 			<-ctx.Done() // client abort surfaces here
@@ -1220,7 +1220,7 @@ func TestComboUpstreamStallAfterCommitStillDrains(t *testing.T) {
 		return &responseProvider{name: cfg.Name, chat: func(_ context.Context, _ provider.ChatRequest, w http.ResponseWriter) error {
 			w.Header().Set("Content-Type", "text/event-stream")
 			w.WriteHeader(http.StatusOK)
-			_, _ = w.Write([]byte("data: {\"chunk\":1}\n\n"))
+			_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"partial\"}}]}\n\n"))
 			w.(http.Flusher).Flush() // commit
 			return provider.ErrUpstreamStall
 		}}
@@ -1274,11 +1274,11 @@ func TestAllStrategiesBufferUntilCommit(t *testing.T) {
 					if cfg.Name == "bad" {
 						// Partial SSE bytes then a failure: nothing may reach the client.
 						w.Header().Set("Content-Type", "text/event-stream")
-						_, _ = w.Write([]byte("data: {\"model\":\"bad\"}\n\n"))
+						_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"bad\"}}]}\n\n"))
 						return io.ErrUnexpectedEOF
 					}
 					w.Header().Set("Content-Type", "text/event-stream")
-					_, _ = w.Write([]byte("data: {\"model\":\"good\"}\n\n"))
+					_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"good\"}}]}\n\n"))
 					w.(http.Flusher).Flush()
 					_, _ = w.Write([]byte("data: [DONE]\n\n"))
 					return nil
@@ -1292,10 +1292,10 @@ func TestAllStrategiesBufferUntilCommit(t *testing.T) {
 			if rr.Code != http.StatusOK {
 				t.Fatalf("status = %d, want 200; body = %q", rr.Code, rr.Body.String())
 			}
-			if strings.Contains(rr.Body.String(), `"model":"bad"`) {
+			if strings.Contains(rr.Body.String(), `"content":"bad"`) {
 				t.Fatalf("partial bytes from the failed target leaked: %q", rr.Body.String())
 			}
-			if !strings.Contains(rr.Body.String(), `"model":"good"`) || !strings.Contains(rr.Body.String(), "[DONE]") {
+			if !strings.Contains(rr.Body.String(), `"content":"good"`) || !strings.Contains(rr.Body.String(), "[DONE]") {
 				t.Fatalf("fallback target did not deliver a clean stream: %q", rr.Body.String())
 			}
 			if len(calls) != 2 {
