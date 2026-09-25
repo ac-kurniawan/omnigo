@@ -68,7 +68,7 @@ func handleChat(getCfg func() *config.Config, registry *providerRegistry, tracke
 		// already on the wire and the object would be parsed as a bad frame.
 		tracked := &commitTracker{ResponseWriter: w}
 		providerErr := p.ChatCompletion(r.Context(), req, tracked)
-		metrics.RecordProviderRequest(r.Context(), provName, knownModelLabel(cfg, provName, resolvedModel), classifyProviderError(providerErr, tracked.committed, r.Context().Err() != nil))
+		metrics.RecordProviderRequest(r.Context(), provName, resolvedModel, classifyProviderError(providerErr, tracked.committed, r.Context().Err() != nil))
 		if providerErr != nil && !tracked.committed {
 			writeProviderError(w, providerErr)
 		} else if providerErr != nil && req.Stream && r.Context().Err() == nil {
