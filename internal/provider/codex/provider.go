@@ -78,6 +78,7 @@ type usage struct {
 	CachedTokens             int
 	ReasoningTokens          int
 	CacheCreationInputTokens int
+	present                  bool
 }
 
 func New(cfg provider.Config, store provider.CredStore) provider.Provider {
@@ -317,9 +318,9 @@ func (p *Provider) chatWithAccount(ctx context.Context, req provider.ChatRequest
 	p.observeQuota(account, resp.Header)
 	reader := guard.Wrap(resp.Body)
 	if req.Stream {
-		return p.streamResponse(ctx, reader, req.Model, w)
+		return p.streamResponse(ctx, reader, req.Model, account, w)
 	}
-	return p.completeResponse(ctx, reader, req.Model, w)
+	return p.completeResponse(ctx, reader, req.Model, account, w)
 }
 
 func (p *Provider) tokenManager(account provider.Credentials) *TokenManager {
@@ -362,7 +363,7 @@ func (p *Provider) send(ctx context.Context, creds provider.Credentials, body []
 	return resp, nil
 }
 
-func (p *Provider) streamResponse(ctx context.Context, body io.Reader, model string, w http.ResponseWriter) error {
+func (p *Provider) streamResponse(ctx context.Context, body io.Reader, model string, account provider.Credentials, w http.ResponseWriter) error {
 	state := newStreamState(model)
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
@@ -391,6 +392,7 @@ func (p *Provider) streamResponse(ctx context.Context, body io.Reader, model str
 	if !state.completed {
 		return fmt.Errorf("codex: incomplete SSE response")
 	}
+	provider.ReportUsage(ctx, state.tokenUsage(account.Identity()))
 	if _, err := io.WriteString(w, "data: [DONE]\n\n"); err != nil {
 		return err
 	}
@@ -400,7 +402,7 @@ func (p *Provider) streamResponse(ctx context.Context, body io.Reader, model str
 	return nil
 }
 
-func (p *Provider) completeResponse(ctx context.Context, body io.Reader, model string, w http.ResponseWriter) error {
+func (p *Provider) completeResponse(ctx context.Context, body io.Reader, model string, account provider.Credentials, w http.ResponseWriter) error {
 	state := newStreamState(model)
 	if err := parseSSE(ctx, body, func(eventType string, data []byte) error {
 		_, err := state.consume(eventType, data)
@@ -414,6 +416,7 @@ func (p *Provider) completeResponse(ctx context.Context, body io.Reader, model s
 	if !state.completed {
 		return fmt.Errorf("codex: incomplete SSE response")
 	}
+	provider.ReportUsage(ctx, state.tokenUsage(account.Identity()))
 	message := map[string]any{"role": "assistant", "content": state.text.String()}
 	if state.reasoning.Len() > 0 {
 		message["reasoning_content"] = state.reasoning.String()
@@ -538,7 +541,9 @@ func (s *streamState) consume(eventType string, payload []byte) ([]map[string]an
 			if model, ok := response["model"].(string); ok && model != "" {
 				s.model = model
 			}
-			s.readUsage(response["usage"])
+			if _, ok := response["usage"]; ok {
+				s.readUsage(response["usage"])
+			}
 		}
 		if eventType == "response.incomplete" {
 			s.finishReason = "length"
@@ -644,6 +649,19 @@ func (s *streamState) readUsage(value any) {
 		s.usage.ReasoningTokens, _ = numberAsInt(details["reasoning_tokens"])
 	}
 	s.usage.CacheCreationInputTokens, _ = numberAsInt(data["cache_creation_input_tokens"])
+	s.usage.present = true
+}
+
+func (s *streamState) tokenUsage(account string) provider.TokenUsage {
+	return provider.TokenUsage{
+		InputTokens:              s.usage.PromptTokens,
+		OutputTokens:             s.usage.CompletionTokens,
+		CachedTokens:             s.usage.CachedTokens,
+		CacheCreationInputTokens: s.usage.CacheCreationInputTokens,
+		ReasoningTokens:          s.usage.ReasoningTokens,
+		Account:                  account,
+		Present:                  s.usage.present,
+	}
 }
 
 func (s *streamState) usageMap() map[string]any {

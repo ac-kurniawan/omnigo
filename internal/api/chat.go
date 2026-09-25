@@ -67,7 +67,8 @@ func handleChat(getCfg func() *config.Config, registry *providerRegistry, tracke
 		// must not be answered with a fresh JSON error envelope: the SSE body is
 		// already on the wire and the object would be parsed as a bad frame.
 		tracked := &commitTracker{ResponseWriter: w}
-		providerErr := p.ChatCompletion(r.Context(), req, tracked)
+		providerCtx := withTokenUsage(r.Context(), metrics, provName, knownModelLabel(cfg, provName, resolvedModel), "")
+		providerErr := p.ChatCompletion(providerCtx, req, tracked)
 		metrics.RecordProviderRequest(r.Context(), provName, knownModelLabel(cfg, provName, resolvedModel), classifyProviderError(providerErr, tracked.committed, r.Context().Err() != nil))
 		if providerErr != nil && !tracked.committed {
 			writeProviderError(w, providerErr)
@@ -167,7 +168,8 @@ func runCombo(w http.ResponseWriter, r *http.Request, cfg *config.Config, regist
 		req.Model = t.Model
 		attempt := newBufferedResponseWriter(w, req.Stream)
 		SetTelemetryHeaders(attempt, tc, t.Provider, t.Model, startTime)
-		providerErr := p.ChatCompletion(ctx, req, attempt)
+		providerCtx := withTokenUsage(ctx, metrics, t.Provider, t.Model, cb.Name)
+		providerErr := p.ChatCompletion(providerCtx, req, attempt)
 		err := attempt.finish(providerErr)
 		if errors.Is(err, errResponseCommitted) {
 			responseCommitted = true
@@ -204,6 +206,16 @@ func runCombo(w http.ResponseWriter, r *http.Request, cfg *config.Config, regist
 	if err != nil && !responseCommitted {
 		writeProviderError(w, err)
 	}
+}
+
+// withTokenUsage installs the sink that turns one completed upstream response
+// into token counters. combo is empty on a direct call. The model label is the
+// target the combo asked for; a direct call has already collapsed an unknown
+// model to "other" because the request can name it.
+func withTokenUsage(ctx context.Context, metrics Metrics, providerName, model, combo string) context.Context {
+	return provider.WithUsageSink(ctx, func(usage provider.TokenUsage) {
+		metrics.RecordTokenUsage(ctx, providerName, model, usage.Account, combo, usage)
+	})
 }
 
 type sanitizedError struct {

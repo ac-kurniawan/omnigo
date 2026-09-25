@@ -26,6 +26,9 @@ type fakeProvider struct {
 	name   string
 	models []provider.Model
 	chat   func(provider.ChatRequest) error
+	// chatCtx is set when a test needs the request context, which is where
+	// token usage is reported. chat is left untouched for the existing tests.
+	chatCtx func(context.Context, provider.ChatRequest) error
 }
 
 func (f *fakeProvider) Name() string { return f.name }
@@ -36,7 +39,11 @@ func (f *fakeProvider) Test(ctx context.Context) provider.TestResult {
 	return provider.TestResult{OK: true}
 }
 func (f *fakeProvider) ChatCompletion(ctx context.Context, req provider.ChatRequest, w http.ResponseWriter) error {
-	if f.chat != nil {
+	if f.chatCtx != nil {
+		if err := f.chatCtx(ctx, req); err != nil {
+			return err
+		}
+	} else if f.chat != nil {
 		if err := f.chat(req); err != nil {
 			return err
 		}

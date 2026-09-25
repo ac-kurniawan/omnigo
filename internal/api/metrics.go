@@ -21,12 +21,17 @@ type Metrics interface {
 	RecordProviderRequest(ctx context.Context, provider, model, result string)
 	// RecordCombinationAttempt counts a combo routing attempt by outcome.
 	RecordCombinationAttempt(ctx context.Context, combo, result string)
+	// RecordTokenUsage adds the token counts one completed upstream response
+	// reported. combo is empty for a direct provider call.
+	RecordTokenUsage(ctx context.Context, providerName, model, account, combo string, usage provider.TokenUsage)
 }
 
 type noopMetrics struct{}
 
 func (noopMetrics) RecordProviderRequest(context.Context, string, string, string) {}
 func (noopMetrics) RecordCombinationAttempt(context.Context, string, string)      {}
+func (noopMetrics) RecordTokenUsage(context.Context, string, string, string, string, provider.TokenUsage) {
+}
 
 // Bounded dispatch result labels. Cardinality is fixed by this set, never by
 // client input.

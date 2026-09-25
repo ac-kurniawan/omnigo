@@ -186,9 +186,9 @@ func (p *Provider) chatWithAccount(ctx context.Context, req provider.ChatRequest
 	}
 	body := guard.Wrap(resp.Body)
 	if !req.Stream {
-		return p.completeToOpenAI(body, req.Model, w)
+		return p.completeToOpenAI(ctx, body, req.Model, account, w)
 	}
-	return p.streamToOpenAI(ctx, body, w)
+	return p.streamToOpenAI(ctx, body, account, w)
 }
 
 // maxUpstreamSnippetBytes caps how much of a 429 body is read for diagnostics.
@@ -279,11 +279,13 @@ func (p *Provider) tokenManager(account provider.Credentials) *TokenManager {
 	return manager.(*TokenManager)
 }
 
-func (p *Provider) completeToOpenAI(r io.Reader, model string, w http.ResponseWriter) error {
+func (p *Provider) completeToOpenAI(ctx context.Context, r io.Reader, model string, account provider.Credentials, w http.ResponseWriter) error {
 	done, err := aggregateSSE(r)
 	if err != nil {
 		return err
 	}
+	done.tokens.Account = account.Identity()
+	provider.ReportUsage(ctx, done.tokens)
 	message := map[string]any{"role": "assistant", "content": done.text}
 	if done.thought != "" {
 		message["reasoning_content"] = done.thought
@@ -311,13 +313,16 @@ func (p *Provider) completeToOpenAI(r io.Reader, model string, w http.ResponseWr
 }
 
 // generation is one finished Gemini stream, folded into the OpenAI message
-// shape. reason is already in the OpenAI vocabulary.
+// shape. reason is already in the OpenAI vocabulary. tokens is present only
+// when a frame carried usageMetadata; the usage map is what the client sees
+// and is filled with zeros when the upstream omitted it.
 type generation struct {
 	text    string
 	thought string
 	calls   []any
 	reason  string
 	usage   map[string]any
+	tokens  provider.TokenUsage
 }
 
 func aggregateSSE(r io.Reader) (generation, error) {
@@ -334,8 +339,9 @@ func aggregateSSE(r io.Reader) (generation, error) {
 			finished = true
 			done.reason = finishReason(reason, len(calls))
 		}
-		if usage := body.usageMap(); usage != nil {
-			done.usage = usage
+		if usage := body.tokenUsage(); usage.Present {
+			done.usage = body.usageMap()
+			done.tokens = usage
 		}
 		return nil
 	})
@@ -353,10 +359,11 @@ func aggregateSSE(r io.Reader) (generation, error) {
 	return done, nil
 }
 
-func (p *Provider) streamToOpenAI(ctx context.Context, r io.Reader, w http.ResponseWriter) error {
+func (p *Provider) streamToOpenAI(ctx context.Context, r io.Reader, account provider.Credentials, w http.ResponseWriter) error {
 	w.Header().Set("Content-Type", "text/event-stream")
 	flusher, _ := w.(http.Flusher)
 	finished := false
+	var usage provider.TokenUsage
 	calls := 0
 	err := scanSSE(r, func(body geminiBody) error {
 		select {
@@ -369,6 +376,9 @@ func (p *Provider) streamToOpenAI(ctx context.Context, r io.Reader, w http.Respo
 			return err
 		}
 		calls += callsInFrame
+		if sample := body.tokenUsage(); sample.Present {
+			usage = sample
+		}
 		if done {
 			finished = true
 		}
@@ -393,6 +403,8 @@ func (p *Provider) streamToOpenAI(ctx context.Context, r io.Reader, w http.Respo
 	if !finished {
 		return errors.New("antigravity: incomplete SSE response")
 	}
+	usage.Account = account.Identity()
+	provider.ReportUsage(ctx, usage)
 	if _, err := w.Write([]byte("data: [DONE]\n\n")); err != nil {
 		return err
 	}
