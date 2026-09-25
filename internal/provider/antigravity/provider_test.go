@@ -166,6 +166,117 @@ func TestCompleteEndsWithoutFinishReasonIsIncomplete(t *testing.T) {
 	}
 }
 
+// The last Gemini frame often carries only the finish reason. Dropping it
+// leaves the client with content chunks whose finish_reason is null and no
+// signal that the generation ended, other than [DONE].
+func TestStreamFinishOnlyFrameReachesClient(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"hel\"}]}}]}\n\n"))
+		_, _ = w.Write([]byte("data: {\"candidates\":[{\"content\":{\"parts\":[]},\"finishReason\":\"STOP\"}],\"usageMetadata\":{\"promptTokenCount\":3,\"candidatesTokenCount\":1,\"totalTokenCount\":4}}\n\n"))
+	}))
+	defer srv.Close()
+
+	p := New(provider.Config{Name: "agy", BaseURL: srv.URL}, staticStore{provider.Credentials{AccessToken: "tok", ProjectID: "p", ExpiresAt: time.Now().Add(time.Hour)}})
+	rec := httptest.NewRecorder()
+	err := p.ChatCompletion(context.Background(), provider.ChatRequest{
+		Model: "gemini", Stream: true, Messages: []provider.Message{{Role: "user", Content: "hi"}},
+	}, rec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, `"finish_reason":"stop"`) {
+		t.Fatalf("terminal chunk missing finish_reason: %s", body)
+	}
+	if !strings.Contains(body, `"prompt_tokens":3`) {
+		t.Fatalf("terminal chunk dropped usage: %s", body)
+	}
+	if !strings.Contains(body, "data: [DONE]") {
+		t.Fatalf("finished stream missing [DONE]: %s", body)
+	}
+}
+
+// A thinking-only generation has no candidate text. Treating that as a
+// truncated stream fails a request the upstream completed.
+func TestStreamThoughtOnlyIsComplete(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"response\":{\"candidates\":[{\"content\":{\"parts\":[{\"thought\":true,\"text\":\"because\"}]},\"finishReason\":\"STOP\"}]}}\n\n"))
+	}))
+	defer srv.Close()
+
+	p := New(provider.Config{Name: "agy", BaseURL: srv.URL}, staticStore{provider.Credentials{AccessToken: "tok", ProjectID: "p", ExpiresAt: time.Now().Add(time.Hour)}})
+	rec := httptest.NewRecorder()
+	err := p.ChatCompletion(context.Background(), provider.ChatRequest{
+		Model: "gemini", Stream: true, Messages: []provider.Message{{Role: "user", Content: "hi"}},
+	}, rec)
+	if err != nil {
+		t.Fatalf("thought-only stream failed: %v", err)
+	}
+	if !strings.Contains(rec.Body.String(), `"reasoning_content":"because"`) {
+		t.Fatalf("thought dropped: %s", rec.Body.String())
+	}
+}
+
+func TestCompleteMapsMaxTokensAndUsage(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"cut\"}]},\"finishReason\":\"MAX_TOKENS\"}],\"usageMetadata\":{\"promptTokenCount\":8,\"candidatesTokenCount\":2,\"totalTokenCount\":10}}\n\n"))
+	}))
+	defer srv.Close()
+
+	p := New(provider.Config{Name: "agy", BaseURL: srv.URL}, staticStore{provider.Credentials{AccessToken: "tok", ProjectID: "p", ExpiresAt: time.Now().Add(time.Hour)}})
+	rec := httptest.NewRecorder()
+	err := p.ChatCompletion(context.Background(), provider.ChatRequest{
+		Model: "gemini", Messages: []provider.Message{{Role: "user", Content: "hi"}},
+	}, rec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var body struct {
+		Choices []struct {
+			Message struct {
+				Content string `json:"content"`
+			} `json:"message"`
+			FinishReason string `json:"finish_reason"`
+		} `json:"choices"`
+		Usage struct {
+			PromptTokens     int `json:"prompt_tokens"`
+			CompletionTokens int `json:"completion_tokens"`
+			TotalTokens      int `json:"total_tokens"`
+		} `json:"usage"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if len(body.Choices) != 1 || body.Choices[0].Message.Content != "cut" || body.Choices[0].FinishReason != "length" {
+		t.Fatalf("choices = %+v", body.Choices)
+	}
+	if body.Usage.PromptTokens != 8 || body.Usage.CompletionTokens != 2 || body.Usage.TotalTokens != 10 {
+		t.Fatalf("usage = %+v", body.Usage)
+	}
+}
+
+func TestCompleteFunctionCallIsToolCall(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("data: {\"candidates\":[{\"content\":{\"parts\":[{\"functionCall\":{\"name\":\"weather\",\"args\":{\"city\":\"Rome\"}}}]},\"finishReason\":\"STOP\"}]}\n\n"))
+	}))
+	defer srv.Close()
+
+	p := New(provider.Config{Name: "agy", BaseURL: srv.URL}, staticStore{provider.Credentials{AccessToken: "tok", ProjectID: "p", ExpiresAt: time.Now().Add(time.Hour)}})
+	rec := httptest.NewRecorder()
+	err := p.ChatCompletion(context.Background(), provider.ChatRequest{
+		Model: "gemini", Messages: []provider.Message{{Role: "user", Content: "hi"}},
+	}, rec)
+	if err != nil {
+		t.Fatalf("function-call completion failed: %v", err)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, `"name":"weather"`) || !strings.Contains(body, `"finish_reason":"tool_calls"`) {
+		t.Fatalf("body = %s", body)
+	}
+}
+
 func TestDiscoverProject(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !strings.Contains(r.URL.Path, "loadCodeAssist") {

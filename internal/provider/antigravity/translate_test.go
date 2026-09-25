@@ -1,6 +1,8 @@
 package antigravity
 
 import (
+	"bytes"
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -118,23 +120,25 @@ func TestTranslateSSEDelta(t *testing.T) {
 }
 
 // The daily-cloudcode-pa host wraps every SSE frame in {"response":{...}};
-// the legacy host sends bare {"candidates":...}. Both must parse.
-func TestGeminiChunkTextAcceptsResponseWrapper(t *testing.T) {
+// the legacy host sends it bare. Both must parse.
+func TestParseGeminiFrameAcceptsResponseWrapper(t *testing.T) {
 	wrapped := []byte(`data: {"response":{"candidates":[{"content":{"role":"model","parts":[{"text":"hello"}]}}]}}`)
-	got, err := geminiChunkText(wrapped)
+	body, err := parseGeminiFrame(wrapped)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got != "hello" {
-		t.Fatalf("text = %q, want hello", got)
+	text, _, _ := body.content(0)
+	if text != "hello" {
+		t.Fatalf("text = %q, want hello", text)
 	}
 	bare := []byte(`data: {"candidates":[{"content":{"role":"model","parts":[{"text":"hi"}]}}]}`)
-	got, err = geminiChunkText(bare)
+	body, err = parseGeminiFrame(bare)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got != "hi" {
-		t.Fatalf("text = %q, want hi", got)
+	text, _, _ = body.content(0)
+	if text != "hi" {
+		t.Fatalf("text = %q, want hi", text)
 	}
 }
 
@@ -146,5 +150,90 @@ func TestTranslateSSESkipsEmptyCandidate(t *testing.T) {
 	}
 	if out != nil {
 		t.Fatalf("expected nil for metadata chunk, got %s", out)
+	}
+}
+
+func TestTranslateSSEEmitsFinishReasonWithoutText(t *testing.T) {
+	gemini := []byte(`data: {"candidates":[{"content":{"role":"model","parts":[]},"finishReason":"STOP"}]}`)
+	out, err := TranslateSSE(gemini)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out == nil || !strings.Contains(string(out), `"finish_reason":"stop"`) {
+		t.Fatalf("finish-only frame was dropped: %s", out)
+	}
+	if strings.Contains(string(out), `"content"`) {
+		t.Fatalf("finish chunk invented content: %s", out)
+	}
+}
+
+func TestTranslateSSEMapsMaxTokensToLength(t *testing.T) {
+	gemini := []byte(`data: {"candidates":[{"finishReason":"MAX_TOKENS","content":{"parts":[{"text":"cut"}]}}]}`)
+	out, err := TranslateSSE(gemini)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := string(out)
+	if !strings.Contains(body, `"content":"cut"`) || !strings.Contains(body, `"finish_reason":"length"`) {
+		t.Fatalf("out = %s", body)
+	}
+}
+
+func TestTranslateSSEForwardsThoughtAsReasoning(t *testing.T) {
+	gemini := []byte(`data: {"candidates":[{"content":{"parts":[{"thought":true,"text":"because"}]}}]}`)
+	out, err := TranslateSSE(gemini)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := string(out)
+	if !strings.Contains(body, `"reasoning_content":"because"`) {
+		t.Fatalf("thought was dropped: %s", body)
+	}
+	if strings.Contains(body, `"content":"because"`) {
+		t.Fatalf("thought was forwarded as visible content: %s", body)
+	}
+}
+
+func TestTranslateSSEForwardsFunctionCall(t *testing.T) {
+	gemini := []byte(`data: {"candidates":[{"content":{"parts":[{"functionCall":{"name":"weather","args":{"city":"Rome"}}}]},"finishReason":"STOP"}]}`)
+	out, err := TranslateSSE(gemini)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var chunk struct {
+		Choices []struct {
+			Delta struct {
+				ToolCalls []struct {
+					ID       string `json:"id"`
+					Function struct {
+						Name      string `json:"name"`
+						Arguments string `json:"arguments"`
+					} `json:"function"`
+				} `json:"tool_calls"`
+			} `json:"delta"`
+			FinishReason string `json:"finish_reason"`
+		} `json:"choices"`
+	}
+	if err := json.Unmarshal(bytes.TrimPrefix(bytes.TrimSpace(out), []byte("data: ")), &chunk); err != nil {
+		t.Fatalf("decode %s: %v", out, err)
+	}
+	if len(chunk.Choices) != 1 || chunk.Choices[0].FinishReason != "tool_calls" {
+		t.Fatalf("chunk = %+v", chunk)
+	}
+	calls := chunk.Choices[0].Delta.ToolCalls
+	if len(calls) != 1 || calls[0].ID != "call_0" || calls[0].Function.Name != "weather" || calls[0].Function.Arguments != `{"city":"Rome"}` {
+		t.Fatalf("tool calls = %+v", calls)
+	}
+}
+
+func TestTranslateSSEIncludesUsageOnTerminalChunk(t *testing.T) {
+	gemini := []byte(`data: {"candidates":[{"finishReason":"STOP","content":{"parts":[]}}],"usageMetadata":{"promptTokenCount":11,"candidatesTokenCount":4,"totalTokenCount":15}}`)
+	out, err := TranslateSSE(gemini)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := string(out)
+	if !strings.Contains(body, `"prompt_tokens":11`) || !strings.Contains(body, `"completion_tokens":4`) || !strings.Contains(body, `"total_tokens":15`) {
+		t.Fatalf("usage was dropped: %s", body)
 	}
 }

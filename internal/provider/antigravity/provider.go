@@ -280,9 +280,20 @@ func (p *Provider) tokenManager(account provider.Credentials) *TokenManager {
 }
 
 func (p *Provider) completeToOpenAI(r io.Reader, model string, w http.ResponseWriter) error {
-	text, err := aggregateSSE(r)
+	done, err := aggregateSSE(r)
 	if err != nil {
 		return err
+	}
+	message := map[string]any{"role": "assistant", "content": done.text}
+	if done.thought != "" {
+		message["reasoning_content"] = done.thought
+	}
+	if len(done.calls) > 0 {
+		message["tool_calls"] = done.calls
+	}
+	usage := done.usage
+	if usage == nil {
+		usage = map[string]any{"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
 	}
 	w.Header().Set("Content-Type", "application/json")
 	return json.NewEncoder(w).Encode(map[string]any{
@@ -291,81 +302,78 @@ func (p *Provider) completeToOpenAI(r io.Reader, model string, w http.ResponseWr
 		"created": time.Now().Unix(),
 		"model":   model,
 		"choices": []any{map[string]any{
-			"index": 0,
-			"message": map[string]any{
-				"role":    "assistant",
-				"content": text,
-			},
-			"finish_reason": "stop",
+			"index":         0,
+			"message":       message,
+			"finish_reason": done.reason,
 		}},
-		"usage": map[string]any{
-			"prompt_tokens":     0,
-			"completion_tokens": 0,
-			"total_tokens":      0,
-		},
+		"usage": usage,
 	})
 }
 
-func aggregateSSE(r io.Reader) (string, error) {
-	var text strings.Builder
-	scanner := bufio.NewScanner(r)
-	bufp := sseBufferPool.Get().(*[]byte)
-	defer sseBufferPool.Put(bufp)
-	scanner.Buffer((*bufp)[:0], 1024*1024)
+// generation is one finished Gemini stream, folded into the OpenAI message
+// shape. reason is already in the OpenAI vocabulary.
+type generation struct {
+	text    string
+	thought string
+	calls   []any
+	reason  string
+	usage   map[string]any
+}
+
+func aggregateSSE(r io.Reader) (generation, error) {
+	var text, thought strings.Builder
+	var calls []any
+	var done generation
 	finished := false
-	for scanner.Scan() {
-		line := scanner.Text()
-		if !strings.HasPrefix(line, "data: ") {
-			continue
-		}
-		if reason, err := geminiFinishReason([]byte(line)); err != nil {
-			return "", err
-		} else if reason != "" {
+	err := scanSSE(r, func(body geminiBody) error {
+		chunkText, chunkThought, chunkCalls := body.content(len(calls))
+		text.WriteString(chunkText)
+		thought.WriteString(chunkThought)
+		calls = append(calls, chunkCalls...)
+		if reason := body.finishReason(); reason != "" {
 			finished = true
+			done.reason = finishReason(reason, len(calls))
 		}
-		chunk, err := geminiChunkText([]byte(line))
-		if err != nil {
-			return "", err
+		if usage := body.usageMap(); usage != nil {
+			done.usage = usage
 		}
-		text.WriteString(chunk)
-	}
-	if err := scanner.Err(); err != nil {
-		return "", err
+		return nil
+	})
+	if err != nil {
+		return generation{}, err
 	}
 	// Same cut-off as the streaming path: a feed that closes without a finish
 	// reason is a truncated answer, not a short completion.
 	if !finished {
-		return "", errors.New("antigravity: incomplete SSE response")
+		return generation{}, errors.New("antigravity: incomplete SSE response")
 	}
-	return text.String(), nil
+	done.text = text.String()
+	done.thought = thought.String()
+	done.calls = calls
+	return done, nil
 }
 
 func (p *Provider) streamToOpenAI(ctx context.Context, r io.Reader, w http.ResponseWriter) error {
 	w.Header().Set("Content-Type", "text/event-stream")
-	scanner := bufio.NewScanner(r)
-	bufp := sseBufferPool.Get().(*[]byte)
-	defer sseBufferPool.Put(bufp)
-	scanner.Buffer((*bufp)[:0], 1024*1024)
 	flusher, _ := w.(http.Flusher)
 	finished := false
-	for scanner.Scan() {
+	calls := 0
+	err := scanSSE(r, func(body geminiBody) error {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
 		default:
 		}
-		line := scanner.Text()
-		if !strings.HasPrefix(line, "data: ") {
-			continue
-		}
-		if reason, err := geminiFinishReason([]byte(line)); err != nil {
+		out, done, callsInFrame, err := frameToSSE(body, calls)
+		if err != nil {
 			return err
-		} else if reason != "" {
+		}
+		calls += callsInFrame
+		if done {
 			finished = true
 		}
-		out, err := TranslateSSE([]byte(line))
-		if err != nil || out == nil {
-			continue
+		if len(out) == 0 {
+			return nil
 		}
 		if _, err := w.Write(out); err != nil {
 			return err
@@ -373,8 +381,9 @@ func (p *Provider) streamToOpenAI(ctx context.Context, r io.Reader, w http.Respo
 		if flusher != nil {
 			flusher.Flush()
 		}
-	}
-	if err := scanner.Err(); err != nil {
+		return nil
+	})
+	if err != nil {
 		return err
 	}
 	// A stream that ends without a finish reason was cut off: the upstream
@@ -391,6 +400,30 @@ func (p *Provider) streamToOpenAI(ctx context.Context, r io.Reader, w http.Respo
 		flusher.Flush()
 	}
 	return nil
+}
+
+// scanSSE walks the data lines of a Gemini SSE feed and hands each decoded
+// frame to consume. A line that is not a data frame is skipped. The decode
+// happens once per frame.
+func scanSSE(r io.Reader, consume func(geminiBody) error) error {
+	scanner := bufio.NewScanner(r)
+	bufp := sseBufferPool.Get().(*[]byte)
+	defer sseBufferPool.Put(bufp)
+	scanner.Buffer((*bufp)[:0], 1024*1024)
+	for scanner.Scan() {
+		line := scanner.Text()
+		if !strings.HasPrefix(line, "data: ") {
+			continue
+		}
+		body, err := parseGeminiFrame([]byte(line))
+		if err != nil {
+			return err
+		}
+		if err := consume(body); err != nil {
+			return err
+		}
+	}
+	return scanner.Err()
 }
 
 func init() {
