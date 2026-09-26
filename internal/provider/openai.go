@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"strings"
 	"sync"
@@ -21,6 +22,9 @@ type sseProxyState struct {
 	// lost is set when the current line outgrew maxSSELine and stopped being
 	// inspected; it clears at the next line boundary.
 	lost bool
+	// usage is the last Chat Completions usage object seen. A later object
+	// replaces it; the proxy reports it only after the stream completes.
+	usage TokenUsage
 }
 
 var sseProxyPool = sync.Pool{
@@ -162,18 +166,20 @@ func (p *openAIProvider) ChatCompletion(ctx context.Context, req ChatRequest, w 
 	w.WriteHeader(resp.StatusCode)
 	flusher, _ := w.(http.Flusher)
 	if req.Stream {
-		return proxyStream(guard.Wrap(resp.Body), w, flusher)
+		return proxyStream(ctx, guard.Wrap(resp.Body), w, flusher)
 	}
-	_, err = io.Copy(w, guard.Wrap(resp.Body))
+	err = copyJSONUsage(ctx, guard.Wrap(resp.Body), w)
 	return err
 }
 
 // proxyStream forwards an upstream SSE body to the client byte for byte while
-// watching for a completion signal. Framing is never rewritten: whatever line
-// terminators the upstream uses reach the client unchanged. A stream that ends
-// without a finish_reason chunk or a [DONE] frame is reported as a failure, so
-// a truncated answer is not mistaken for a finished one.
-func proxyStream(reader io.Reader, w http.ResponseWriter, flusher http.Flusher) error {
+// watching for a completion signal and a Chat Completions usage object.
+// Framing is never rewritten: whatever line terminators the upstream uses
+// reach the client unchanged. A stream that ends without a finish_reason
+// chunk or a [DONE] frame is reported as a failure, so a truncated answer is
+// not mistaken for a finished one. Usage seen on that truncated stream is
+// dropped; a completed stream reports the last usage object, once.
+func proxyStream(ctx context.Context, reader io.Reader, w http.ResponseWriter, flusher http.Flusher) error {
 	state := sseProxyPool.Get().(*sseProxyState)
 	defer func() {
 		state.release()
@@ -183,9 +189,7 @@ func proxyStream(reader io.Reader, w http.ResponseWriter, flusher http.Flusher) 
 	for {
 		n, rErr := reader.Read(state.read)
 		if n > 0 {
-			if !finished {
-				finished = state.scanLines(state.read[:n])
-			}
+			finished = state.scanLines(state.read[:n]) || finished
 			if _, wErr := w.Write(state.read[:n]); wErr != nil {
 				return wErr
 			}
@@ -208,28 +212,39 @@ func proxyStream(reader io.Reader, w http.ResponseWriter, flusher http.Flusher) 
 	if !finished {
 		return errIncompleteStream
 	}
+	// The trailing line can be a usage object with no newline. A completion
+	// signal is not one, so this only fills usage the line scan has not seen.
+	if !state.lost {
+		state.observeUsage(state.line)
+	}
+	ReportUsage(ctx, state.usage)
 	return nil
 }
 
-// scanLines consumes the complete lines in chunk and reports whether any of
-// them proves the stream finished. An unterminated tail is accumulated for the
-// next chunk, and the accumulator holds the line without its terminator.
+// scanLines consumes the complete lines in chunk, records the last Chat
+// Completions usage object, and reports whether any line proves the stream
+// finished. An unterminated tail is accumulated for the next chunk, and the
+// accumulator holds the line without its terminator. Scanning continues after
+// the first completion signal: the usage chunk is a later frame.
 func (s *sseProxyState) scanLines(chunk []byte) bool {
+	finished := false
 	for len(chunk) > 0 {
 		i := bytes.IndexByte(chunk, '\n')
 		if i < 0 {
 			s.addLine(chunk)
-			return false
+			return finished
 		}
 		s.addLine(chunk[:i])
-		complete := !s.lost && isCompletionSignal(s.line)
-		s.line, s.lost = s.line[:0], false
-		if complete {
-			return true
+		if !s.lost {
+			if isCompletionSignal(s.line) {
+				finished = true
+			}
+			s.observeUsage(s.line)
 		}
+		s.line, s.lost = s.line[:0], false
 		chunk = chunk[i+1:]
 	}
-	return false
+	return finished
 }
 
 // addLine accumulates a partial line, giving up on one that exceeds maxSSELine.
@@ -251,10 +266,21 @@ func (s *sseProxyState) pendingComplete() bool {
 	return !s.lost && isCompletionSignal(s.line)
 }
 
+// observeUsage keeps the last Chat Completions usage object on a data line.
+// A line that is not a usage chunk leaves the previous object in place, so a
+// trailing [DONE] frame does not erase the count.
+func (s *sseProxyState) observeUsage(line []byte) {
+	if usage, ok := chatUsageFromSSELine(line); ok {
+		s.usage = usage
+	}
+}
+
 // release clears the per-stream scan state before the state returns to the
-// pool, dropping an accumulator that grew for a pathological line.
+// pool, dropping an accumulator that grew for a pathological line and the
+// usage object so the next stream cannot inherit it.
 func (s *sseProxyState) release() {
 	s.lost = false
+	s.usage = TokenUsage{}
 	if cap(s.line) > maxRetainedLine {
 		s.line = make([]byte, 0, 4096)
 		return
@@ -322,4 +348,158 @@ func (p *openAIProvider) authorize(req *http.Request) {
 
 func init() {
 	Register("openai", func(cfg Config, store CredStore) Provider { return NewOpenAI(cfg, store) })
+}
+
+// chatUsageWire is the Chat Completions usage object. Responses API names
+// (input_tokens, output_tokens) are a different shape and are not read.
+// cache_creation is not a field of this API, so it stays zero.
+type chatUsageWire struct {
+	PromptTokens     flexInt `json:"prompt_tokens"`
+	CompletionTokens flexInt `json:"completion_tokens"`
+	PromptDetails    *struct {
+		CachedTokens flexInt `json:"cached_tokens"`
+	} `json:"prompt_tokens_details"`
+	CompletionDetails *struct {
+		ReasoningTokens flexInt `json:"reasoning_tokens"`
+	} `json:"completion_tokens_details"`
+}
+
+// flexInt accepts a JSON integer or an integer-valued number. Compatible
+// gateways sometimes emit 11.0. A fractional or negative count rejects the
+// whole usage object so it is not reported as a partial sample.
+type flexInt struct {
+	set bool
+	n   int
+}
+
+func (f *flexInt) UnmarshalJSON(b []byte) error {
+	if bytes.Equal(b, []byte("null")) {
+		return nil
+	}
+	n, ok := integerTokenCount(b)
+	if !ok {
+		return fmt.Errorf("token count must be a non-negative integer")
+	}
+	f.set, f.n = true, n
+	return nil
+}
+
+func integerTokenCount(b []byte) (int, bool) {
+	var n int
+	if err := json.Unmarshal(b, &n); err == nil {
+		return n, n >= 0
+	}
+	var x float64
+	if err := json.Unmarshal(b, &x); err != nil || x < 0 || x != math.Trunc(x) || x > math.MaxInt {
+		return 0, false
+	}
+	return int(x), true
+}
+
+func (w chatUsageWire) present() bool {
+	if w.PromptTokens.set || w.CompletionTokens.set {
+		return true
+	}
+	if w.PromptDetails != nil && w.PromptDetails.CachedTokens.set {
+		return true
+	}
+	return w.CompletionDetails != nil && w.CompletionDetails.ReasoningTokens.set
+}
+
+func (w chatUsageWire) tokenUsage() TokenUsage {
+	usage := TokenUsage{Present: true}
+	if w.PromptTokens.set {
+		usage.InputTokens = w.PromptTokens.n
+	}
+	if w.CompletionTokens.set {
+		usage.OutputTokens = w.CompletionTokens.n
+	}
+	if w.PromptDetails != nil && w.PromptDetails.CachedTokens.set {
+		usage.CachedTokens = w.PromptDetails.CachedTokens.n
+	}
+	if w.CompletionDetails != nil && w.CompletionDetails.ReasoningTokens.set {
+		usage.ReasoningTokens = w.CompletionDetails.ReasoningTokens.n
+	}
+	return usage
+}
+
+// chatUsageFromSSELine reads usage from one SSE data line. Non-data lines,
+// the [DONE] sentinel, and chunks with no usage object report ok false.
+func chatUsageFromSSELine(line []byte) (TokenUsage, bool) {
+	payload, ok := bytes.CutPrefix(line, sseDataPrefix)
+	if !ok {
+		return TokenUsage{}, false
+	}
+	payload = bytes.TrimSpace(payload)
+	if len(payload) == 0 || payload[0] != '{' || !bytes.Contains(payload, usageKey) {
+		return TokenUsage{}, false
+	}
+	var chunk struct {
+		Usage *chatUsageWire `json:"usage"`
+	}
+	if err := json.Unmarshal(payload, &chunk); err != nil || chunk.Usage == nil || !chunk.Usage.present() {
+		return TokenUsage{}, false
+	}
+	return chunk.Usage.tokenUsage(), true
+}
+
+// usageKey is the exact bytes of the usage field name, so content chunks skip
+// the JSON decode the same way the finish_reason scan does.
+var usageKey = []byte(`"usage"`)
+
+// maxUsageScan bounds how much of a non-streaming body is retained to find a
+// usage object. The client still receives every byte. A response that does not
+// fit is delivered intact and left unaccounted: accounting must not pin an
+// unbounded completion, and must not fail the proxy when it cannot measure.
+const maxUsageScan = 1 << 20
+
+// copyJSONUsage copies a non-streaming body to the client unchanged and, when
+// the whole body fits in maxUsageScan, reports the Chat Completions usage
+// object. A missing or unreadable usage object reports nothing. The copy is
+// success even when accounting is skipped.
+func copyJSONUsage(ctx context.Context, reader io.Reader, w io.Writer) error {
+	var scanned bytes.Buffer
+	truncated := false
+	buf := make([]byte, 32*1024)
+	for {
+		n, rErr := reader.Read(buf)
+		if n > 0 {
+			if _, wErr := w.Write(buf[:n]); wErr != nil {
+				return wErr
+			}
+			if truncated || scanned.Len() >= maxUsageScan {
+				truncated = true
+			} else if remain := maxUsageScan - scanned.Len(); n > remain {
+				truncated = true
+				scanned.Write(buf[:remain])
+			} else {
+				scanned.Write(buf[:n])
+			}
+		}
+		if rErr != nil {
+			if rErr == io.EOF {
+				break
+			}
+			return rErr
+		}
+	}
+	if truncated {
+		return nil
+	}
+	if usage, ok := chatUsageFromJSON(scanned.Bytes()); ok {
+		ReportUsage(ctx, usage)
+	}
+	return nil
+}
+
+// chatUsageFromJSON reads the top-level usage object. usage null, a non-object
+// usage, and a body that does not fit the scan are absent, not zero tokens.
+func chatUsageFromJSON(body []byte) (TokenUsage, bool) {
+	var parsed struct {
+		Usage *chatUsageWire `json:"usage"`
+	}
+	if err := json.Unmarshal(body, &parsed); err != nil || parsed.Usage == nil || !parsed.Usage.present() {
+		return TokenUsage{}, false
+	}
+	return parsed.Usage.tokenUsage(), true
 }
