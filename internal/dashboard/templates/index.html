@@ -111,25 +111,88 @@
        and overlaps the content. Re-anchor to the title's vertical center; the
        open-state rule (225deg + translateY(-50%)) still rotates it in place. */
     .collapse-arrow > .collapse-title::after { top: 50%; --tw-translate-y: -50%; }
+
+    /* Phone: tables become stacked cards. Desktop keeps the real table. */
+    .tab-nav { display: flex; width: 100%; flex-wrap: wrap; }
+    .tab-nav .tab-nav-btn { flex: 1 1 30%; }
+    @media (min-width: 640px) {
+      .tab-nav { width: fit-content; }
+      .tab-nav .tab-nav-btn { flex: 0 0 auto; }
+    }
+    @media (max-width: 639px) {
+      .phone-table { overflow: visible; }
+      .phone-table table,
+      .phone-table thead,
+      .phone-table tbody,
+      .phone-table tr,
+      .phone-table th,
+      .phone-table td { display: block; width: 100%; }
+      .phone-table thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+      .phone-table tbody { display: flex; flex-direction: column; gap: 0.75rem; }
+      .phone-table tr {
+        border: 1px solid oklch(var(--bc) / 0.1);
+        border-radius: 0.75rem;
+        background: oklch(var(--b1));
+        padding: 0.25rem 0;
+      }
+      .phone-table td {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 0.5rem;
+        text-align: left;
+        padding: 0.5rem 0.75rem;
+        border: 0;
+        white-space: normal;
+      }
+      .phone-table td::before {
+        content: attr(data-label);
+        flex: 0 0 5.5rem;
+        font-size: 0.625rem;
+        font-weight: 700;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+        color: oklch(var(--bc) / 0.5);
+      }
+      .phone-table td[colspan]::before { content: none; }
+      .phone-table td > .flex,
+      .phone-table td > form,
+      .phone-table td > code,
+      .phone-table td > span,
+      .phone-table td > button,
+      .phone-table td > div:not(.dropdown) { min-width: 0; }
+      .phone-table .dropdown-end .dropdown-content { right: 0; left: auto; }
+      .phone-table .btn,
+      .phone-table .toggle { min-height: 2.75rem; min-width: 2.75rem; }
+      .phone-table select { min-height: 2.75rem; }
+      .phone-table td.whitespace-nowrap { white-space: normal; }
+      .modal-box { width: calc(100vw - 1.5rem); max-width: calc(100vw - 1.5rem); margin-inline: auto; }
+      .modal-action { flex-wrap: wrap; gap: 0.5rem; }
+      .toast { max-width: calc(100vw - 1rem); }
+      pre, code, .mockup-code { max-width: 100%; overflow-x: auto; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
+    }
   </style>
 </head>
 <body class="bg-base-200/50 min-h-screen text-base-content antialiased flex flex-col justify-between">
   <div>
     <!-- Top Frosted Navbar -->
-    <header class="navbar bg-base-100/90 backdrop-blur border-b border-base-content/10 sticky top-0 z-40 px-4 lg:px-8">
-      <div class="flex-1 items-center gap-3">
-        <div class="size-10 bg-primary rounded-2xl text-primary-content shadow-md flex items-center justify-center font-black tracking-wider text-lg">
+    <header class="navbar bg-base-100/90 backdrop-blur border-b border-base-content/10 sticky top-0 z-40 px-3 sm:px-4 lg:px-8 min-h-14">
+      <div class="flex-1 items-center gap-2 sm:gap-3 min-w-0">
+        <div class="size-9 sm:size-10 bg-primary rounded-2xl text-primary-content shadow-md flex items-center justify-center font-black tracking-wider text-base sm:text-lg shrink-0">
           AI
         </div>
-        <div>
-          <div class="flex items-center gap-2">
-            <span class="text-xl font-black tracking-tight text-primary">OmniGo</span>
+        <div class="min-w-0">
+          <div class="flex items-center gap-2 min-w-0">
+            <span class="text-lg sm:text-xl font-black tracking-tight text-primary">OmniGo</span>
             <span class="status-pill border-primary/35 bg-primary/10 text-base-content/90 font-mono" title="OmniGo version {{.Version}}">{{.Version}}</span>
           </div>
-          <div class="text-[10px] text-base-content/60 font-semibold tracking-wider uppercase">Lightweight AI Gateway in Go</div>
+          <div class="text-[10px] text-base-content/60 font-semibold tracking-wider uppercase truncate">Lightweight AI Gateway in Go</div>
         </div>
       </div>
-      <div class="flex-none gap-3">
+      <div class="flex-none gap-2 sm:gap-3">
         <div class="hidden sm:flex items-center gap-2 text-xs font-mono bg-base-200/80 px-3 py-1.5 rounded-lg border border-base-content/10">
           <span class="size-2 rounded-full bg-success animate-pulse"></span>
           <span class="text-base-content/70">Gateway Active :8080</span>
@@ -137,9 +200,9 @@
 
         <!-- Theme Selector Dropdown -->
         <div class="dropdown dropdown-end">
-          <div tabindex="0" role="button" class="btn btn-ghost btn-sm gap-1.5 font-normal border border-base-content/10 rounded-lg px-3">
+          <div tabindex="0" role="button" aria-label="Theme" class="btn btn-ghost btn-sm gap-1.5 font-normal border border-base-content/10 rounded-lg px-2 sm:px-3 min-h-11 min-w-11">
             <svg xmlns="http://www.w3.org/2000/svg" class="size-4 text-base-content/70" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 21a4 4 0 01-4-4V5a2 2 0 012-2h4a2 2 0 012 2v12a4 4 0 01-4 4zm0 0h12a2 2 0 002-2v-4a2 2 0 00-2-2h-2.343M11 7.343l1.657-1.657a2 2 0 012.828 0l2.829 2.829a2 2 0 010 2.828l-8.486 8.485M7 17h.01" /></svg>
-            <span class="text-xs">Theme</span>
+            <span class="text-xs hidden sm:inline">Theme</span>
           </div>
           <ul tabindex="0" class="dropdown-content menu bg-base-100 rounded-box z-50 w-44 p-2 shadow-2xl border border-base-content/10 text-xs">
             <li><button type="button" onclick="changeTheme('night')">🌙 Night</button></li>
@@ -156,28 +219,28 @@
       </div>
     </header>
 
-    <main class="max-w-6xl mx-auto px-4 py-8 space-y-8">
+    <main class="max-w-6xl mx-auto px-3 sm:px-4 py-4 sm:py-8 space-y-5 sm:space-y-8 pb-[max(1rem,env(safe-area-inset-bottom))]">
       <!-- Live Toast / Notification Container -->
       <div id="result" class="toast toast-top toast-end z-50 max-w-sm"></div>
 
       <!-- Quick Metrics Bar -->
-      <div class="grid grid-cols-2 lg:grid-cols-4 gap-4">
-        <div class="card bg-base-100 border border-base-content/10 shadow-sm p-5 hover:border-primary/40 transition-colors">
+      <div class="grid grid-cols-1 min-[400px]:grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
+        <div class="card bg-base-100 border border-base-content/10 shadow-sm p-4 sm:p-5 hover:border-primary/40 transition-colors">
           <div class="text-xs font-semibold text-base-content/60 uppercase tracking-wider">Providers</div>
           <div class="text-3xl font-extrabold mt-1 text-primary">{{len .Providers}}</div>
           <div class="text-[11px] text-base-content/50 mt-1">OpenAI, Antigravity &amp; Codex</div>
         </div>
-        <div class="card bg-base-100 border border-base-content/10 shadow-sm p-5 hover:border-accent/40 transition-colors">
+        <div class="card bg-base-100 border border-base-content/10 shadow-sm p-4 sm:p-5 hover:border-accent/40 transition-colors">
           <div class="text-xs font-semibold text-base-content/60 uppercase tracking-wider">Combos</div>
           <div class="text-3xl font-extrabold mt-1 text-accent">{{len .Combos}}</div>
           <div class="text-[11px] text-base-content/50 mt-1">Fallback routing chains</div>
         </div>
-        <div class="card bg-base-100 border border-base-content/10 shadow-sm p-5 hover:border-secondary/40 transition-colors">
+        <div class="card bg-base-100 border border-base-content/10 shadow-sm p-4 sm:p-5 hover:border-secondary/40 transition-colors">
           <div class="text-xs font-semibold text-base-content/60 uppercase tracking-wider">Client Keys</div>
           <div class="text-3xl font-extrabold mt-1 text-secondary">{{len .Keys}}</div>
           <div class="text-[11px] text-base-content/50 mt-1">Active gateway credentials</div>
         </div>
-        <div class="card bg-base-100 border border-base-content/10 shadow-sm p-5 hover:border-info/40 transition-colors">
+        <div class="card bg-base-100 border border-base-content/10 shadow-sm p-4 sm:p-5 hover:border-info/40 transition-colors min-[400px]:col-span-2 lg:col-span-1">
           <div class="text-xs font-semibold text-base-content/60 uppercase tracking-wider">Gateway Endpoint</div>
           <div class="text-xs font-mono font-bold mt-2 truncate text-base-content bg-base-200/80 p-2.5 rounded-xl flex items-center justify-between gap-2 border border-base-content/10">
             <span id="gateway-endpoint-display" class="truncate">http://localhost:8080/v1</span>
@@ -188,24 +251,24 @@
       </div>
 
       <!-- Main Navigation Tabs -->
-      <div class="tabs tabs-boxed bg-base-300/40 p-1.5 rounded-2xl w-fit flex-wrap gap-1 border border-base-content/5">
-        <button type="button" class="tab tab-nav-btn tab-active bg-base-100 shadow-sm text-primary font-bold text-sm px-6 py-2.5 h-auto rounded-xl transition-all gap-2" onclick="showTab('providers', this)">
+      <nav class="tab-nav bg-base-300/40 p-1.5 rounded-2xl gap-1 border border-base-content/5" aria-label="Dashboard sections">
+        <button type="button" class="tab tab-nav-btn tab-active bg-base-100 shadow-sm text-primary font-bold text-sm px-3 sm:px-6 py-2.5 h-auto min-h-11 rounded-xl transition-all gap-2 justify-center" onclick="showTab('providers', this)">
           <svg xmlns="http://www.w3.org/2000/svg" class="size-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z" /></svg>
           Providers
         </button>
-        <button type="button" class="tab tab-nav-btn font-semibold text-sm px-6 py-2.5 h-auto rounded-xl transition-all gap-2 text-base-content/70 hover:text-base-content" onclick="showTab('combos', this)">
+        <button type="button" class="tab tab-nav-btn font-semibold text-sm px-3 sm:px-6 py-2.5 h-auto min-h-11 rounded-xl transition-all gap-2 text-base-content/70 hover:text-base-content justify-center" onclick="showTab('combos', this)">
           <svg xmlns="http://www.w3.org/2000/svg" class="size-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4" /></svg>
           Combos
         </button>
-        <button type="button" class="tab tab-nav-btn font-semibold text-sm px-6 py-2.5 h-auto rounded-xl transition-all gap-2 text-base-content/70 hover:text-base-content" onclick="showTab('keys', this)">
+        <button type="button" class="tab tab-nav-btn font-semibold text-sm px-3 sm:px-6 py-2.5 h-auto min-h-11 rounded-xl transition-all gap-2 text-base-content/70 hover:text-base-content justify-center" onclick="showTab('keys', this)">
           <svg xmlns="http://www.w3.org/2000/svg" class="size-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 7a2 2 0 012 2m4 0a6 6 0 01-7.743 5.743L11 17H9v2H7v2H4a1 1 0 01-1-1v-2.586a1 1 0 01.293-.707l5.964-5.964A6 6 0 1121 9z" /></svg>
           Client Keys
         </button>
-        <button type="button" class="tab tab-nav-btn font-semibold text-sm px-6 py-2.5 h-auto rounded-xl transition-all gap-2 text-base-content/70 hover:text-base-content" onclick="showTab('quickstart', this)">
+        <button type="button" class="tab tab-nav-btn font-semibold text-sm px-3 sm:px-6 py-2.5 h-auto min-h-11 rounded-xl transition-all gap-2 text-base-content/70 hover:text-base-content justify-center" onclick="showTab('quickstart', this)">
           <svg xmlns="http://www.w3.org/2000/svg" class="size-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4" /></svg>
           Playground &amp; Docs
         </button>
-        <button type="button" class="tab tab-nav-btn font-semibold text-sm px-6 py-2.5 h-auto rounded-xl transition-all gap-2 text-base-content/70 hover:text-base-content" onclick="showTab('settings', this)">
+        <button type="button" class="tab tab-nav-btn font-semibold text-sm px-3 sm:px-6 py-2.5 h-auto min-h-11 rounded-xl transition-all gap-2 text-base-content/70 hover:text-base-content justify-center" onclick="showTab('settings', this)">
           <svg xmlns="http://www.w3.org/2000/svg" class="size-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.066 2.573c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.573 1.066c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.066-2.573c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" /><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" /></svg>
           Settings
         </button>
@@ -215,7 +278,7 @@
 
       <!-- Panel 1: Providers -->
       <div id="panel-providers" class="tab-panel space-y-6">
-        <div class="card bg-base-100 border border-base-content/10 rounded-2xl shadow-sm p-6 space-y-6">
+        <div class="card bg-base-100 border border-base-content/10 rounded-2xl shadow-sm p-4 sm:p-6 space-y-6">
           <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-base-content/10 pb-4">
             <div>
               <h2 class="text-xl font-bold">Upstream AI Providers</h2>
@@ -271,7 +334,7 @@
 
       <!-- Panel 2: Combos -->
       <div id="panel-combos" class="tab-panel hidden space-y-6">
-        <div class="card bg-base-100 border border-base-content/10 rounded-2xl shadow-sm p-6 space-y-6">
+        <div class="card bg-base-100 border border-base-content/10 rounded-2xl shadow-sm p-4 sm:p-6 space-y-6">
           <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-base-content/10 pb-4">
             <div>
               <h2 class="text-xl font-bold">Model Combos &amp; Smart Routing</h2>
@@ -532,7 +595,7 @@
 
       <!-- Panel 3: API Keys -->
       <div id="panel-keys" class="tab-panel hidden space-y-6">
-        <div class="card bg-base-100 border border-base-content/10 rounded-2xl shadow-sm p-6 space-y-6">
+        <div class="card bg-base-100 border border-base-content/10 rounded-2xl shadow-sm p-4 sm:p-6 space-y-6">
           <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-base-content/10 pb-4">
             <div>
               <h2 class="text-xl font-bold">Gateway Client API Keys</h2>
@@ -560,7 +623,7 @@
       <div id="panel-quickstart" class="tab-panel hidden space-y-6">
 
         <!-- Gateway Inspector & Playground Card -->
-        <div class="card bg-base-100 border border-base-content/10 rounded-2xl shadow-sm p-6 space-y-6">
+        <div class="card bg-base-100 border border-base-content/10 rounded-2xl shadow-sm p-4 sm:p-6 space-y-6">
           <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-base-content/10 pb-4">
             <div>
               <div class="flex items-center gap-2 flex-wrap">
@@ -616,10 +679,10 @@
 
           <!-- Prompt Textarea & Context Limit -->
           <div class="space-y-2">
-            <div class="flex items-center justify-between">
+            <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
               <label class="label-text text-xs font-semibold">Prompt Message</label>
-              <div class="flex items-center gap-2">
-                <span id="playground-limit-info" class="text-xs font-mono text-base-content/60">
+              <div class="flex flex-wrap items-center gap-2">
+                <span id="playground-limit-info" class="text-[11px] sm:text-xs font-mono text-base-content/60 break-words">
                   Est. Tokens: <strong id="playground-token-count">0</strong> / 50,000 | Chars: <span id="playground-char-count">0</span> / 200,000
                 </span>
                 <span id="playground-limit-badge" class="badge badge-success badge-xs font-mono">OK</span>
@@ -627,8 +690,8 @@
             </div>
             <textarea id="playground-prompt" class="textarea textarea-bordered font-mono text-xs w-full h-32 leading-relaxed" placeholder="Type a prompt to test your gateway model/combo routing..." oninput="updatePromptLimit()"></textarea>
             
-            <div class="flex items-center justify-between pt-1">
-              <div class="flex items-center gap-2">
+            <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 pt-1">
+              <div class="flex flex-wrap items-center gap-2">
                 <button type="button" id="playground-send-btn" class="btn btn-primary btn-sm px-6 gap-2" onclick="sendPlaygroundRequest()">
                   <svg xmlns="http://www.w3.org/2000/svg" class="size-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14 5l7 7m0 0l-7 7m7-7H3" /></svg>
                   Send Stream
@@ -681,7 +744,7 @@
 
           <!-- Inspector Output Tabs -->
           <div class="space-y-2">
-            <div class="tabs tabs-bordered">
+            <div class="tabs tabs-bordered flex-wrap">
               <button type="button" class="tab tab-bordered tab-active font-semibold text-xs inspector-tab-btn" onclick="switchInspectorTab('stream', this)">Stream Output</button>
               <button type="button" class="tab tab-bordered font-semibold text-xs inspector-tab-btn" onclick="switchInspectorTab('raw', this)">Raw SSE Events</button>
               <button type="button" class="tab tab-bordered font-semibold text-xs inspector-tab-btn" onclick="switchInspectorTab('request', this)">Request JSON</button>
@@ -723,7 +786,7 @@
             </div>
           </div>
         </div>
-        <div class="card bg-base-100 border border-base-content/10 rounded-2xl shadow-sm p-6 space-y-6">
+        <div class="card bg-base-100 border border-base-content/10 rounded-2xl shadow-sm p-4 sm:p-6 space-y-6">
           <div>
             <h2 class="text-xl font-bold">API Quickstart &amp; Code Examples</h2>
             <p class="text-xs text-base-content/60 mt-1">OmniGo exposes standard OpenAI endpoints. Point any coding tool (Claude Code, Cursor, Cline, OpenCode, Aider) directly to this gateway.</p>
@@ -735,7 +798,7 @@
                 <span class="badge badge-primary badge-xs px-2 py-0.5 font-bold">1</span>
                 cURL: Chat Completions (Combo or Direct Model)
               </div>
-              <div class="mockup-code text-xs shadow-md border border-base-content/10 p-4">
+              <div class="mockup-code text-xs shadow-md border border-base-content/10 p-4 overflow-x-auto">
                 <pre data-prefix="$"><code>curl http://localhost:8080/v1/chat/completions \</code></pre>
                 <pre data-prefix=">"><code>  -H "Content-Type: application/json" \</code></pre>
                 <pre data-prefix=">"><code>  -H "Authorization: Bearer ak-&lt;your-key&gt;" \</code></pre>
@@ -752,7 +815,7 @@
                 <span class="badge badge-primary badge-xs px-2 py-0.5 font-bold">2</span>
                 cURL: List Aggregated Model Catalog
               </div>
-              <div class="mockup-code text-xs shadow-md border border-base-content/10 p-4">
+              <div class="mockup-code text-xs shadow-md border border-base-content/10 p-4 overflow-x-auto">
                 <pre data-prefix="$"><code>curl http://localhost:8080/v1/models \</code></pre>
                 <pre data-prefix=">"><code>  -H "Authorization: Bearer ak-&lt;your-key&gt;"</code></pre>
               </div>
@@ -763,7 +826,7 @@
                 <span class="badge badge-primary badge-xs px-2 py-0.5 font-bold">3</span>
                 Python (openai SDK)
               </div>
-              <div class="mockup-code text-xs shadow-md border border-base-content/10 p-4">
+              <div class="mockup-code text-xs shadow-md border border-base-content/10 p-4 overflow-x-auto">
                 <pre data-prefix=">"><code>from openai import OpenAI</code></pre>
                 <pre data-prefix=">"><code>client = OpenAI(base_url="http://localhost:8080/v1", api_key="ak-...")</code></pre>
                 <pre data-prefix=">"><code>response = client.chat.completions.create(</code></pre>
@@ -1483,7 +1546,7 @@
 </html>
 
 {{define "providers"}}
-<div class="overflow-x-auto">
+<div class="overflow-x-auto phone-table">
   <table class="table w-full">
     <thead>
       <tr class="text-base-content/70 text-xs uppercase tracking-wider border-b border-base-content/10">
@@ -1507,7 +1570,7 @@
       {{$accounts := index $.Accounts .Name}}
       {{$hasKey := or (and $sec $sec.APIKey) .APIKey}}
       <tr class="hover:bg-base-200/40 transition-colors{{if .Disabled}} opacity-50{{end}}">
-        <td class="font-mono text-base-content py-3.5 px-4">
+        <td class="font-mono text-base-content py-3.5 px-4" data-label="Provider">
           <div class="flex items-center gap-3">
             {{if eq .Type "antigravity"}}
               {{if or $accounts (and $sec (or $sec.RefreshToken $sec.AccessToken))}}
@@ -1548,7 +1611,7 @@
             {{end}}
           </div>
         </td>
-        <td class="py-3.5 px-4">
+        <td class="py-3.5 px-4" data-label="Adapter">
           {{if eq .Type "antigravity"}}
             <span class="px-2.5 py-1 text-xs font-mono font-medium rounded-lg bg-secondary/15 text-secondary border border-secondary/20 inline-flex items-center gap-1.5 leading-none">
               <svg xmlns="http://www.w3.org/2000/svg" class="size-3" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/></svg>
@@ -1566,7 +1629,7 @@
             </span>
           {{end}}
         </td>
-        <td class="py-3.5 px-4">
+        <td class="py-3.5 px-4" data-label="Models">
           <div id="model-chips-{{.Name}}" class="flex flex-wrap items-center gap-1.5 max-w-md">
             {{if not .Models}}
               <span class="text-xs text-base-content/40 italic">No models</span>
@@ -1600,7 +1663,7 @@
           </dialog>
         </td>
 
-        <td class="text-right py-3.5 px-4 whitespace-nowrap">
+        <td class="text-right py-3.5 px-4 whitespace-nowrap" data-label="Actions">
           <div class="flex items-center justify-end gap-2">
             <input type="checkbox" class="toggle toggle-xs toggle-success" {{if not .Disabled}}checked{{end}} hx-post="/providers/{{.Name}}/toggle" hx-target="#providers" hx-swap="innerHTML" title="{{if .Disabled}}Enable provider{{else}}Disable provider{{end}}">
             <div class="dropdown dropdown-end">
@@ -1957,7 +2020,7 @@
     <button type="button" hx-post="/combos/drains/reset-all" hx-target="#combos" hx-swap="innerHTML" hx-confirm="Clear all drained target cooldowns?" class="btn btn-warning btn-outline btn-xs rounded-lg px-3">Reset All Drains</button>
   {{end}}
 </div>
-<div class="overflow-x-auto">
+<div class="overflow-x-auto phone-table">
   <table class="table w-full">
     <thead>
       <tr class="text-base-content/70 text-xs uppercase tracking-wider border-b border-base-content/10">
@@ -1978,8 +2041,8 @@
       {{end}}
       {{range .Combos}}
       <tr class="hover:bg-base-200/40 transition-colors">
-        <td class="font-bold font-mono text-primary py-3.5 px-4 text-sm">{{.Name}}</td>
-        <td class="py-3.5 px-4">
+        <td class="font-bold font-mono text-primary py-3.5 px-4 text-sm" data-label="Combo">{{.Name}}</td>
+        <td class="py-3.5 px-4" data-label="Strategy">
           <form action="/combos/{{.Name}}" method="POST" hx-post="/combos/{{.Name}}" hx-target="#combos" hx-swap="innerHTML">
             <input type="hidden" name="targets" value="{{range $i, $t := .Targets}}{{if $i}},{{end}}{{$t.Provider}}/{{$t.Model}}{{end}}">
             <input type="hidden" name="timeout" value="{{.Timeout}}">
@@ -1992,7 +2055,7 @@
             </select>
           </form>
         </td>
-        <td class="py-3.5 px-4">
+        <td class="py-3.5 px-4" data-label="Targets">
           <div class="flex flex-wrap items-center gap-2">
             {{range $i, $t := .Targets}}
               {{$drained := isDrained $.Tracker $t.Provider $t.Model}}
@@ -2021,11 +2084,11 @@
             {{end}}
           </div>
         </td>
-        <td class="py-3.5 px-4 text-xs font-mono whitespace-nowrap">
+        <td class="py-3.5 px-4 text-xs font-mono whitespace-nowrap" data-label="Budgets">
           <div>timeout {{if .Timeout}}<span class="text-base-content">{{.Timeout}}</span>{{else}}<span class="text-base-content/40">uncapped</span>{{end}}</div>
           <div class="text-base-content/50">drain {{if .DrainTTL}}{{.DrainTTL}}{{else}}60s{{end}}</div>
         </td>
-        <td class="text-right py-3.5 px-4 whitespace-nowrap">
+        <td class="text-right py-3.5 px-4 whitespace-nowrap" data-label="Actions">
           <button type="button" onclick="openEditComboModal('{{.Name}}', '{{.Strategy}}', '{{range $i, $t := .Targets}}{{if $i}},{{end}}{{$t.Provider}}/{{$t.Model}}{{end}}', '{{.Timeout}}', '{{.DrainTTL}}')" class="btn btn-xs btn-outline btn-primary px-2.5 py-1 h-auto min-h-[1.75rem] rounded-lg gap-1 font-medium mr-1">
             <svg xmlns="http://www.w3.org/2000/svg" class="size-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" /></svg>
             Edit
@@ -2044,16 +2107,16 @@
 
 {{define "keys"}}
 {{if .NewKey}}
-<div class="alert alert-success shadow-xl mb-6 flex items-center justify-between p-4 rounded-2xl border border-success/30">
+<div class="alert alert-success shadow-xl mb-6 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 p-4 rounded-2xl border border-success/30">
   <div class="flex items-center gap-3">
     <svg xmlns="http://www.w3.org/2000/svg" class="size-6 shrink-0 text-success-content" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
     <div>
       <div class="font-bold text-success-content text-sm">Gateway API Key Generated</div>
       <div class="text-xs text-success-content/80 mt-0.5">Copy this key now. It is encrypted in auth.yaml and cannot be recovered if lost:</div>
-      <div class="mt-2 font-mono text-xs bg-base-100/40 text-success-content px-3 py-1.5 rounded-lg border border-success-content/30 select-all inline-block">{{.NewKey}}</div>
+      <div class="mt-2 font-mono text-xs bg-base-100/40 text-success-content px-3 py-1.5 rounded-lg border border-success-content/30 select-all break-all">{{.NewKey}}</div>
     </div>
   </div>
-  <div class="flex items-center gap-1.5">
+  <div class="flex flex-wrap items-center gap-1.5">
     <button type="button" class="btn btn-sm btn-ghost text-success-content px-3 rounded-lg" onclick="copyToClipboard('{{.NewKey}}', this)">Copy</button>
     <button type="button" class="btn btn-sm btn-outline text-success-content px-3 rounded-lg text-xs" onclick="useKeyInPlayground('{{.NewKey}}')">Use in Playground</button>
   </div>
@@ -2062,7 +2125,7 @@
 
 
 
-<div class="overflow-x-auto">
+<div class="overflow-x-auto phone-table">
   <table class="table w-full">
     <thead>
       <tr class="text-base-content/70 text-xs uppercase tracking-wider border-b border-base-content/10">
@@ -2084,14 +2147,14 @@
       {{end}}
       {{range .Keys}}
       <tr class="hover:bg-base-200/40 transition-colors">
-        <td class="font-bold text-base-content py-3.5 px-4 text-sm">{{if .Name}}{{.Name}}{{else}}<span class="text-base-content/40 italic">unnamed</span>{{end}}</td>
-        <td class="py-3.5 px-4"><code class="text-primary font-mono text-xs bg-base-200/80 px-2.5 py-1 rounded-md border border-base-content/10">{{.Prefix}}…</code></td>
-        <td class="py-3.5 px-4"><code class="text-base-content/70 font-mono text-xs" title="Matches the api_key_id metric label">{{.ID}}</code></td>
-        <td class="text-xs text-base-content/70 font-mono py-3.5 px-4">{{.CreatedAt.Format "2006-01-02 15:04"}}</td>
-        <td class="py-3.5 px-4">
+        <td class="font-bold text-base-content py-3.5 px-4 text-sm" data-label="Name">{{if .Name}}{{.Name}}{{else}}<span class="text-base-content/40 italic">unnamed</span>{{end}}</td>
+        <td class="py-3.5 px-4" data-label="Prefix"><code class="text-primary font-mono text-xs bg-base-200/80 px-2.5 py-1 rounded-md border border-base-content/10">{{.Prefix}}…</code></td>
+        <td class="py-3.5 px-4" data-label="Key ID"><code class="text-base-content/70 font-mono text-xs break-all" title="Matches the api_key_id metric label">{{.ID}}</code></td>
+        <td class="text-xs text-base-content/70 font-mono py-3.5 px-4" data-label="Issued">{{.CreatedAt.Format "2006-01-02 15:04"}}</td>
+        <td class="py-3.5 px-4" data-label="Status">
           <span class="badge badge-success badge-sm font-mono px-2.5 py-1">active</span>
         </td>
-        <td class="text-right py-3.5 px-4 whitespace-nowrap">
+        <td class="text-right py-3.5 px-4 whitespace-nowrap" data-label="Actions">
           <button hx-post="/keys/{{.ID}}/revoke" hx-target="#keys" hx-swap="innerHTML" hx-confirm="Revoke key {{.Prefix}}…?" class="btn btn-xs btn-outline btn-error px-2.5 py-1 h-auto min-h-[1.75rem] rounded-lg gap-1 font-medium">
             <svg xmlns="http://www.w3.org/2000/svg" class="size-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M18.364 18.364A9 9 0 005.636 5.636m12.728 12.728A9 9 0 015.636 5.636m12.728 12.728L5.636 5.636" /></svg>
             Revoke
@@ -2106,7 +2169,7 @@
 
 
 {{define "settings"}}
-<div class="card bg-base-100 border border-base-content/10 rounded-2xl shadow-sm p-6 space-y-6">
+<div class="card bg-base-100 border border-base-content/10 rounded-2xl shadow-sm p-4 sm:p-6 space-y-6">
   <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-base-content/10 pb-4">
     <div>
       <h2 class="text-xl font-bold">Server Settings</h2>
