@@ -212,6 +212,49 @@ func TestStreamWithContentAndNoFinishReasonCompletes(t *testing.T) {
 	}
 }
 
+// Gemini thinking frames arrive as one SSE line, and a long thought runs well
+// past a megabyte. The scanner that reads the feed must survive that line:
+// dropping it ends the answer wherever the thought happened to be. The bound
+// is 50 MiB, so a frame past the old 4 MiB cap still has to come through.
+func TestStreamSurvivesSSELinePastFourMegabytes(t *testing.T) {
+	saved := UnaryClient().Transport
+	t.Cleanup(func() { SetHTTPTransport(saved) })
+	// The thought is a run of one byte, so the frame is streamed rather than
+	// materialised: strings.Repeat would pin the whole line twice.
+	frame := io.MultiReader(
+		strings.NewReader("data: {\"candidates\":[{\"content\":{\"parts\":[{\"thought\":true,\"text\":\""),
+		io.LimitReader(repeatReader('a'), 4*1024*1024+64),
+		strings.NewReader("\"}]},\"finishReason\":\"STOP\"}]}\n\n"),
+	)
+	body := io.NopCloser(frame)
+	transport := roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: body}, nil
+	})
+	p := New(provider.Config{Name: "agy", BaseURL: "https://example.invalid", Transport: transport},
+		staticStore{provider.Credentials{AccessToken: "token", ProjectID: "p", ExpiresAt: time.Now().Add(time.Hour)}})
+
+	rr := httptest.NewRecorder()
+	err := p.ChatCompletion(context.Background(), provider.ChatRequest{
+		Model: "gemini", Stream: true, Messages: []provider.Message{{Role: "user", Content: "hi"}},
+	}, rr)
+	if err != nil {
+		t.Fatalf("long thought frame failed the stream: %v", err)
+	}
+	if !strings.Contains(rr.Body.String(), `"finish_reason":"stop"`) || !strings.Contains(rr.Body.String(), "data: [DONE]") {
+		t.Fatalf("long thought frame was not delivered whole: %s", rr.Body.String()[:120])
+	}
+}
+
+// repeatReader yields the same byte forever; pair it with io.LimitReader.
+type repeatReader byte
+
+func (r repeatReader) Read(p []byte) (int, error) {
+	for i := range p {
+		p[i] = byte(r)
+	}
+	return len(p), nil
+}
+
 func TestEmptyStreamWithoutFinishReasonIsIncomplete(t *testing.T) {
 	saved := UnaryClient().Transport
 	t.Cleanup(func() { SetHTTPTransport(saved) })
