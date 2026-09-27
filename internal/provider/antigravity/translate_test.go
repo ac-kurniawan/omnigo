@@ -105,6 +105,74 @@ func TestToEnvelopeIgnoresImageOnlyMessage(t *testing.T) {
 	}
 }
 
+func TestToEnvelopeDeclaresToolsAndMapsToolTurns(t *testing.T) {
+	req := provider.ChatRequest{
+		Model: "gemini-3.7-flash-medium",
+		Parsed: provider.ParseBody([]byte(`{
+			"model":"gemini-3.7-flash-medium",
+			"messages":[
+				{"role":"system","content":"be brief"},
+				{"role":"user","content":"weather"},
+				{"role":"assistant","content":null,"tool_calls":[
+					{"id":"call_1","type":"function","function":{"name":"weather","arguments":"{\"city\":\"Rome\"}"}}
+				]},
+				{"role":"tool","tool_call_id":"call_1","content":"{\"temp\":20}"}
+			],
+			"tools":[{"type":"function","function":{
+				"name":"weather","description":"Lookup weather",
+				"parameters":{"type":"object","properties":{"city":{"type":"string"}},"required":["city"],"additionalProperties":false}
+			}}],
+			"tool_choice":"auto",
+			"max_tokens":128
+		}`)),
+	}
+	env, err := ToEnvelope("proj-1", req.Model, req)
+	if err != nil {
+		t.Fatalf("ToEnvelope: %v", err)
+	}
+	inner := env["request"].(map[string]any)
+	tools := inner["tools"].([]any)
+	decls := tools[0].(map[string]any)["functionDeclarations"].([]any)
+	decl := decls[0].(map[string]any)
+	if decl["name"] != "weather" {
+		t.Fatalf("declaration = %#v", decl)
+	}
+	schema := decl["parameters"].(map[string]any)
+	if _, ok := schema["additionalProperties"]; ok {
+		t.Fatalf("schema kept additionalProperties: %#v", schema)
+	}
+	if inner["generationConfig"].(map[string]any)["maxOutputTokens"] != float64(128) {
+		t.Fatalf("generationConfig = %#v", inner["generationConfig"])
+	}
+	if inner["toolConfig"].(map[string]any)["functionCallingConfig"].(map[string]any)["mode"] != "AUTO" {
+		t.Fatalf("toolConfig = %#v", inner["toolConfig"])
+	}
+	if _, exists := env["requestType"]; exists {
+		t.Fatalf("requestType leaked: %#v", env["requestType"])
+	}
+	contents := inner["contents"].([]any)
+	if len(contents) != 3 {
+		t.Fatalf("contents = %#v", contents)
+	}
+	model := contents[1].(map[string]any)
+	call := model["parts"].([]any)[0].(map[string]any)["functionCall"].(map[string]any)
+	if model["role"] != "model" || call["name"] != "weather" || call["id"] != "call_1" {
+		t.Fatalf("model turn = %#v", model)
+	}
+	if model["parts"].([]any)[0].(map[string]any)["thoughtSignature"] == nil {
+		t.Fatalf("function call missing thought signature: %#v", model)
+	}
+	reply := contents[2].(map[string]any)
+	got := reply["parts"].([]any)[0].(map[string]any)["functionResponse"].(map[string]any)
+	if reply["role"] != "user" || got["name"] != "weather" || got["id"] != "call_1" {
+		t.Fatalf("tool reply = %#v", reply)
+	}
+	sys := inner["systemInstruction"].(map[string]any)
+	if sys["parts"].([]any)[0].(map[string]any)["text"] != "be brief" {
+		t.Fatalf("system = %#v", sys)
+	}
+}
+
 func TestTranslateSSEDelta(t *testing.T) {
 	gemini := []byte(`data: {"candidates":[{"content":{"role":"model","parts":[{"text":"hel"}]}}]}`)
 	out, err := TranslateSSE(gemini)

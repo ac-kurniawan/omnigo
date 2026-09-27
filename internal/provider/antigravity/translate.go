@@ -28,38 +28,474 @@ func newRequestID() string {
 }
 
 func ToEnvelope(projectID, model string, req provider.ChatRequest) (map[string]any, error) {
-	contents := make([]any, 0, len(req.Messages))
-	for _, m := range req.Messages {
-		parts := make([]any, 0, 1)
-		switch content := m.Content.(type) {
-		case string:
-			parts = append(parts, map[string]any{"text": content})
-		case []any:
-			for _, rawPart := range content {
-				part, ok := rawPart.(map[string]any)
-				if !ok || part["type"] != "text" {
-					continue
-				}
-				if text, ok := part["text"].(string); ok {
-					parts = append(parts, map[string]any{"text": text})
-				}
+	messages := requestMessages(req)
+	system, contents, err := geminiContents(messages)
+	if err != nil {
+		return nil, err
+	}
+	inner := map[string]any{"contents": contents}
+	if system != nil {
+		inner["systemInstruction"] = system
+	}
+	if config := generationConfig(req.Parsed); config != nil {
+		inner["generationConfig"] = config
+	}
+	decls, err := functionDeclarations(req.Parsed)
+	if err != nil {
+		return nil, err
+	}
+	if len(decls) > 0 {
+		inner["tools"] = []any{map[string]any{"functionDeclarations": decls}}
+		if mode, allowed := toolChoice(req.Parsed); mode != "" {
+			calling := map[string]any{"mode": mode}
+			if allowed != "" {
+				calling["allowedFunctionNames"] = []string{allowed}
 			}
+			inner["toolConfig"] = map[string]any{"functionCallingConfig": calling}
 		}
-		if len(parts) == 0 {
-			continue
-		}
-		contents = append(contents, map[string]any{
-			"role":  role(m.Role),
-			"parts": parts,
-		})
 	}
 	return map[string]any{
 		"project":   projectID,
 		"requestId": newRequestID(),
-		"request":   map[string]any{"contents": contents},
+		"request":   inner,
 		"model":     model,
 		"userAgent": "antigravity/ide/0.0.0 darwin/arm64",
 	}, nil
+}
+
+// requestMessages prefers the parsed chat body. The typed Messages field drops
+// tool calls, tool results, and the tool_call_id a result has to answer.
+func requestMessages(req provider.ChatRequest) []any {
+	if req.Parsed != nil {
+		if messages, ok := req.Parsed["messages"].([]any); ok {
+			return messages
+		}
+	}
+	out := make([]any, 0, len(req.Messages))
+	for _, m := range req.Messages {
+		out = append(out, map[string]any{"role": m.Role, "content": m.Content})
+	}
+	return out
+}
+
+func geminiContents(messages []any) (map[string]any, []any, error) {
+	var systemParts []any
+	contents := make([]any, 0, len(messages))
+	started := false
+	for i := 0; i < len(messages); i++ {
+		message, ok := messages[i].(map[string]any)
+		if !ok {
+			return nil, nil, fmt.Errorf("antigravity: messages[%d] must be an object", i)
+		}
+		role, _ := message["role"].(string)
+		if (role == "system" || role == "developer") && !started {
+			systemParts = append(systemParts, textParts(message["content"])...)
+			continue
+		}
+		started = true
+		switch role {
+		case "system", "developer", "user":
+			parts := textParts(message["content"])
+			if len(parts) == 0 {
+				continue
+			}
+			contents = append(contents, map[string]any{"role": "user", "parts": parts})
+		case "assistant":
+			parts := textParts(message["content"])
+			calls, err := assistantCalls(message, i)
+			if err != nil {
+				return nil, nil, err
+			}
+			parts = append(parts, calls...)
+			if len(parts) == 0 {
+				continue
+			}
+			contents = append(contents, map[string]any{"role": "model", "parts": parts})
+			if len(calls) == 0 {
+				continue
+			}
+			replies, consumed, err := toolReplies(messages[i+1:], calls)
+			if err != nil {
+				return nil, nil, err
+			}
+			if len(replies) > 0 {
+				contents = append(contents, map[string]any{"role": "user", "parts": replies})
+			}
+			i += consumed
+		case "tool":
+			continue
+		default:
+			parts := textParts(message["content"])
+			if len(parts) == 0 {
+				continue
+			}
+			contents = append(contents, map[string]any{"role": "user", "parts": parts})
+		}
+	}
+	if systemParts == nil {
+		return nil, contents, nil
+	}
+	return map[string]any{"role": "user", "parts": systemParts}, contents, nil
+}
+
+func textParts(content any) []any {
+	switch content := content.(type) {
+	case string:
+		if content == "" {
+			return nil
+		}
+		return []any{map[string]any{"text": content}}
+	case []any:
+		parts := make([]any, 0, len(content))
+		for _, raw := range content {
+			part, ok := raw.(map[string]any)
+			if !ok || part["type"] != "text" {
+				continue
+			}
+			text, _ := part["text"].(string)
+			if text == "" {
+				continue
+			}
+			parts = append(parts, map[string]any{"text": text})
+		}
+		return parts
+	default:
+		return nil
+	}
+}
+
+// thoughtSignatureSentinel is the value Gemini 3 accepts on a replayed function
+// call whose original signature the client did not keep.
+const thoughtSignatureSentinel = "skip_thought_signature_validator"
+
+func assistantCalls(message map[string]any, index int) ([]any, error) {
+	raw, ok := message["tool_calls"]
+	if !ok || raw == nil {
+		return nil, nil
+	}
+	calls, ok := raw.([]any)
+	if !ok {
+		return nil, fmt.Errorf("antigravity: messages[%d].tool_calls must be an array", index)
+	}
+	parts := make([]any, 0, len(calls))
+	for i, rawCall := range calls {
+		call, ok := rawCall.(map[string]any)
+		if !ok {
+			return nil, fmt.Errorf("antigravity: messages[%d].tool_calls[%d] must be an object", index, i)
+		}
+		if kind, _ := call["type"].(string); kind != "" && kind != "function" {
+			continue
+		}
+		function, _ := call["function"].(map[string]any)
+		name, _ := function["name"].(string)
+		if name == "" {
+			continue
+		}
+		fn := map[string]any{"name": name, "args": callArgs(function["arguments"])}
+		if id, _ := call["id"].(string); id != "" {
+			fn["id"] = id
+		}
+		parts = append(parts, map[string]any{
+			"functionCall":     fn,
+			"thoughtSignature": thoughtSignatureSentinel,
+		})
+	}
+	return parts, nil
+}
+
+func callArgs(raw any) any {
+	text, _ := raw.(string)
+	if text == "" {
+		return map[string]any{}
+	}
+	var args any
+	if err := json.Unmarshal([]byte(text), &args); err != nil {
+		return map[string]any{"params": text}
+	}
+	if args == nil {
+		return map[string]any{}
+	}
+	return args
+}
+
+func toolReplies(rest []any, calls []any) ([]any, int, error) {
+	byID := map[string]map[string]any{}
+	consumed := 0
+	for _, raw := range rest {
+		message, ok := raw.(map[string]any)
+		if !ok {
+			break
+		}
+		role, _ := message["role"].(string)
+		if role == "assistant" {
+			break
+		}
+		consumed++
+		if role != "tool" {
+			continue
+		}
+		id, _ := message["tool_call_id"].(string)
+		if id == "" {
+			continue
+		}
+		byID[id] = message
+	}
+	parts := make([]any, 0, len(calls))
+	for _, raw := range calls {
+		call := raw.(map[string]any)["functionCall"].(map[string]any)
+		id, _ := call["id"].(string)
+		name, _ := call["name"].(string)
+		result := "{}"
+		if reply, ok := byID[id]; ok {
+			if text := contentText(reply["content"]); text != "" {
+				result = text
+			}
+		}
+		fn := map[string]any{"name": name, "response": map[string]any{"result": result}}
+		if id != "" {
+			fn["id"] = id
+		}
+		parts = append(parts, map[string]any{"functionResponse": fn})
+	}
+	return parts, consumed, nil
+}
+
+func contentText(content any) string {
+	switch content := content.(type) {
+	case string:
+		return content
+	case []any:
+		var b strings.Builder
+		for _, raw := range content {
+			part, ok := raw.(map[string]any)
+			if !ok || part["type"] != "text" {
+				continue
+			}
+			text, _ := part["text"].(string)
+			b.WriteString(text)
+		}
+		return b.String()
+	default:
+		return ""
+	}
+}
+
+func generationConfig(parsed map[string]any) map[string]any {
+	if parsed == nil {
+		return nil
+	}
+	config := map[string]any{}
+	if n, ok := numberValue(parsed["max_tokens"]); ok {
+		config["maxOutputTokens"] = n
+	} else if n, ok := numberValue(parsed["max_completion_tokens"]); ok {
+		config["maxOutputTokens"] = n
+	}
+	if n, ok := numberValue(parsed["temperature"]); ok {
+		config["temperature"] = n
+	}
+	if n, ok := numberValue(parsed["top_p"]); ok {
+		config["topP"] = n
+	}
+	if len(config) == 0 {
+		return nil
+	}
+	return config
+}
+
+func numberValue(raw any) (float64, bool) {
+	switch n := raw.(type) {
+	case json.Number:
+		v, err := n.Float64()
+		return v, err == nil
+	case float64:
+		return n, true
+	default:
+		return 0, false
+	}
+}
+
+func functionDeclarations(parsed map[string]any) ([]any, error) {
+	if parsed == nil {
+		return nil, nil
+	}
+	raw, ok := parsed["tools"]
+	if !ok || raw == nil {
+		return nil, nil
+	}
+	tools, ok := raw.([]any)
+	if !ok {
+		return nil, fmt.Errorf("antigravity: tools must be an array")
+	}
+	decls := make([]any, 0, len(tools))
+	seen := map[string]struct{}{}
+	for i, rawTool := range tools {
+		tool, ok := rawTool.(map[string]any)
+		if !ok {
+			return nil, fmt.Errorf("antigravity: tools[%d] must be an object", i)
+		}
+		if kind, _ := tool["type"].(string); kind != "" && kind != "function" {
+			continue
+		}
+		function, ok := tool["function"].(map[string]any)
+		if !ok {
+			continue
+		}
+		name, _ := function["name"].(string)
+		if name == "" {
+			continue
+		}
+		if _, dup := seen[name]; dup {
+			continue
+		}
+		seen[name] = struct{}{}
+		decl := map[string]any{"name": name}
+		if description, _ := function["description"].(string); description != "" {
+			decl["description"] = description
+		}
+		decl["parameters"] = declarationSchema(function["parameters"])
+		decls = append(decls, decl)
+	}
+	return decls, nil
+}
+
+func declarationSchema(raw any) map[string]any {
+	schema, ok := raw.(map[string]any)
+	if !ok || len(schema) == 0 {
+		return map[string]any{"type": "object", "properties": map[string]any{}}
+	}
+	cleaned := cleanSchema(cloneMap(schema)).(map[string]any)
+	if _, ok := cleaned["type"]; !ok {
+		if _, hasProps := cleaned["properties"]; hasProps {
+			cleaned["type"] = "object"
+		}
+	}
+	return cleaned
+}
+
+func cloneMap(in map[string]any) map[string]any {
+	out := make(map[string]any, len(in))
+	for key, value := range in {
+		out[key] = cloneValue(value)
+	}
+	return out
+}
+
+func cloneValue(value any) any {
+	switch value := value.(type) {
+	case map[string]any:
+		return cloneMap(value)
+	case []any:
+		out := make([]any, len(value))
+		for i := range value {
+			out[i] = cloneValue(value[i])
+		}
+		return out
+	default:
+		return value
+	}
+}
+
+// unsupportedSchemaKeys are JSON Schema keywords Gemini function declarations
+// reject. Dropping them keeps the declaration the model can still call.
+var unsupportedSchemaKeys = map[string]struct{}{
+	"additionalProperties":  {},
+	"$schema":               {},
+	"$id":                   {},
+	"$ref":                  {},
+	"$defs":                 {},
+	"definitions":           {},
+	"strict":                {},
+	"const":                 {},
+	"pattern":               {},
+	"format":                {},
+	"minLength":             {},
+	"maxLength":             {},
+	"minimum":               {},
+	"maximum":               {},
+	"exclusiveMinimum":      {},
+	"exclusiveMaximum":      {},
+	"minItems":              {},
+	"maxItems":              {},
+	"uniqueItems":           {},
+	"patternProperties":     {},
+	"unevaluatedProperties": {},
+	"propertyNames":         {},
+	"contentMediaType":      {},
+	"contentEncoding":       {},
+}
+
+func cleanSchema(value any) any {
+	switch value := value.(type) {
+	case map[string]any:
+		for key := range unsupportedSchemaKeys {
+			delete(value, key)
+		}
+		if required, ok := value["required"].([]any); ok {
+			props, _ := value["properties"].(map[string]any)
+			kept := required[:0]
+			for _, name := range required {
+				text, ok := name.(string)
+				if !ok {
+					continue
+				}
+				if props != nil {
+					if _, exists := props[text]; !exists {
+						continue
+					}
+				}
+				kept = append(kept, text)
+			}
+			if len(kept) == 0 {
+				delete(value, "required")
+			} else {
+				value["required"] = kept
+			}
+		}
+		for key, child := range value {
+			value[key] = cleanSchema(child)
+		}
+		return value
+	case []any:
+		for i := range value {
+			value[i] = cleanSchema(value[i])
+		}
+		return value
+	default:
+		return value
+	}
+}
+
+func toolChoice(parsed map[string]any) (string, string) {
+	if parsed == nil {
+		return "", ""
+	}
+	raw, ok := parsed["tool_choice"]
+	if !ok || raw == nil {
+		return "", ""
+	}
+	switch choice := raw.(type) {
+	case string:
+		switch strings.ToLower(choice) {
+		case "none":
+			return "NONE", ""
+		case "auto":
+			return "AUTO", ""
+		case "required", "any":
+			return "ANY", ""
+		default:
+			return "", ""
+		}
+	case map[string]any:
+		kind, _ := choice["type"].(string)
+		if strings.ToLower(kind) != "function" {
+			return "", ""
+		}
+		function, _ := choice["function"].(map[string]any)
+		name, _ := function["name"].(string)
+		return "ANY", name
+	default:
+		return "", ""
+	}
 }
 
 // geminiCall is a function call the model asked for. Args stays raw so the
