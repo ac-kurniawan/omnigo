@@ -38,8 +38,9 @@ var sseProxyPool = sync.Pool{
 
 // maxSSELine bounds the inspected part of one SSE line so a malformed upstream
 // cannot grow the scan without limit. A longer line stops being inspected; its
-// bytes still reach the client untouched.
-const maxSSELine = 4 * 1024 * 1024
+// bytes still reach the client untouched. 50 MiB matches the bound the other
+// providers give a single line.
+const maxSSELine = 50 * 1024 * 1024
 
 // maxRetainedLine caps the accumulator capacity a pooled state keeps, so one
 // pathological line cannot pin memory in the pool forever.

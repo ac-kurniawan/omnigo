@@ -789,6 +789,44 @@ func TestProviderStreamWithoutTerminalEventIsIncomplete(t *testing.T) {
 	}
 }
 
+// A reasoning delta arrives as one SSE line, and a long one runs past a few
+// megabytes. The scanner must take a line past the old 4 MiB cap; below it the
+// stream dies with "token too long" wherever the delta happened to be.
+func TestProviderStreamSurvivesSSELinePastFourMegabytes(t *testing.T) {
+	prefix := "event: response.reasoning_summary_text.delta\ndata: {\"type\":\"response.reasoning_summary_text.delta\",\"delta\":\""
+	suffix := "\"}\n\nevent: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\n\n"
+	frame := io.MultiReader(
+		strings.NewReader(prefix),
+		io.LimitReader(repeatReader('a'), 4*1024*1024+64),
+		strings.NewReader(suffix),
+	)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.Copy(w, frame)
+	}))
+	defer server.Close()
+	store := &memoryCredStore{creds: provider.Credentials{AccessToken: "access", AccountID: "account", ExpiresAt: time.Now().Add(time.Hour)}}
+	p := New(provider.Config{Name: "codex", BaseURL: server.URL, Timeout: time.Second}, store)
+	rr := httptest.NewRecorder()
+	err := p.ChatCompletion(context.Background(), provider.ChatRequest{Model: "gpt", Stream: true, Raw: []byte(`{"messages":[{"role":"user","content":"hi"}]}`)}, rr)
+	if err != nil {
+		t.Fatalf("long reasoning delta failed the stream: %v", err)
+	}
+	if !strings.Contains(rr.Body.String(), "data: [DONE]") {
+		t.Fatal("long reasoning delta was not delivered whole")
+	}
+}
+
+// repeatReader yields the same byte forever; pair it with io.LimitReader.
+type repeatReader byte
+
+func (r repeatReader) Read(p []byte) (int, error) {
+	for i := range p {
+		p[i] = byte(r)
+	}
+	return len(p), nil
+}
+
 func TestProviderModelsUsesLiveCatalog(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/models.json" {

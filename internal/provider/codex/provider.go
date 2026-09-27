@@ -704,9 +704,15 @@ func writeSSEChunk(w io.Writer, chunk map[string]any) error {
 	return err
 }
 
+// maxSSELine is the longest SSE line the scanner will accept. A reasoning
+// delta arrives as one line, and a long one runs past a few megabytes; below
+// this the scanner ends the stream with "token too long" wherever that delta
+// happened to be. 50 MiB matches the bound the other providers use.
+const maxSSELine = 50 * 1024 * 1024
+
 func parseSSE(ctx context.Context, reader io.Reader, consume func(string, []byte) error) error {
 	scanner := bufio.NewScanner(reader)
-	scanner.Buffer(make([]byte, 64*1024), 4*1024*1024)
+	scanner.Buffer(make([]byte, 64*1024), maxSSELine)
 	var eventType string
 	var data strings.Builder
 	flush := func() error {
