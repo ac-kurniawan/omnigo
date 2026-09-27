@@ -112,23 +112,21 @@
        open-state rule (225deg + translateY(-50%)) still rotates it in place. */
     .collapse-arrow > .collapse-title::after { top: 50%; --tw-translate-y: -50%; }
 
-    /* Phone: tables become stacked cards. Desktop keeps the real table. */
-    .tab-nav { display: flex; width: 100%; flex-wrap: wrap; }
-    .tab-nav .tab-nav-btn { flex: 1 1 30%; }
-    @media (min-width: 640px) {
-      .tab-nav { width: fit-content; }
-      .tab-nav .tab-nav-btn { flex: 0 0 auto; }
-    }
+    /* Phone only. Everything here is under max-width so a later-loaded
+       stylesheet (daisyUI) cannot restyle the desktop table. */
     @media (max-width: 639px) {
+      .tab-nav { display: flex; width: 100%; flex-wrap: wrap; }
+      .tab-nav .tab-nav-btn { flex: 1 1 30%; }
       .phone-table { overflow: visible; }
       .phone-table table,
       .phone-table thead,
       .phone-table tbody,
       .phone-table tr,
       .phone-table th,
-      .phone-table td { display: block; width: 100%; }
+      .phone-table td { display: block !important; width: 100%; }
+      .phone-table dialog.modal:not([open]) { display: none !important; }
       .phone-table thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
-      .phone-table tbody { display: flex; flex-direction: column; gap: 0.75rem; }
+      .phone-table tbody { display: flex !important; flex-direction: column; gap: 0.75rem; }
       .phone-table tr {
         border: 1px solid oklch(var(--bc) / 0.1);
         border-radius: 0.75rem;
@@ -136,7 +134,7 @@
         padding: 0.25rem 0;
       }
       .phone-table td {
-        display: flex;
+        display: flex !important;
         flex-wrap: wrap;
         align-items: center;
         gap: 0.5rem;
@@ -170,6 +168,10 @@
       .modal-action { flex-wrap: wrap; gap: 0.5rem; }
       .toast { max-width: calc(100vw - 1rem); }
       pre, code, .mockup-code { max-width: 100%; overflow-x: auto; }
+    }
+    @media (min-width: 640px) {
+      .tab-nav { display: inline-flex; width: fit-content; flex-wrap: nowrap; }
+      .tab-nav .tab-nav-btn { flex: 0 0 auto; }
     }
     @media (prefers-reduced-motion: reduce) {
       *, *::before, *::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
@@ -272,7 +274,7 @@
           <svg xmlns="http://www.w3.org/2000/svg" class="size-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.066 2.573c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.573 1.066c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.066-2.573c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" /><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" /></svg>
           Settings
         </button>
-      </div>
+      </nav>
 
       <!-- Tab Panels -->
 
