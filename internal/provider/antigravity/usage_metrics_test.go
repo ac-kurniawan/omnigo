@@ -62,7 +62,7 @@ func TestAntigravityDropsUsageWhenResponseOmitsIt(t *testing.T) {
 
 func TestAntigravityDoesNotReportUsageOnIncompleteStream(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write([]byte("data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"cut\"}]}}],\"usageMetadata\":{\"promptTokenCount\":8,\"candidatesTokenCount\":2,\"totalTokenCount\":10}}\n\n"))
+		_, _ = w.Write([]byte("data: {\"candidates\":[],\"usageMetadata\":{\"promptTokenCount\":8,\"candidatesTokenCount\":0,\"totalTokenCount\":8}}\n\n"))
 	}))
 	defer srv.Close()
 	p := New(provider.Config{Name: "agy", BaseURL: srv.URL}, staticStore{provider.Credentials{
@@ -74,7 +74,7 @@ func TestAntigravityDoesNotReportUsageOnIncompleteStream(t *testing.T) {
 		Model: "gemini", Stream: true, Messages: []provider.Message{{Role: "user", Content: "hi"}},
 	}, httptest.NewRecorder())
 	if err == nil {
-		t.Fatal("incomplete stream returned success")
+		t.Fatal("empty stream returned success")
 	}
 	if got != 0 {
 		t.Fatalf("samples = %d, want none for an incomplete generation", got)

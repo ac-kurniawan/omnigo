@@ -93,14 +93,15 @@ func TestChatCompletionClosesUpstreamResponseBody(t *testing.T) {
 	}
 }
 
-// A stream that ends without a finish reason was cut off: the upstream closed
-// or reset before the generation completed. Reporting success and appending
-// [DONE] makes the client treat the truncated answer as final, so the gateway
-// must fail the attempt instead.
+// A stream that ends without a finish reason and without any generated content
+// was cut off before it started. Reporting success and appending [DONE] makes
+// the client treat that empty body as final, so the gateway must fail the
+// attempt instead. Content that arrived is a different case: the client already
+// has it, and the stream is closed with a finish reason.
 func TestStreamEndsWithoutFinishReasonIsIncomplete(t *testing.T) {
 	saved := UnaryClient().Transport
 	t.Cleanup(func() { SetHTTPTransport(saved) })
-	body := io.NopCloser(strings.NewReader("data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"partial\"}]}}]}\n\n"))
+	body := io.NopCloser(strings.NewReader(""))
 	transport := roundTripFunc(func(*http.Request) (*http.Response, error) {
 		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: body}, nil
 	})
@@ -146,12 +147,12 @@ type errReader struct{ err error }
 
 func (r errReader) Read([]byte) (int, error) { return 0, r.err }
 
-// The non-streaming path aggregates the same SSE feed, so a feed that closes
-// before a finish reason is a truncated answer too, not a short completion.
+// The non-streaming path aggregates the same SSE feed. A feed that closes
+// after content is a usable answer; a feed that closes with nothing is not.
 func TestCompleteEndsWithoutFinishReasonIsIncomplete(t *testing.T) {
 	saved := UnaryClient().Transport
 	t.Cleanup(func() { SetHTTPTransport(saved) })
-	body := io.NopCloser(strings.NewReader("data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"partial\"}]}}]}\n\n"))
+	body := io.NopCloser(strings.NewReader(""))
 	transport := roundTripFunc(func(*http.Request) (*http.Response, error) {
 		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: body}, nil
 	})
@@ -162,7 +163,74 @@ func TestCompleteEndsWithoutFinishReasonIsIncomplete(t *testing.T) {
 		Model: "gemini", Messages: []provider.Message{{Role: "user", Content: "hi"}},
 	}, httptest.NewRecorder())
 	if err == nil {
-		t.Fatal("completion ending without a finish reason was reported as success")
+		t.Fatal("empty completion was reported as success")
+	}
+}
+
+func TestCompleteWithContentAndNoFinishReasonSucceeds(t *testing.T) {
+	saved := UnaryClient().Transport
+	t.Cleanup(func() { SetHTTPTransport(saved) })
+	body := io.NopCloser(strings.NewReader("data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"partial\"}]}}]}\n\n"))
+	transport := roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: body}, nil
+	})
+	p := New(provider.Config{Name: "agy", BaseURL: "https://example.invalid", Transport: transport},
+		staticStore{provider.Credentials{AccessToken: "token", ProjectID: "p", ExpiresAt: time.Now().Add(time.Hour)}})
+
+	rr := httptest.NewRecorder()
+	err := p.ChatCompletion(context.Background(), provider.ChatRequest{
+		Model: "gemini", Messages: []provider.Message{{Role: "user", Content: "hi"}},
+	}, rr)
+	if err != nil {
+		t.Fatalf("content without finishReason was failed: %v", err)
+	}
+	if !strings.Contains(rr.Body.String(), `"content":"partial"`) || !strings.Contains(rr.Body.String(), `"finish_reason":"stop"`) {
+		t.Fatalf("body = %s", rr.Body.String())
+	}
+}
+
+func TestStreamWithContentAndNoFinishReasonCompletes(t *testing.T) {
+	saved := UnaryClient().Transport
+	t.Cleanup(func() { SetHTTPTransport(saved) })
+	body := io.NopCloser(strings.NewReader("data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"partial\"}]}}]}\n\n"))
+	transport := roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: body}, nil
+	})
+	p := New(provider.Config{Name: "agy", BaseURL: "https://example.invalid", Transport: transport},
+		staticStore{provider.Credentials{AccessToken: "token", ProjectID: "p", ExpiresAt: time.Now().Add(time.Hour)}})
+
+	rr := httptest.NewRecorder()
+	err := p.ChatCompletion(context.Background(), provider.ChatRequest{
+		Model: "gemini", Stream: true, Messages: []provider.Message{{Role: "user", Content: "hi"}},
+	}, rr)
+	if err != nil {
+		t.Fatalf("content without finishReason was failed: %v", err)
+	}
+	got := rr.Body.String()
+	if !strings.Contains(got, `"content":"partial"`) || !strings.Contains(got, `"finish_reason":"stop"`) || !strings.Contains(got, "data: [DONE]") {
+		t.Fatalf("truncated content was not closed: %s", got)
+	}
+}
+
+func TestEmptyStreamWithoutFinishReasonIsIncomplete(t *testing.T) {
+	saved := UnaryClient().Transport
+	t.Cleanup(func() { SetHTTPTransport(saved) })
+	body := io.NopCloser(strings.NewReader("data: {\"candidates\":[]}\n\n"))
+	transport := roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: body}, nil
+	})
+	p := New(provider.Config{Name: "agy", BaseURL: "https://example.invalid", Transport: transport},
+		staticStore{provider.Credentials{AccessToken: "token", ProjectID: "p", ExpiresAt: time.Now().Add(time.Hour)}})
+
+	rr := httptest.NewRecorder()
+	err := p.ChatCompletion(context.Background(), provider.ChatRequest{
+		Model: "gemini", Stream: true, Messages: []provider.Message{{Role: "user", Content: "hi"}},
+	}, rr)
+	if err == nil {
+		t.Fatal("empty stream was reported as success")
+	}
+	if strings.Contains(rr.Body.String(), "data: [DONE]") {
+		t.Fatalf("empty stream was closed with [DONE]: %s", rr.Body.String())
 	}
 }
 
