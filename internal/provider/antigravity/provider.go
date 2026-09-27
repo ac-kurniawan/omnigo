@@ -348,14 +348,17 @@ func aggregateSSE(r io.Reader) (generation, error) {
 	if err != nil {
 		return generation{}, err
 	}
-	// Same cut-off as the streaming path: a feed that closes without a finish
-	// reason is a truncated answer, not a short completion.
-	if !finished {
-		return generation{}, errors.New("antigravity: incomplete SSE response")
-	}
 	done.text = text.String()
 	done.thought = thought.String()
 	done.calls = calls
+	// A feed that closes after content is the answer the client already has.
+	// Closing with no content at all is a failure, not an empty completion.
+	if !finished {
+		if done.text == "" && done.thought == "" && len(done.calls) == 0 {
+			return generation{}, errors.New("antigravity: incomplete SSE response")
+		}
+		done.reason = finishReason("", len(done.calls))
+	}
 	return done, nil
 }
 
@@ -363,6 +366,7 @@ func (p *Provider) streamToOpenAI(ctx context.Context, r io.Reader, account prov
 	w.Header().Set("Content-Type", "text/event-stream")
 	flusher, _ := w.(http.Flusher)
 	finished := false
+	produced := false
 	var usage provider.TokenUsage
 	calls := 0
 	err := scanSSE(r, func(body geminiBody) error {
@@ -385,6 +389,7 @@ func (p *Provider) streamToOpenAI(ctx context.Context, r io.Reader, account prov
 		if len(out) == 0 {
 			return nil
 		}
+		produced = true
 		if _, err := w.Write(out); err != nil {
 			return err
 		}
@@ -396,15 +401,26 @@ func (p *Provider) streamToOpenAI(ctx context.Context, r io.Reader, account prov
 	if err != nil {
 		return err
 	}
-	// A stream that ends without a finish reason was cut off: the upstream
-	// closed before the generation completed. Closing it with [DONE] would make
-	// the client treat the truncated answer as final, so fail the attempt
-	// instead and let the combo fail over.
-	if !finished {
+	// Content already delivered is the answer. Only a stream that produced
+	// nothing and never finished is a failure the combo can retry.
+	if !finished && !produced {
 		return errors.New("antigravity: incomplete SSE response")
 	}
 	usage.Account = account.Identity()
 	provider.ReportUsage(ctx, usage)
+	if !finished {
+		reason := "stop"
+		if calls > 0 {
+			reason = "tool_calls"
+		}
+		record, err := sseChunk(map[string]any{}, reason, nil)
+		if err != nil {
+			return err
+		}
+		if _, err := w.Write(record); err != nil {
+			return err
+		}
+	}
 	if _, err := w.Write([]byte("data: [DONE]\n\n")); err != nil {
 		return err
 	}
