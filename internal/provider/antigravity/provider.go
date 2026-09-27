@@ -29,6 +29,13 @@ type Provider struct {
 	tokens        sync.Map
 }
 
+// maxSSELine is the longest Gemini SSE line the scanner will accept. Thinking
+// frames arrive as one line, and a long thought runs past a megabyte; the
+// scanner's default cap then ends the stream with "token too long" wherever
+// the thought happened to be. 50 MiB matches the bound CLIProxyAPI gives the
+// same upstream.
+const maxSSELine = 50 * 1024 * 1024
+
 var sseBufferPool = sync.Pool{
 	New: func() any {
 		b := make([]byte, 64*1024)
@@ -437,7 +444,7 @@ func scanSSE(r io.Reader, consume func(geminiBody) error) error {
 	scanner := bufio.NewScanner(r)
 	bufp := sseBufferPool.Get().(*[]byte)
 	defer sseBufferPool.Put(bufp)
-	scanner.Buffer((*bufp)[:0], 1024*1024)
+	scanner.Buffer((*bufp)[:0], maxSSELine)
 	for scanner.Scan() {
 		line := scanner.Text()
 		if !strings.HasPrefix(line, "data:") {
