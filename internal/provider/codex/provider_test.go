@@ -806,7 +806,12 @@ func TestProviderStreamSurvivesSSELinePastFourMegabytes(t *testing.T) {
 	}))
 	defer server.Close()
 	store := &memoryCredStore{creds: provider.Credentials{AccessToken: "access", AccountID: "account", ExpiresAt: time.Now().Add(time.Hour)}}
-	p := New(provider.Config{Name: "codex", BaseURL: server.URL, Timeout: time.Second}, store)
+	// The deadline here is incidental to what this test asserts (the scanner's
+	// line bound), and a 1s client timeout is only ~2x the time this 4 MiB
+	// loopback transfer takes under -race on an idle machine. A loaded runner
+	// blows through it and the test fails with "context canceled" instead of
+	// exercising the bound at all.
+	p := New(provider.Config{Name: "codex", BaseURL: server.URL, Timeout: 30 * time.Second}, store)
 	rr := httptest.NewRecorder()
 	err := p.ChatCompletion(context.Background(), provider.ChatRequest{Model: "gpt", Stream: true, Raw: []byte(`{"messages":[{"role":"user","content":"hi"}]}`)}, rr)
 	if err != nil {
