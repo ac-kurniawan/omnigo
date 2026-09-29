@@ -716,7 +716,7 @@
               <span>W3C &amp; OpenTelemetry Diagnostics</span>
               <span id="telemetry-timer" class="font-mono text-primary font-bold"></span>
             </div>
-            <div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-6 gap-3 text-xs">
+            <div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-7 gap-3 text-xs">
               <div class="space-y-0.5">
                 <div class="text-base-content/60 text-[10px]">HTTP Status</div>
                 <div id="telemetry-status" class="font-mono font-bold">-</div>
@@ -732,6 +732,10 @@
               <div class="space-y-0.5">
                 <div class="text-base-content/60 text-[10px]">TTFT (First Token)</div>
                 <div id="telemetry-ttft" class="font-mono text-secondary font-bold">-</div>
+              </div>
+              <div class="space-y-0.5">
+                <div class="text-base-content/60 text-[10px]">Throughput (gen tok/s)</div>
+                <div id="telemetry-tps" class="font-mono text-success font-bold">-</div>
               </div>
               <div class="space-y-0.5">
                 <div class="text-base-content/60 text-[10px]">Total Latency</div>
@@ -1301,6 +1305,26 @@
       return Array.from(b, byte => byte.toString(16).padStart(2, '0')).join('');
     }
 
+    // --- Generation throughput (tokens/sec) ---
+    // Measured over the decode window (first token -> last token), so TTFT stays
+    // its own metric. A live rate is estimated from output characters until the
+    // provider's final usage frame delivers an exact completion_tokens count.
+    const TPS_WARMUP_MS = 500;   // tiny denominators before this are pure noise
+    const TPS_PAINT_MS = 250;    // repaint throttle
+    const estimateTokens = (text) => Math.ceil(text.length / 4);
+
+    function tpsText(tokens, elapsedMs, opts) {
+      const rate = Math.round(tokens / (Math.max(elapsedMs, 1) / 1000));
+      return `${opts.exact ? '' : '~'}${rate} tok/s${opts.partial ? ' (partial)' : ''}`;
+    }
+
+    function renderFinalTps(el, state, partial) {
+      if (!el || !state.genStart) return;
+      const exact = state.exactTokens > 0;
+      const tokens = exact ? state.exactTokens : state.estTokens;
+      el.innerText = tpsText(tokens, performance.now() - state.genStart, { exact, partial });
+    }
+
     async function sendPlaygroundRequest() {
       const keyInput = document.getElementById('playground-key');
       const modelSelect = document.getElementById('playground-model');
@@ -1316,6 +1340,7 @@
       const providerEl = document.getElementById('telemetry-provider');
       const modelEl = document.getElementById('telemetry-model');
       const ttftEl = document.getElementById('telemetry-ttft');
+      const tpsEl = document.getElementById('telemetry-tps');
       const durationEl = document.getElementById('telemetry-duration');
       const traceidEl = document.getElementById('telemetry-traceid');
 
@@ -1340,7 +1365,10 @@
       const payload = {
         model: model,
         messages: [{ role: 'user', content: prompt }],
-        stream: true
+        stream: true,
+        // Ask OpenAI-compatible upstreams to append an exact usage frame to the
+        // stream; antigravity/codex already emit one unconditionally.
+        stream_options: { include_usage: true }
       };
       if (requestJSON) requestJSON.innerText = JSON.stringify(payload, null, 2);
 
@@ -1354,6 +1382,7 @@
       providerEl.innerText = '-';
       modelEl.innerText = '-';
       ttftEl.innerText = '-';
+      tpsEl.innerText = '-';
       durationEl.innerText = '-';
 
       // W3C TraceContext
@@ -1362,6 +1391,9 @@
       const traceparent = `00-${traceId}-${spanId}-01`;
       traceidEl.innerText = traceId;
       traceidEl.dataset.fullTrace = traceparent;
+
+      // Generation-throughput state; survives into the catch/abort paths.
+      const tps = { genStart: 0, estTokens: 0, exactTokens: 0, lastPaint: 0, streamError: false };
 
       sendBtn?.classList.add('hidden');
       abortBtn?.classList.remove('hidden');
@@ -1456,19 +1488,35 @@
 
             try {
               const parsed = JSON.parse(dataContent);
+              // The gateway injects {"error":...} on an upstream death after
+              // the response was already committed; without failover there is
+              // no second target, so the run ends truncated.
+              if (parsed.error) tps.streamError = true;
+              if (Number(parsed.usage?.completion_tokens) > 0) {
+                tps.exactTokens = Number(parsed.usage.completion_tokens);
+              }
               const delta = parsed.choices?.[0]?.delta?.content;
               if (delta) {
                 if (firstChunk) {
                   firstChunk = false;
                   const ttft = Math.round(performance.now() - t0);
                   ttftEl.innerText = `${ttft}ms`;
+                  tps.genStart = performance.now();
+                  tps.lastPaint = tps.genStart;
                 }
                 accumulatedText += delta;
                 receivedChunks++;
+                tps.estTokens = estimateTokens(accumulatedText);
                 if (chunkCountEl) chunkCountEl.innerText = receivedChunks;
                 if (outputContainer) {
                   outputContainer.innerText = accumulatedText;
                   outputContainer.scrollTop = outputContainer.scrollHeight;
+                }
+                const now = performance.now();
+                const elapsed = now - tps.genStart;
+                if (elapsed >= TPS_WARMUP_MS && now - tps.lastPaint >= TPS_PAINT_MS) {
+                  tps.lastPaint = now;
+                  tpsEl.innerText = tpsText(tps.estTokens, elapsed, { exact: false, partial: false });
                 }
               }
             } catch (_) {}
@@ -1477,6 +1525,14 @@
 
         const dur = ((performance.now() - t0) / 1000).toFixed(2);
         durationEl.innerText = `${dur}s`;
+        renderFinalTps(tpsEl, tps, tps.streamError);
+        if (tps.streamError) {
+          statusEl.innerText = 'Failed (stream error)';
+          statusEl.className = 'font-mono font-bold text-error';
+          if (outputContainer) {
+            outputContainer.innerText += '\n\n[Stream failed: upstream error mid-generation]';
+          }
+        }
 
       } catch (err) {
         if (err.name === 'AbortError') {
@@ -1490,6 +1546,7 @@
           statusEl.className = 'font-mono font-bold text-error';
           showToast('error', `Network/Fetch Error: ${err.message}`);
         }
+        renderFinalTps(tpsEl, tps, true);
         const dur = ((performance.now() - t0) / 1000).toFixed(2);
         durationEl.innerText = `${dur}s`;
       } finally {
