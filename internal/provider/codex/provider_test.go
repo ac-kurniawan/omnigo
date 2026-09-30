@@ -1,10 +1,12 @@
 package codex
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"io"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -1096,4 +1098,65 @@ func (r *probeRecorder) delivered() string {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.body.String()
+}
+
+// Every upstream 4xx/5xx must leave a warning in the operator log carrying the
+// upstream error message, redacted, not just the status code.
+func TestChatLogsWarningOnUpstreamError(t *testing.T) {
+	var buf bytes.Buffer
+	old := log.Writer()
+	log.SetOutput(&buf)
+	t.Cleanup(func() { log.SetOutput(old) })
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = io.WriteString(w, `upstream exploded: token=abc123secret`)
+	}))
+	defer server.Close()
+	store := &memoryCredStore{creds: provider.Credentials{AccessToken: "access", AccountID: "account", ExpiresAt: time.Now().Add(time.Hour)}}
+	p := New(provider.Config{Name: "codex", BaseURL: server.URL, Timeout: time.Second}, store)
+	err := p.ChatCompletion(context.Background(), provider.ChatRequest{Model: "gpt", Raw: []byte(`{"messages":[{"role":"user","content":"hi"}]}`)}, httptest.NewRecorder())
+	if err == nil || err.Error() != "codex: upstream status 500" {
+		t.Fatalf("err = %v, want unchanged status-only message", err)
+	}
+	out := buf.String()
+	for _, want := range []string{"[warn] upstream status=500", `provider="codex"`, `model="gpt"`, `account="account"`, "upstream exploded"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("log missing %q, got: %s", want, out)
+		}
+	}
+	if strings.Contains(out, "abc123secret") {
+		t.Fatalf("log leaks upstream credential: %s", out)
+	}
+}
+
+// A 429 quota response is an upstream error response too and used to be
+// completely silent.
+func TestChatLogsWarningOnRateLimit(t *testing.T) {
+	var buf bytes.Buffer
+	old := log.Writer()
+	log.SetOutput(&buf)
+	t.Cleanup(func() { log.SetOutput(old) })
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Retry-After", "120")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = io.WriteString(w, `{"error":{"message":"exhausted: token=abc123secret"}}`)
+	}))
+	defer server.Close()
+	store := &memoryCredStore{creds: provider.Credentials{AccessToken: "access", AccountID: "account", ExpiresAt: time.Now().Add(time.Hour)}}
+	p := New(provider.Config{Name: "codex", BaseURL: server.URL, Timeout: time.Second}, store)
+	err := p.ChatCompletion(context.Background(), provider.ChatRequest{Model: "gpt", Raw: []byte(`{"messages":[{"role":"user","content":"hi"}]}`)}, httptest.NewRecorder())
+	if err == nil {
+		t.Fatal("429 must fail the attempt")
+	}
+	out := buf.String()
+	for _, want := range []string{"[warn] upstream status=429", "exhausted"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("log missing %q, got: %s", want, out)
+		}
+	}
+	if strings.Contains(out, "abc123secret") {
+		t.Fatalf("log leaks upstream credential: %s", out)
+	}
 }

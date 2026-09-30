@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -572,5 +573,38 @@ func TestOpenAITest(t *testing.T) {
 	}
 	if res.LatencyMS < 0 || res.LatencyMS > time.Since(start).Milliseconds()+5 {
 		t.Fatalf("latency = %dms", res.LatencyMS)
+	}
+}
+
+// Every upstream 4xx/5xx must leave a warning in the operator log carrying the
+// upstream error message, redacted, not just the status code.
+func TestOpenAIChatLogsWarningOnUpstreamError(t *testing.T) {
+	var buf bytes.Buffer
+	old := log.Writer()
+	log.SetOutput(&buf)
+	t.Cleanup(func() { log.SetOutput(old) })
+
+	p := newOpenAI(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadGateway)
+		_, _ = w.Write([]byte(`{"error":{"message":"boom from upstream: token=abc123secret"}}`))
+	}))
+	rec := httptest.NewRecorder()
+	req := ChatRequest{Model: "gpt-4o", Messages: []Message{{Role: "user", Content: "hi"}}}
+	err := p.ChatCompletion(context.Background(), req, rec)
+	var status interface{ HTTPStatus() int }
+	if !errors.As(err, &status) || status.HTTPStatus() != http.StatusBadGateway {
+		t.Fatalf("err = %v, want HTTPStatusError 502", err)
+	}
+	if err.Error() != "upstream status 502" {
+		t.Fatalf("err = %q, want unchanged status-only message", err)
+	}
+	out := buf.String()
+	for _, want := range []string{"[warn] upstream status=502", `provider="openai"`, `model="gpt-4o"`, "boom from upstream"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("log missing %q, got: %s", want, out)
+		}
+	}
+	if strings.Contains(out, "abc123secret") {
+		t.Fatalf("log leaks upstream credential: %s", out)
 	}
 }

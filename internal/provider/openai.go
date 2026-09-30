@@ -196,6 +196,12 @@ func (p *openAIProvider) ChatCompletion(ctx context.Context, req ChatRequest, w 
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
+		if resp.StatusCode >= http.StatusBadRequest {
+			// One warning per upstream error response; the client-facing
+			// message stays status-only because upstream bodies can embed
+			// credentials, so only the redacted snippet goes to the log.
+			WarnUpstreamError(p.name, req.Model, "", resp.StatusCode, UpstreamSnippet(resp.Body))
+		}
 		return NewHTTPStatusError(resp.StatusCode, fmt.Sprintf("upstream status %d", resp.StatusCode))
 	}
 	copyResponseHeaders(w.Header(), resp.Header)
