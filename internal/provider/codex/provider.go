@@ -22,13 +22,13 @@ import (
 const (
 	DefaultResponsesURL = "https://chatgpt.com/backend-api/codex/responses"
 	DefaultModelsURL    = "https://raw.githubusercontent.com/openai/codex/main/codex-rs/models-manager/models.json"
-	ClientVersion       = "0.154.0"
+	ClientVersion       = "0.155.0"
 	Originator          = "codex_cli_rs"
 	UserAgent           = Originator + "/" + ClientVersion + " (OmniGo)"
 	BetaVersion         = "responses=experimental"
 )
 
-var DefaultModels = []string{"gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5", "gpt-5.2"}
+var DefaultModels = []string{"gpt-6.1-sol", "gpt-6-astra", "gpt-6-sol", "gpt-6-luna", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5", "gpt-5.2"}
 
 type Provider struct {
 	name          string
@@ -45,6 +45,8 @@ type Provider struct {
 	quotaMu       sync.RWMutex
 	quotaObserver func(quota.AccountSnapshot)
 	capturedQuota map[string]quota.AccountSnapshot
+	profileMu     sync.RWMutex
+	profiles      map[string]modelProfile
 }
 type streamState struct {
 	id             string
@@ -131,16 +133,22 @@ func (p *Provider) Models(ctx context.Context) ([]provider.Model, error) {
 	}
 	var catalog struct {
 		Models []struct {
-			Slug           string `json:"slug"`
-			DisplayName    string `json:"display_name"`
-			Visibility     string `json:"visibility"`
-			SupportedInAPI bool   `json:"supported_in_api"`
+			Slug                     string `json:"slug"`
+			DisplayName              string `json:"display_name"`
+			Visibility               string `json:"visibility"`
+			SupportedInAPI           bool   `json:"supported_in_api"`
+			UseResponsesLite         bool   `json:"use_responses_lite"`
+			DefaultReasoningLevel    string `json:"default_reasoning_level"`
+			SupportedReasoningLevels []struct {
+				Effort string `json:"effort"`
+			} `json:"supported_reasoning_levels"`
 		} `json:"models"`
 	}
 	if err := json.NewDecoder(io.LimitReader(resp.Body, 4<<20)).Decode(&catalog); err != nil {
 		return fallback, nil
 	}
 	models := make([]provider.Model, 0, len(catalog.Models))
+	profiles := make(map[string]modelProfile, len(catalog.Models))
 	seen := make(map[string]bool, len(catalog.Models))
 	for _, model := range catalog.Models {
 		if model.Slug == "" || model.Visibility != "list" || !model.SupportedInAPI || seen[model.Slug] {
@@ -152,19 +160,23 @@ func (p *Provider) Models(ctx context.Context) ([]provider.Model, error) {
 			name = model.Slug
 		}
 		models = append(models, provider.Model{ID: model.Slug, Name: name})
+		levels := make([]string, 0, len(model.SupportedReasoningLevels))
+		for _, level := range model.SupportedReasoningLevels {
+			levels = append(levels, level.Effort)
+		}
+		profiles[model.Slug] = modelProfile{
+			Lite:    model.UseResponsesLite,
+			Levels:  levels,
+			Default: model.DefaultReasoningLevel,
+		}
 	}
 	if len(models) == 0 {
 		return fallback, nil
 	}
+	p.profileMu.Lock()
+	p.profiles = profiles
+	p.profileMu.Unlock()
 	return models, nil
-}
-
-func fallbackModels() []provider.Model {
-	models := make([]provider.Model, 0, len(DefaultModels))
-	for _, id := range DefaultModels {
-		models = append(models, provider.Model{ID: id, Name: id})
-	}
-	return models
 }
 
 // Test is the dashboard's connection check. Ensuring a stored token is merely
