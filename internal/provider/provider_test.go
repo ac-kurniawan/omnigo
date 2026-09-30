@@ -2,6 +2,7 @@ package provider
 
 import (
 	"encoding/json"
+	"sync"
 	"testing"
 )
 
@@ -123,6 +124,82 @@ func TestChatRequestBodyReusesParsedPayloadAndCachesEncodedBytes(t *testing.T) {
 	messages = parsed["messages"].([]any)
 	if messages[0].(map[string]any)["role"] != "developer" {
 		t.Fatalf("shared payload role mutated: %#v", messages)
+	}
+}
+
+func TestChatRequestBodyConcurrentCallsAreRaceFree(t *testing.T) {
+	raw := []byte(`{"model":"auto","messages":[{"role":"developer","content":"system instructions"},{"role":"user","content":"hi"}],"temperature":0.2}`)
+	parsed := ParseBody(raw)
+	if parsed == nil {
+		t.Fatal("ParseBody returned nil for valid request")
+	}
+
+	const goroutines = 32
+	models := []string{"gpt-a", "gpt-b"}
+	var wg sync.WaitGroup
+	errCh := make(chan error, goroutines*len(models))
+	bodies := make([][][]byte, len(models))
+	for i := range bodies {
+		bodies[i] = make([][]byte, goroutines)
+	}
+
+	for m, model := range models {
+		for g := 0; g < goroutines; g++ {
+			wg.Add(1)
+			go func(m, g int, model string) {
+				defer wg.Done()
+				req := ChatRequest{Model: model, Raw: raw, Parsed: parsed}
+				body, err := req.Body()
+				if err != nil {
+					errCh <- err
+					return
+				}
+				bodies[m][g] = body
+			}(m, g, model)
+		}
+	}
+	wg.Wait()
+	close(errCh)
+	for err := range errCh {
+		t.Fatalf("Body: %v", err)
+	}
+
+	for m, model := range models {
+		var first []byte
+		for g := 0; g < goroutines; g++ {
+			body := bodies[m][g]
+			if len(body) == 0 {
+				t.Fatalf("model %s goroutine %d returned empty body", model, g)
+			}
+			if first == nil {
+				first = body
+				continue
+			}
+			if &body[0] != &first[0] {
+				t.Fatalf("model %s did not share encoded bytes", model)
+			}
+			if string(body) != string(first) {
+				t.Fatalf("model %s encoded %q, want %q", model, body, first)
+			}
+		}
+		var got struct {
+			Model    string `json:"model"`
+			Messages []struct {
+				Role string `json:"role"`
+			} `json:"messages"`
+		}
+		if err := json.Unmarshal(first, &got); err != nil {
+			t.Fatalf("unmarshal %s: %v", model, err)
+		}
+		if got.Model != model {
+			t.Fatalf("model = %q, want %q", got.Model, model)
+		}
+		if len(got.Messages) != 2 || got.Messages[0].Role != "system" {
+			t.Fatalf("developer role not normalized for %s: %+v", model, got.Messages)
+		}
+	}
+	if &bodies[0][0][0] == &bodies[1][0][0] {
+		t.Fatal("different models shared encoded bytes")
 	}
 }
 func TestHTTPStatusErrorDrainability(t *testing.T) {
