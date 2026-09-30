@@ -1,9 +1,11 @@
 package provider
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -39,6 +41,82 @@ func TestOpenAIChatRewritesModelInForwardedBody(t *testing.T) {
 	}
 	if gotModel != "routers9/deepseek-v4-flash-0731" {
 		t.Fatalf("upstream model = %q, want bare resolved id", gotModel)
+	}
+}
+
+func TestOpenAIChatForwardsUnchangedRawBody(t *testing.T) {
+	raw := []byte("{\"model\":\"gpt-4o\",\"temperature\":0.10,\"messages\":[{\"role\":\"user\",\"content\":\"hi\",\"name\":\"Ada\"}],\"stream\":false}")
+	var got []byte
+	p := newOpenAI(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var err error
+		got, err = io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("read upstream body: %v", err)
+		}
+		w.Write([]byte(`{}`))
+	}))
+	req := ChatRequest{Model: "gpt-4o", Raw: raw, Parsed: ParseBody(raw)}
+	if err := p.ChatCompletion(context.Background(), req, httptest.NewRecorder()); err != nil {
+		t.Fatalf("ChatCompletion: %v", err)
+	}
+	if !bytes.Equal(got, raw) {
+		t.Fatalf("upstream body = %s, want original raw bytes %s", got, raw)
+	}
+}
+
+func TestOpenAIChatRewrittenModelPreservesOtherFields(t *testing.T) {
+	raw := []byte(`{"model":"openai/gpt-4o","temperature":0.10,"messages":[{"role":"user","content":"see the developer notes"}],"stream":false}`)
+	var got map[string]any
+	p := newOpenAI(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+			t.Errorf("decode upstream body: %v", err)
+		}
+		w.Write([]byte(`{}`))
+	}))
+	req := ChatRequest{Model: "gpt-4o", Raw: raw, Parsed: ParseBody(raw)}
+	if err := p.ChatCompletion(context.Background(), req, httptest.NewRecorder()); err != nil {
+		t.Fatalf("ChatCompletion: %v", err)
+	}
+	if got["model"] != "gpt-4o" {
+		t.Fatalf("model = %#v, want resolved id", got["model"])
+	}
+	if got["temperature"] != 0.10 {
+		t.Fatalf("temperature = %#v", got["temperature"])
+	}
+	messages, _ := got["messages"].([]any)
+	if len(messages) != 1 {
+		t.Fatalf("messages = %#v", got["messages"])
+	}
+	message, _ := messages[0].(map[string]any)
+	if message["role"] != "user" || message["content"] != "see the developer notes" {
+		t.Fatalf("message = %#v", message)
+	}
+}
+
+func TestOpenAIChatRewritesDeveloperMessageRole(t *testing.T) {
+	raw := []byte(`{"model":"gpt-4o","messages":[{"role":"developer","content":"instructions"},{"role":"user","content":"a developer said hi"}]}`)
+	var got map[string]any
+	p := newOpenAI(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+			t.Errorf("decode upstream body: %v", err)
+		}
+		w.Write([]byte(`{}`))
+	}))
+	req := ChatRequest{Model: "gpt-4o", Raw: raw, Parsed: ParseBody(raw)}
+	if err := p.ChatCompletion(context.Background(), req, httptest.NewRecorder()); err != nil {
+		t.Fatalf("ChatCompletion: %v", err)
+	}
+	messages, _ := got["messages"].([]any)
+	if len(messages) != 2 {
+		t.Fatalf("messages = %#v", got["messages"])
+	}
+	first, _ := messages[0].(map[string]any)
+	second, _ := messages[1].(map[string]any)
+	if first["role"] != "system" || first["content"] != "instructions" {
+		t.Fatalf("developer role = %#v, want system", first)
+	}
+	if second["role"] != "user" || second["content"] != "a developer said hi" {
+		t.Fatalf("user message = %#v", second)
 	}
 }
 
