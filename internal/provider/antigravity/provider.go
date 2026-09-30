@@ -181,7 +181,7 @@ func (p *Provider) chatWithAccount(ctx context.Context, req provider.ChatRequest
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode == http.StatusTooManyRequests {
-		snippet := readUpstreamSnippet(resp.Body)
+		snippet := provider.UpstreamSnippet(resp.Body)
 		err := newRateLimitError(resp.Header, snippet)
 		log.Printf("[rate-limited] provider=%q account=%q model=%q retry-after=%s cooldown=%s upstream=%q",
 			p.name, rateLimitAccountLabel(account), req.Model, retryAfterLabel(resp.Header), err.(*rateLimitError).Cooldown().Round(time.Second), err.(*rateLimitError).detail)
@@ -189,6 +189,13 @@ func (p *Provider) chatWithAccount(ctx context.Context, req provider.ChatRequest
 	}
 
 	if resp.StatusCode != http.StatusOK {
+		if resp.StatusCode >= http.StatusBadRequest {
+			// One warning per upstream error response; the client-facing
+			// message stays status-only because upstream bodies can embed
+			// credentials, so only the redacted snippet goes to the log.
+			// 429 already logs above with richer rate-limit detail.
+			provider.WarnUpstreamError(p.name, req.Model, rateLimitAccountLabel(account), resp.StatusCode, provider.UpstreamSnippet(resp.Body))
+		}
 		return provider.NewHTTPStatusError(resp.StatusCode, fmt.Sprintf("antigravity: status %d", resp.StatusCode))
 	}
 	body := guard.Wrap(resp.Body)
@@ -196,21 +203,6 @@ func (p *Provider) chatWithAccount(ctx context.Context, req provider.ChatRequest
 		return p.completeToOpenAI(ctx, body, req.Model, account, w)
 	}
 	return p.streamToOpenAI(ctx, body, account, w)
-}
-
-// maxUpstreamSnippetBytes caps how much of a 429 body is read for diagnostics.
-// The error text is a small JSON status; a larger read only risks a hostile
-// upstream filling memory on an error path.
-const maxUpstreamSnippetBytes = 4096
-
-// readUpstreamSnippet drains a bounded prefix of an error body for logging and
-// for the client-facing rate-limit message.
-func readUpstreamSnippet(r io.Reader) string {
-	raw, err := io.ReadAll(io.LimitReader(r, maxUpstreamSnippetBytes))
-	if err != nil {
-		return ""
-	}
-	return string(raw)
 }
 
 func retryAfterLabel(headers http.Header) string {
@@ -257,6 +249,7 @@ func (p *Provider) sendStreamRequest(ctx context.Context, c provider.Credentials
 		return nil, err
 	}
 	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+		provider.WarnUpstreamError(p.name, req.Model, rateLimitAccountLabel(c), resp.StatusCode, provider.UpstreamSnippet(resp.Body))
 		return resp, provider.NewHTTPStatusError(resp.StatusCode, fmt.Sprintf("antigravity: status %d", resp.StatusCode))
 	}
 	return resp, nil

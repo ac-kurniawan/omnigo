@@ -290,7 +290,7 @@ func (p *Provider) chatWithAccount(ctx context.Context, req provider.ChatRequest
 	guard := provider.NewIdleGuard(p.idle, provider.StreamBudget(p.streamTimeout, req.Stream), func() { cancel(provider.ErrUpstreamStall) })
 	defer guard.Stop()
 	sessionID := randomID()
-	resp, err := p.send(ctx, creds, body, sessionID, req.Stream)
+	resp, err := p.send(ctx, creds, body, sessionID, req.Model, req.Stream)
 	if err != nil {
 		return guard.Err(err)
 	}
@@ -300,7 +300,7 @@ func (p *Provider) chatWithAccount(ctx context.Context, req provider.ChatRequest
 		if err != nil {
 			return err
 		}
-		resp, err = p.send(ctx, creds, body, sessionID, req.Stream)
+		resp, err = p.send(ctx, creds, body, sessionID, req.Model, req.Stream)
 		if err != nil {
 			return guard.Err(err)
 		}
@@ -332,7 +332,7 @@ func (p *Provider) tokenManager(account provider.Credentials) *TokenManager {
 	return manager.(*TokenManager)
 }
 
-func (p *Provider) send(ctx context.Context, creds provider.Credentials, body []byte, sessionID string, streaming bool) (*http.Response, error) {
+func (p *Provider) send(ctx context.Context, creds provider.Credentials, body []byte, sessionID string, model string, streaming bool) (*http.Response, error) {
 	if creds.AccessToken == "" {
 		return nil, fmt.Errorf("codex: not authenticated")
 	}
@@ -359,6 +359,12 @@ func (p *Provider) send(ctx context.Context, creds provider.Credentials, body []
 			return nil, err
 		}
 		return nil, fmt.Errorf("codex: upstream request failed")
+	}
+	if resp.StatusCode >= http.StatusBadRequest {
+		// One warning per upstream error response; the client-facing message
+		// stays status-only because upstream bodies can embed credentials,
+		// so only the redacted snippet goes to the log.
+		provider.WarnUpstreamError(p.name, model, creds.AccountID, resp.StatusCode, provider.UpstreamSnippet(resp.Body))
 	}
 	return resp, nil
 }
