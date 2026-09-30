@@ -1074,3 +1074,64 @@ func (r *probeRecorder) delivered() string {
 	defer r.mu.Unlock()
 	return r.body.String()
 }
+
+// Non-429 upstream failures used to be silent: the client saw
+// "antigravity: status 500" and the operator log had nothing. Every upstream
+// 4xx/5xx must warn with the upstream message, redacted, not just the status.
+func TestChatLogsWarningOnUpstreamError(t *testing.T) {
+	var buf bytes.Buffer
+	old := log.Writer()
+	log.SetOutput(&buf)
+	t.Cleanup(func() { log.SetOutput(old) })
+
+	saved := UnaryClient().Transport
+	t.Cleanup(func() { SetHTTPTransport(saved) })
+	body := io.NopCloser(strings.NewReader(`upstream exploded: token=abc123secret`))
+	transport := roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: http.StatusInternalServerError, Header: make(http.Header), Body: body}, nil
+	})
+	p := New(provider.Config{Name: "agy", BaseURL: "https://example.invalid", Transport: transport}, staticStore{provider.Credentials{AccessToken: "token", ProjectID: "p", ExpiresAt: time.Now().Add(time.Hour)}})
+	err := p.ChatCompletion(context.Background(), provider.ChatRequest{Model: "gemini", Messages: []provider.Message{{Role: "user", Content: "hi"}}}, httptest.NewRecorder())
+	if err == nil || err.Error() != "antigravity: status 500" {
+		t.Fatalf("err = %v, want unchanged status-only message", err)
+	}
+	out := buf.String()
+	for _, want := range []string{"[warn] upstream status=500", `provider="agy"`, `model="gemini"`, "upstream exploded"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("log missing %q, got: %s", want, out)
+		}
+	}
+	if strings.Contains(out, "abc123secret") {
+		t.Fatalf("log leaks upstream credential: %s", out)
+	}
+}
+
+// A 401/403 that triggers the token-refresh dance is still an upstream error
+// response: it must warn too, once per upstream response.
+func TestChatLogsWarningOnAuthStatusBeforeRefresh(t *testing.T) {
+	var buf bytes.Buffer
+	old := log.Writer()
+	log.SetOutput(&buf)
+	t.Cleanup(func() { log.SetOutput(old) })
+
+	saved := UnaryClient().Transport
+	t.Cleanup(func() { SetHTTPTransport(saved) })
+	body := io.NopCloser(strings.NewReader(`{"error":{"code":401,"message":"UNAUTHENTICATED: token=abc123secret"}}`))
+	transport := roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: http.StatusUnauthorized, Header: make(http.Header), Body: body}, nil
+	})
+	p := New(provider.Config{Name: "agy", BaseURL: "https://example.invalid", Transport: transport}, staticStore{provider.Credentials{AccessToken: "token", ProjectID: "p", ExpiresAt: time.Now().Add(time.Hour)}})
+	err := p.ChatCompletion(context.Background(), provider.ChatRequest{Model: "gemini", Messages: []provider.Message{{Role: "user", Content: "hi"}}}, httptest.NewRecorder())
+	if err == nil || err.Error() != "antigravity: status 401" {
+		t.Fatalf("err = %v, want unchanged status-only message", err)
+	}
+	out := buf.String()
+	for _, want := range []string{"[warn] upstream status=401", `provider="agy"`, "UNAUTHENTICATED"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("log missing %q, got: %s", want, out)
+		}
+	}
+	if strings.Contains(out, "abc123secret") {
+		t.Fatalf("log leaks upstream credential: %s", out)
+	}
+}
