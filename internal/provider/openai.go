@@ -140,8 +140,43 @@ func (p *openAIProvider) Test(ctx context.Context) TestResult {
 	return res
 }
 
+// upstreamBody posts the original raw JSON when it is already a valid OpenAI
+// body for this request: the model id matches and no message role is
+// "developer". A model override or a developer role still goes through Body,
+// which rewrites those fields. Codex and Antigravity do not use this path.
+func upstreamBody(req ChatRequest) ([]byte, error) {
+	if canForwardRaw(req) {
+		return req.Raw, nil
+	}
+	return req.Body()
+}
+
+func canForwardRaw(req ChatRequest) bool {
+	if len(req.Raw) == 0 || req.Parsed == nil {
+		return false
+	}
+	model, ok := req.Parsed["model"].(string)
+	if !ok || model != req.Model {
+		return false
+	}
+	messages, ok := req.Parsed["messages"].([]any)
+	if !ok {
+		return false
+	}
+	for _, item := range messages {
+		message, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		if role, _ := message["role"].(string); role == "developer" {
+			return false
+		}
+	}
+	return true
+}
+
 func (p *openAIProvider) ChatCompletion(ctx context.Context, req ChatRequest, w http.ResponseWriter) error {
-	body, err := req.Body()
+	body, err := upstreamBody(req)
 	if err != nil {
 		return err
 	}
