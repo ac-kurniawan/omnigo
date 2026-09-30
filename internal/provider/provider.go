@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/ac-kurniawan/omnigo/internal/quota"
@@ -54,6 +55,7 @@ func ParseBody(raw []byte) map[string]any {
 }
 
 type openAIBodyCache struct {
+	mu     sync.Mutex
 	bodies map[string][]byte
 }
 
@@ -63,7 +65,10 @@ type openAIBodyCache struct {
 // A parsed body is encoded once per model. The cache is attached to the shared
 // parsed map, so value copies of the request reuse the same bytes.
 func (r ChatRequest) Body() ([]byte, error) {
-	if cache := openAICache(r.Parsed); cache != nil {
+	cache := openAICache(r.Parsed)
+	if cache != nil {
+		cache.mu.Lock()
+		defer cache.mu.Unlock()
 		if body, ok := cache.bodies[r.Model]; ok {
 			return body, nil
 		}
@@ -72,7 +77,7 @@ func (r ChatRequest) Body() ([]byte, error) {
 	if err != nil || len(body) == 0 {
 		return body, err
 	}
-	if cache := openAICache(r.Parsed); cache != nil {
+	if cache != nil {
 		cache.bodies[r.Model] = body
 	}
 	return body, nil

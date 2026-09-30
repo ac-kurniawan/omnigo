@@ -9,3 +9,4 @@ docs/
 config.yaml
 drains.json
 /.playwright-mcp/
+/.worktrees/
