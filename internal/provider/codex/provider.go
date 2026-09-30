@@ -263,6 +263,10 @@ func (p *Provider) ChatCompletion(ctx context.Context, req provider.ChatRequest,
 	if err != nil {
 		return err
 	}
+	profile, ok := p.profile(req.Model)
+	if ok {
+		applyModelProfile(request, profile)
+	}
 	body, err := json.Marshal(request)
 	if err != nil {
 		return fmt.Errorf("codex: encode upstream request: %w", err)
@@ -274,7 +278,7 @@ func (p *Provider) ChatCompletion(ctx context.Context, req provider.ChatRequest,
 	var lastErr error
 	for _, account := range accounts {
 		attempt := provider.NewStreamingAttemptWriter(w, req.Stream)
-		lastErr = p.chatWithAccount(ctx, req, body, account, attempt)
+		lastErr = p.chatWithAccount(ctx, req, body, profile.Lite, account, attempt)
 		if lastErr == nil {
 			return attempt.Commit(w)
 		}
@@ -289,7 +293,7 @@ func (p *Provider) ChatCompletion(ctx context.Context, req provider.ChatRequest,
 	return lastErr
 }
 
-func (p *Provider) chatWithAccount(ctx context.Context, req provider.ChatRequest, body []byte, account provider.Credentials, w http.ResponseWriter) error {
+func (p *Provider) chatWithAccount(ctx context.Context, req provider.ChatRequest, body []byte, lite bool, account provider.Credentials, w http.ResponseWriter) error {
 	ctx, cancel := context.WithCancelCause(ctx)
 	defer cancel(nil)
 	tokens := p.tokenManager(account)
@@ -302,7 +306,7 @@ func (p *Provider) chatWithAccount(ctx context.Context, req provider.ChatRequest
 	guard := provider.NewIdleGuard(p.idle, provider.StreamBudget(p.streamTimeout, req.Stream), func() { cancel(provider.ErrUpstreamStall) })
 	defer guard.Stop()
 	sessionID := randomID()
-	resp, err := p.send(ctx, creds, body, sessionID, req.Model, req.Stream)
+	resp, err := p.send(ctx, creds, body, sessionID, req.Model, req.Stream, lite)
 	if err != nil {
 		return guard.Err(err)
 	}
@@ -312,7 +316,7 @@ func (p *Provider) chatWithAccount(ctx context.Context, req provider.ChatRequest
 		if err != nil {
 			return err
 		}
-		resp, err = p.send(ctx, creds, body, sessionID, req.Model, req.Stream)
+		resp, err = p.send(ctx, creds, body, sessionID, req.Model, req.Stream, lite)
 		if err != nil {
 			return guard.Err(err)
 		}
@@ -344,7 +348,7 @@ func (p *Provider) tokenManager(account provider.Credentials) *TokenManager {
 	return manager.(*TokenManager)
 }
 
-func (p *Provider) send(ctx context.Context, creds provider.Credentials, body []byte, sessionID string, model string, streaming bool) (*http.Response, error) {
+func (p *Provider) send(ctx context.Context, creds provider.Credentials, body []byte, sessionID string, model string, streaming bool, lite bool) (*http.Response, error) {
 	if creds.AccessToken == "" {
 		return nil, fmt.Errorf("codex: not authenticated")
 	}
@@ -365,6 +369,9 @@ func (p *Provider) send(ctx context.Context, creds provider.Credentials, body []
 	req.Header.Set("Accept", "text/event-stream")
 	req.Header.Set("session-id", sessionID)
 	req.Header.Set("x-client-request-id", sessionID)
+	if lite {
+		req.Header.Set("x-openai-internal-codex-responses-lite", "true")
+	}
 	resp, err := provider.ClientFor(p.stream, p.client, streaming).Do(req)
 	if err != nil {
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
