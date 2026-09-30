@@ -302,7 +302,7 @@ A reference template is available at [`config.example.yaml`](./config.example.ya
 1. Add a provider with `type: codex` in `config.yaml` or choose **codex** in the dashboard's provider form. No API key is required.
 2. Open the provider's **Connect ChatGPT** dialog and click **Open ChatGPT Sign-In**. Complete authorization in the same browser.
 3. The browser redirects to `http://localhost:1455/auth/callback`. If nothing is listening there, copy the complete URL from the address bar and paste it into the dashboard dialog. OmniGo exchanges the code and stores the credentials encrypted; do not edit `auth.yaml` manually.
-4. Click **Refresh** to cache the current official Codex model catalog, then **Test**. Use a direct model such as `codex-main/gpt-6-astra` or add it to a combo.
+4. Click **Refresh** to cache the current official Codex model catalog, then **Test**. Use a direct model such as `codex-main/gpt-6-astra`, `codex-main/gpt-6-sol`, `codex-main/gpt-6-luna`, or `codex-main/gpt-6.1-sol`, or add it to a combo.
 
 The loopback redirect targets the machine running the browser, so a dashboard on a remote server still uses the paste workflow. Run the browser locally and paste the callback into the remote dashboard over a trusted HTTPS connection. Browser-based device authorization is not supported. Datacenter IPs may also be rejected by OpenAI during token exchange; if that occurs, run OmniGo on a network OpenAI accepts. If a rotating refresh token is expired, revoked, reused, or otherwise rejected permanently, OmniGo stops retrying it and reports that re-authentication is required. Use **Connect ChatGPT** again to replace the credentials and resume requests; repeated use of an old refresh token cannot recover the session.
 
