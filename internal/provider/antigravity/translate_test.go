@@ -105,6 +105,29 @@ func TestToEnvelopeIgnoresImageOnlyMessage(t *testing.T) {
 	}
 }
 
+func TestDeclarationSchemaCollapsesUnionType(t *testing.T) {
+	got := declarationSchema(map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"skip":  map[string]any{"type": []any{"number", "null"}},
+			"multi": map[string]any{"type": []any{"null", "string", "integer"}},
+			"type":  map[string]any{"type": "string"},
+		},
+	})
+	props := got["properties"].(map[string]any)
+	skip := props["skip"].(map[string]any)
+	if skip["type"] != "number" || skip["nullable"] != true {
+		t.Fatalf("skip = %#v", skip)
+	}
+	multi := props["multi"].(map[string]any)
+	if multi["type"] != "string" || multi["nullable"] != true {
+		t.Fatalf("multi = %#v", multi)
+	}
+	if props["type"].(map[string]any)["type"] != "string" {
+		t.Fatalf("property named type = %#v", props["type"])
+	}
+}
+
 func TestToEnvelopeDeclaresToolsAndMapsToolTurns(t *testing.T) {
 	req := provider.ChatRequest{
 		Model: "gemini-3.7-flash-medium",

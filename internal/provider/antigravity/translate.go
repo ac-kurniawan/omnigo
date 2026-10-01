@@ -430,6 +430,20 @@ func cleanSchema(value any) any {
 		for key := range unsupportedSchemaKeys {
 			delete(value, key)
 		}
+		// Gemini's Schema.type is a single enum; JSON Schema unions like
+		// ["number","null"] are rejected with "Proto field is not repeating".
+		// Keep the first non-null type and express null via nullable.
+		if types, ok := value["type"].([]any); ok {
+			delete(value, "type")
+			for _, t := range types {
+				name, _ := t.(string)
+				if name == "null" {
+					value["nullable"] = true
+				} else if _, set := value["type"]; !set && name != "" {
+					value["type"] = name
+				}
+			}
+		}
 		if required, ok := value["required"].([]any); ok {
 			props, _ := value["properties"].(map[string]any)
 			kept := required[:0]
