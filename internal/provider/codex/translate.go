@@ -345,6 +345,12 @@ func toolCalls(message map[string]any, messageIndex int) ([]any, error) {
 		if err != nil {
 			return nil, err
 		}
+		if strings.TrimSpace(arguments) == "" {
+			// Strict Codex upstreams reject a function call serialized with a
+			// blank arguments string ("arguments must be valid JSON"); an
+			// empty argument list serializes as {}.
+			arguments = "{}"
+		}
 		out = append(out, map[string]any{"type": "function_call", "call_id": callID, "name": name, "arguments": arguments})
 	}
 	return out, nil
