@@ -253,7 +253,7 @@ func TestToResponsesRequestUsesStrictAllowlist(t *testing.T) {
 	allowed := map[string]bool{
 		"model": true, "instructions": true, "input": true, "tools": true,
 		"tool_choice": true, "parallel_tool_calls": true, "reasoning": true,
-		"text": true, "store": true, "stream": true, "include": true,
+		"text": true, "service_tier": true, "store": true, "stream": true, "include": true,
 	}
 	for key := range got {
 		if !allowed[key] {
@@ -304,5 +304,45 @@ func TestParseResponseEventRejectsMalformedPayload(t *testing.T) {
 		if _, err := parseResponseEvent(payload); err == nil {
 			t.Fatalf("parseResponseEvent(%q) succeeded", payload)
 		}
+	}
+}
+
+func TestToResponsesRequestMapsServiceTier(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		tier  string
+		want  any
+	}{
+		{name: "priority passthrough", tier: `"priority"`, want: "priority"},
+		{name: "fast alias", tier: `"fast"`, want: "priority"},
+		{name: "ultrafast passthrough", tier: `"ultrafast"`, want: "ultrafast"},
+		{name: "trimmed and lowercased", tier: `" Fast "`, want: "priority"},
+		{name: "auto dropped", tier: `"auto"`, want: nil},
+		{name: "default dropped", tier: `"default"`, want: nil},
+		{name: "standard dropped", tier: `"standard"`, want: nil},
+		{name: "non-string dropped without error", tier: `123`, want: nil},
+		{name: "absent field", tier: "", want: nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tierField := ""
+			if tc.tier != "" {
+				tierField = fmt.Sprintf(`,"service_tier":%s`, tc.tier)
+			}
+			raw := fmt.Sprintf(`{"messages":[{"role":"user","content":"hi"}]%s}`, tierField)
+			got, err := ToResponsesRequest(provider.ChatRequest{Model: "gpt", Raw: []byte(raw)})
+			if err != nil {
+				t.Fatalf("ToResponsesRequest: %v", err)
+			}
+			value, exists := got["service_tier"]
+			if tc.want == nil {
+				if exists {
+					t.Fatalf("service_tier = %#v, want absent", value)
+				}
+				return
+			}
+			if !exists || value != tc.want {
+				t.Fatalf("service_tier = %#v (exists=%t), want %#v", value, exists, tc.want)
+			}
+		})
 	}
 }
