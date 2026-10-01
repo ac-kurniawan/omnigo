@@ -20,6 +20,8 @@ Performance and simplicity are the point.
     Ollama, …) with a Bearer API key.
   - `antigravity` — Google *Gemini Code Assist* via OAuth2 (auth-code flow,
     automatic token refresh, OpenAI↔Gemini translation).
+  - Antigravity keeps tool parameter names (including `pattern` and `format`)
+    while removing `required` entries that do not name a defined property.
   - `codex` — ChatGPT Codex via OAuth2 with PKCE and automatic rotating-token
     refresh, translating the Responses SSE API to OpenAI chat completions.
   - Models are fetched from each provider's live or official catalog and cached;
