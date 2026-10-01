@@ -1692,6 +1692,13 @@
           <div id="model-chips-{{.Name}}" class="flex flex-wrap items-center gap-1.5 max-w-md">
             {{if not .Models}}
               <span class="text-xs text-base-content/40 italic">No models</span>
+            {{else if gt (len .Models) 3}}
+              {{range (slice .Models 0 3)}}
+                <span class="px-2.5 py-1 text-xs font-mono bg-base-200/80 text-base-content/90 rounded-md border border-base-content/10 whitespace-nowrap leading-none inline-flex items-center">{{.}}</span>
+              {{end}}
+              <button type="button" class="px-2.5 py-1 text-xs font-semibold rounded-md bg-primary/15 text-primary hover:bg-primary/25 border border-primary/25 transition-colors whitespace-nowrap leading-none cursor-pointer inline-flex items-center gap-1 shadow-2xs" onclick="document.getElementById('models-modal-{{.Name}}').showModal()" title="View all {{len .Models}} models">
+                see more ({{sub (len .Models) 3}})..
+              </button>
             {{else}}
               {{range .Models}}
                 <span class="px-2.5 py-1 text-xs font-mono bg-base-200/80 text-base-content/90 rounded-md border border-base-content/10 whitespace-nowrap leading-none inline-flex items-center">{{.}}</span>
@@ -2374,6 +2381,13 @@
 <div id="model-chips-{{.Name}}" hx-swap-oob="true" class="flex flex-wrap items-center gap-1.5 max-w-md">
   {{if not .Models}}
     <span class="text-xs text-base-content/40 italic">No models</span>
+  {{else if gt (len .Models) 3}}
+    {{range (slice .Models 0 3)}}
+      <span class="px-2.5 py-1 text-xs font-mono bg-base-200/80 text-base-content/90 rounded-md border border-base-content/10 whitespace-nowrap leading-none inline-flex items-center">{{.}}</span>
+    {{end}}
+    <button type="button" class="px-2.5 py-1 text-xs font-semibold rounded-md bg-primary/15 text-primary hover:bg-primary/25 border border-primary/25 transition-colors whitespace-nowrap leading-none cursor-pointer inline-flex items-center gap-1 shadow-2xs" onclick="document.getElementById('models-modal-{{.Name}}').showModal()" title="View all {{len .Models}} models">
+      see more ({{sub (len .Models) 3}})..
+    </button>
   {{else}}
     {{range .Models}}
       <span class="px-2.5 py-1 text-xs font-mono bg-base-200/80 text-base-content/90 rounded-md border border-base-content/10 whitespace-nowrap leading-none inline-flex items-center">{{.}}</span>
