@@ -9,6 +9,7 @@ import (
 	"log"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -1158,5 +1159,175 @@ func TestChatLogsWarningOnRateLimit(t *testing.T) {
 	}
 	if strings.Contains(out, "abc123secret") {
 		t.Fatalf("log leaks upstream credential: %s", out)
+	}
+}
+
+const liteHeader = "x-openai-internal-codex-responses-lite"
+
+// assertLiteUpstreamBody checks the wire shape a Lite model requires: the
+// additional_tools item prefixes input, reasoning carries the context level,
+// and the legacy instructions/tools keys are gone. It runs on the server
+// goroutine, so it must not use t.Fatal* — the handler still has to respond.
+func assertLiteUpstreamBody(t *testing.T, body map[string]any) {
+	t.Helper()
+	input, ok := body["input"].([]any)
+	if !ok || len(input) == 0 {
+		t.Errorf("input = %#v, want a non-empty slice", body["input"])
+		return
+	}
+	first, ok := input[0].(map[string]any)
+	if !ok || first["type"] != "additional_tools" {
+		t.Errorf("input[0] = %#v, want type additional_tools", input[0])
+	}
+	reasoning, ok := body["reasoning"].(map[string]any)
+	if !ok || reasoning["context"] != "all_turns" {
+		t.Errorf("reasoning = %#v, want context all_turns", body["reasoning"])
+	}
+	for _, key := range []string{"instructions", "tools"} {
+		if _, exists := body[key]; exists {
+			t.Errorf("body key %q must be absent under Lite, got %#v", key, body[key])
+		}
+	}
+}
+
+func TestChatCompletionSendsResponsesLiteForLiteModel(t *testing.T) {
+	oldURL := tokenURL
+	t.Cleanup(func() { tokenURL = oldURL })
+	var inferenceCalls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/token" {
+			_ = json.NewEncoder(w).Encode(map[string]any{"access_token": "fresh", "refresh_token": "rotated", "expires_in": 3600})
+			return
+		}
+		if r.URL.Path != "/responses" || r.Method != http.MethodPost {
+			t.Errorf("request = %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		if got := r.Header.Get(liteHeader); got != "true" {
+			t.Errorf("%s = %q, want %q", liteHeader, got, "true")
+		}
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("decode upstream body: %v", err)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		assertLiteUpstreamBody(t, body)
+		if inferenceCalls.Add(1) == 1 {
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = io.WriteString(w, `{"error":"unauthorized"}`)
+			return
+		}
+		if r.Header.Get("Authorization") != "Bearer fresh" {
+			t.Errorf("retried authorization = %q, want the refreshed token", r.Header.Get("Authorization"))
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, codexTestStream())
+	}))
+	defer server.Close()
+	tokenURL = server.URL + "/token"
+
+	store := &memoryCredStore{creds: provider.Credentials{AccessToken: "access-old", RefreshToken: "refresh-old", AccountID: "account", ExpiresAt: time.Now().Add(time.Hour)}}
+	p := New(provider.Config{Name: "codex", BaseURL: server.URL + "/responses", Timeout: time.Second}, store)
+	raw := []byte(`{
+		"messages":[
+			{"role":"system","content":"be brief"},
+			{"role":"user","content":"hi"}
+		],
+		"tools":[{"type":"function","function":{
+			"name":"weather","description":"Get weather",
+			"parameters":{"type":"object","properties":{"city":{"type":"string"}}}
+		}}]
+	}`)
+	rr := httptest.NewRecorder()
+	if err := p.ChatCompletion(context.Background(), provider.ChatRequest{Model: "gpt-6-sol", Raw: raw}, rr); err != nil {
+		t.Fatal(err)
+	}
+	if inferenceCalls.Load() != 2 {
+		t.Fatalf("inference calls = %d, want 2 (401 then retry)", inferenceCalls.Load())
+	}
+	var body struct {
+		Choices []struct {
+			Message struct {
+				Content   string `json:"content"`
+				ToolCalls []struct {
+					Function struct {
+						Name string `json:"name"`
+					} `json:"function"`
+				} `json:"tool_calls"`
+			} `json:"message"`
+		} `json:"choices"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if len(body.Choices) == 0 || body.Choices[0].Message.Content != "Hello world" {
+		t.Fatalf("content = %s, want Hello world", rr.Body.String())
+	}
+	if len(body.Choices[0].Message.ToolCalls) != 1 || body.Choices[0].Message.ToolCalls[0].Function.Name != "weather" {
+		t.Fatalf("tool calls = %+v, want weather", body.Choices[0].Message.ToolCalls)
+	}
+}
+
+func TestChatCompletionKeepsLegacyTransportForNonLiteModel(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/responses" || r.Method != http.MethodPost {
+			t.Errorf("request = %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		if got := r.Header.Get(liteHeader); got != "" {
+			t.Errorf("%s = %q, want it absent for a legacy model", liteHeader, got)
+		}
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("decode upstream body: %v", err)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		input, ok := body["input"].([]any)
+		if !ok || len(input) == 0 {
+			t.Errorf("input = %#v, want a non-empty slice", body["input"])
+		}
+		for _, item := range input {
+			entry, ok := item.(map[string]any)
+			if !ok || entry["type"] == "additional_tools" {
+				t.Errorf("input item = %#v, want no additional_tools under the legacy transport", item)
+			}
+		}
+		if _, exists := body["tools"]; !exists {
+			t.Errorf("tools key = absent, want it kept under the legacy transport")
+		}
+		if _, exists := body["instructions"]; !exists {
+			t.Errorf("instructions key = absent, want it kept under the legacy transport")
+		}
+		if !reflect.DeepEqual(body["reasoning"], map[string]any{"effort": "high", "summary": "auto"}) {
+			t.Errorf("reasoning = %#v, want the translator's unchanged output", body["reasoning"])
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, codexTestStream())
+	}))
+	defer server.Close()
+
+	store := &memoryCredStore{creds: provider.Credentials{AccessToken: "access", AccountID: "account", ExpiresAt: time.Now().Add(time.Hour)}}
+	p := New(provider.Config{Name: "codex", BaseURL: server.URL + "/responses", Timeout: time.Second}, store)
+	raw := []byte(`{
+		"messages":[
+			{"role":"system","content":"be brief"},
+			{"role":"user","content":"hi"}
+		],
+		"tools":[{"type":"function","function":{
+			"name":"weather","description":"Get weather",
+			"parameters":{"type":"object","properties":{"city":{"type":"string"}}}
+		}}],
+		"reasoning_effort":"high"
+	}`)
+	rr := httptest.NewRecorder()
+	if err := p.ChatCompletion(context.Background(), provider.ChatRequest{Model: "gpt-5.5", Raw: raw}, rr); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(rr.Body.String(), "Hello world") {
+		t.Fatalf("response = %s, want the aggregated text", rr.Body.String())
 	}
 }
