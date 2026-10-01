@@ -444,6 +444,17 @@ func cleanSchema(value any) any {
 				}
 			}
 		}
+		for key, child := range value {
+			if key == "properties" {
+				if properties, ok := child.(map[string]any); ok {
+					for name, schema := range properties {
+						properties[name] = cleanSchema(schema)
+					}
+					continue
+				}
+			}
+			value[key] = cleanSchema(child)
+		}
 		if required, ok := value["required"].([]any); ok {
 			props, _ := value["properties"].(map[string]any)
 			kept := required[:0]
@@ -452,21 +463,15 @@ func cleanSchema(value any) any {
 				if !ok {
 					continue
 				}
-				if props != nil {
-					if _, exists := props[text]; !exists {
-						continue
-					}
+				if _, exists := props[text]; exists {
+					kept = append(kept, text)
 				}
-				kept = append(kept, text)
 			}
 			if len(kept) == 0 {
 				delete(value, "required")
 			} else {
 				value["required"] = kept
 			}
-		}
-		for key, child := range value {
-			value[key] = cleanSchema(child)
 		}
 		return value
 	case []any:

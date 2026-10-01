@@ -128,6 +128,72 @@ func TestDeclarationSchemaCollapsesUnionType(t *testing.T) {
 	}
 }
 
+func TestToEnvelopePreservesSchemaPropertyNamesAndValidRequired(t *testing.T) {
+	parsed := provider.ParseBody([]byte(`{"messages":[{"role":"user","content":"search"}],"tools":[
+		{"type":"function","function":{"name":"one","parameters":{}}},
+		{"type":"function","function":{"name":"two","parameters":{}}},
+		{"type":"function","function":{"name":"three","parameters":{}}},
+		{"type":"function","function":{"name":"four","parameters":{}}},
+		{"type":"function","function":{"name":"five","parameters":{}}},
+		{"type":"function","function":{"name":"six","parameters":{}}},
+		{"type":"function","function":{"name":"search","parameters":{
+			"type":"object","properties":{
+				"pattern":{"type":"string"},"format":{"type":"string"},
+				"safe":{"type":"string","format":"date"},
+				"nested":{"type":"object","properties":{"strict":{"type":"boolean"}},"required":["strict","gone"]},
+				"empty":{"type":"object","required":["orphan"]}
+			},"required":["pattern","safe","missing"]
+		}}}]}`))
+	req := provider.ChatRequest{Model: "gemini", Parsed: parsed}
+	env, err := ToEnvelope("proj", req.Model, req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	decls := env["request"].(map[string]any)["tools"].([]any)[0].(map[string]any)["functionDeclarations"].([]any)
+	if len(decls) != 7 {
+		t.Fatalf("declarations = %d, want 7", len(decls))
+	}
+	schema := decls[6].(map[string]any)["parameters"].(map[string]any)
+	props := schema["properties"].(map[string]any)
+	for name, want := range map[string]string{"pattern": "string", "format": "string", "safe": "string"} {
+		property, ok := props[name].(map[string]any)
+		if !ok || property["type"] != want {
+			t.Errorf("property %q = %#v, want type %q", name, props[name], want)
+		}
+	}
+	if _, ok := props["safe"].(map[string]any)["format"]; ok {
+		t.Errorf("unsupported schema keyword survived: %#v", props["safe"])
+	}
+	if got, _ := json.Marshal(schema["required"]); string(got) != `["pattern","safe"]` {
+		t.Errorf("root required = %s", got)
+	}
+	nested := props["nested"].(map[string]any)
+	strict, ok := nested["properties"].(map[string]any)["strict"].(map[string]any)
+	if !ok || strict["type"] != "boolean" {
+		t.Errorf("nested strict = %#v", nested["properties"])
+	}
+	if got, _ := json.Marshal(nested["required"]); string(got) != `["strict"]` {
+		t.Errorf("nested required = %s", got)
+	}
+	if _, ok := props["empty"].(map[string]any)["required"]; ok {
+		t.Errorf("empty object kept orphaned required: %#v", props["empty"])
+	}
+	original := parsed["tools"].([]any)[6].(map[string]any)["function"].(map[string]any)["parameters"].(map[string]any)
+	if got, _ := json.Marshal(original["required"]); string(got) != `["pattern","safe","missing"]` {
+		t.Errorf("source root required mutated: %s", got)
+	}
+	originalProps := original["properties"].(map[string]any)
+	if got, _ := json.Marshal(originalProps["nested"].(map[string]any)["required"]); string(got) != `["strict","gone"]` {
+		t.Errorf("source nested required mutated: %s", got)
+	}
+	if got, _ := json.Marshal(originalProps["empty"].(map[string]any)["required"]); string(got) != `["orphan"]` {
+		t.Errorf("source empty required mutated: %s", got)
+	}
+	if originalProps["safe"].(map[string]any)["format"] != "date" {
+		t.Errorf("source safe.format mutated: %#v", originalProps["safe"])
+	}
+}
+
 func TestToEnvelopeDeclaresToolsAndMapsToolTurns(t *testing.T) {
 	req := provider.ChatRequest{
 		Model: "gemini-3.7-flash-medium",
