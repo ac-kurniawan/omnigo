@@ -309,9 +309,9 @@ func TestParseResponseEventRejectsMalformedPayload(t *testing.T) {
 
 func TestToResponsesRequestMapsServiceTier(t *testing.T) {
 	for _, tc := range []struct {
-		name  string
-		tier  string
-		want  any
+		name string
+		tier string
+		want any
 	}{
 		{name: "priority passthrough", tier: `"priority"`, want: "priority"},
 		{name: "fast alias", tier: `"fast"`, want: "priority"},
@@ -345,4 +345,51 @@ func TestToResponsesRequestMapsServiceTier(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestToResponsesRequestNormalizesEmptyToolCallArguments(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		args string
+		want any
+	}{
+		{name: "empty string", args: `""`, want: "{}"},
+		{name: "blank string", args: `"   "`, want: "{}"},
+		{name: "json passes through", args: `"{\"x\":1}"`, want: `{"x":1}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			raw := fmt.Sprintf(`{"messages":[
+				{"role":"user","content":"hi"},
+				{"role":"assistant","content":null,"tool_calls":[{"id":"call_1","type":"function","function":{"name":"weather","arguments":%s}}]}
+			]}`, tc.args)
+			got, err := ToResponsesRequest(provider.ChatRequest{Model: "gpt", Raw: []byte(raw)})
+			if err != nil {
+				t.Fatalf("ToResponsesRequest: %v", err)
+			}
+			for _, rawItem := range got["input"].([]any) {
+				item, ok := rawItem.(map[string]any)
+				if !ok || item["type"] != "function_call" {
+					continue
+				}
+				if item["arguments"] != tc.want {
+					t.Fatalf("arguments = %#v, want %#v", item["arguments"], tc.want)
+				}
+				if item["name"] != "weather" {
+					t.Fatalf("name = %#v, want weather", item["name"])
+				}
+				return
+			}
+			t.Fatalf("no function_call item in input %#v", got["input"])
+		})
+	}
+
+	t.Run("missing arguments still rejected", func(t *testing.T) {
+		raw := `{"messages":[
+			{"role":"assistant","content":null,"tool_calls":[{"id":"call_1","type":"function","function":{"name":"weather"}}]}
+		]}`
+		_, err := ToResponsesRequest(provider.ChatRequest{Model: "gpt", Raw: []byte(raw)})
+		if !errors.Is(err, errInvalidTranslation) {
+			t.Fatalf("error = %v, want errInvalidTranslation", err)
+		}
+	})
 }
