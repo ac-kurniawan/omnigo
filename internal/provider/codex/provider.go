@@ -60,6 +60,7 @@ type streamState struct {
 	toolByOutput   map[int]*toolCall
 	finishReason   string
 	usage          usage
+	events         int
 	completed      bool
 	failed         bool
 	failureMessage string
@@ -415,6 +416,15 @@ func (p *Provider) streamResponse(ctx context.Context, body io.Reader, model str
 		return errors.New(state.failureMessage)
 	}
 	if !state.completed {
+		if state.events == 0 {
+			// The upstream accepted the request, sent headers, then closed
+			// without a single event. That is a transient fault of this
+			// target, not a malformed generation: a typed 502 gets one
+			// same-target retry at the combo layer and parks the target
+			// only after repeated strikes, instead of the immediate drain
+			// a plain error causes.
+			return provider.NewHTTPStatusError(http.StatusBadGateway, "codex: upstream stream closed before first payload")
+		}
 		return fmt.Errorf("codex: incomplete SSE response")
 	}
 	provider.ReportUsage(ctx, state.tokenUsage(account.Identity()))
@@ -439,6 +449,15 @@ func (p *Provider) completeResponse(ctx context.Context, body io.Reader, model s
 		return errors.New(state.failureMessage)
 	}
 	if !state.completed {
+		if state.events == 0 {
+			// The upstream accepted the request, sent headers, then closed
+			// without a single event. That is a transient fault of this
+			// target, not a malformed generation: a typed 502 gets one
+			// same-target retry at the combo layer and parks the target
+			// only after repeated strikes, instead of the immediate drain
+			// a plain error causes.
+			return provider.NewHTTPStatusError(http.StatusBadGateway, "codex: upstream stream closed before first payload")
+		}
 		return fmt.Errorf("codex: incomplete SSE response")
 	}
 	provider.ReportUsage(ctx, state.tokenUsage(account.Identity()))
@@ -476,6 +495,7 @@ func newStreamState(model string) *streamState {
 }
 
 func (s *streamState) consume(eventType string, payload []byte) ([]map[string]any, error) {
+	s.events++
 	parsed, err := parseResponseEvent(payload)
 	if err != nil {
 		return nil, fmt.Errorf("codex: malformed SSE event")

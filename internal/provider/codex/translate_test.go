@@ -253,7 +253,7 @@ func TestToResponsesRequestUsesStrictAllowlist(t *testing.T) {
 	allowed := map[string]bool{
 		"model": true, "instructions": true, "input": true, "tools": true,
 		"tool_choice": true, "parallel_tool_calls": true, "reasoning": true,
-		"text": true, "store": true, "stream": true, "include": true,
+		"text": true, "service_tier": true, "store": true, "stream": true, "include": true,
 	}
 	for key := range got {
 		if !allowed[key] {
@@ -305,4 +305,91 @@ func TestParseResponseEventRejectsMalformedPayload(t *testing.T) {
 			t.Fatalf("parseResponseEvent(%q) succeeded", payload)
 		}
 	}
+}
+
+func TestToResponsesRequestMapsServiceTier(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		tier string
+		want any
+	}{
+		{name: "priority passthrough", tier: `"priority"`, want: "priority"},
+		{name: "fast alias", tier: `"fast"`, want: "priority"},
+		{name: "ultrafast passthrough", tier: `"ultrafast"`, want: "ultrafast"},
+		{name: "trimmed and lowercased", tier: `" Fast "`, want: "priority"},
+		{name: "auto dropped", tier: `"auto"`, want: nil},
+		{name: "default dropped", tier: `"default"`, want: nil},
+		{name: "standard dropped", tier: `"standard"`, want: nil},
+		{name: "non-string dropped without error", tier: `123`, want: nil},
+		{name: "absent field", tier: "", want: nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tierField := ""
+			if tc.tier != "" {
+				tierField = fmt.Sprintf(`,"service_tier":%s`, tc.tier)
+			}
+			raw := fmt.Sprintf(`{"messages":[{"role":"user","content":"hi"}]%s}`, tierField)
+			got, err := ToResponsesRequest(provider.ChatRequest{Model: "gpt", Raw: []byte(raw)})
+			if err != nil {
+				t.Fatalf("ToResponsesRequest: %v", err)
+			}
+			value, exists := got["service_tier"]
+			if tc.want == nil {
+				if exists {
+					t.Fatalf("service_tier = %#v, want absent", value)
+				}
+				return
+			}
+			if !exists || value != tc.want {
+				t.Fatalf("service_tier = %#v (exists=%t), want %#v", value, exists, tc.want)
+			}
+		})
+	}
+}
+
+func TestToResponsesRequestNormalizesEmptyToolCallArguments(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		args string
+		want any
+	}{
+		{name: "empty string", args: `""`, want: "{}"},
+		{name: "blank string", args: `"   "`, want: "{}"},
+		{name: "json passes through", args: `"{\"x\":1}"`, want: `{"x":1}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			raw := fmt.Sprintf(`{"messages":[
+				{"role":"user","content":"hi"},
+				{"role":"assistant","content":null,"tool_calls":[{"id":"call_1","type":"function","function":{"name":"weather","arguments":%s}}]}
+			]}`, tc.args)
+			got, err := ToResponsesRequest(provider.ChatRequest{Model: "gpt", Raw: []byte(raw)})
+			if err != nil {
+				t.Fatalf("ToResponsesRequest: %v", err)
+			}
+			for _, rawItem := range got["input"].([]any) {
+				item, ok := rawItem.(map[string]any)
+				if !ok || item["type"] != "function_call" {
+					continue
+				}
+				if item["arguments"] != tc.want {
+					t.Fatalf("arguments = %#v, want %#v", item["arguments"], tc.want)
+				}
+				if item["name"] != "weather" {
+					t.Fatalf("name = %#v, want weather", item["name"])
+				}
+				return
+			}
+			t.Fatalf("no function_call item in input %#v", got["input"])
+		})
+	}
+
+	t.Run("missing arguments still rejected", func(t *testing.T) {
+		raw := `{"messages":[
+			{"role":"assistant","content":null,"tool_calls":[{"id":"call_1","type":"function","function":{"name":"weather"}}]}
+		]}`
+		_, err := ToResponsesRequest(provider.ChatRequest{Model: "gpt", Raw: []byte(raw)})
+		if !errors.Is(err, errInvalidTranslation) {
+			t.Fatalf("error = %v, want errInvalidTranslation", err)
+		}
+	})
 }

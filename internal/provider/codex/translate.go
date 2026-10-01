@@ -132,6 +132,13 @@ func ToResponsesRequest(req provider.ChatRequest) (map[string]any, error) {
 		}
 		out["reasoning"] = reasoning
 	}
+	if raw, ok := root["service_tier"]; ok {
+		if value, ok := raw.(string); ok {
+			if tier := normalizeServiceTier(value); tier != "" {
+				out["service_tier"] = tier
+			}
+		}
+	}
 	if raw, ok := root["response_format"]; ok {
 		text, err := translateResponseFormat(raw)
 		if err != nil {
@@ -338,6 +345,12 @@ func toolCalls(message map[string]any, messageIndex int) ([]any, error) {
 		if err != nil {
 			return nil, err
 		}
+		if strings.TrimSpace(arguments) == "" {
+			// Strict Codex upstreams reject a function call serialized with a
+			// blank arguments string ("arguments must be valid JSON"); an
+			// empty argument list serializes as {}.
+			arguments = "{}"
+		}
 		out = append(out, map[string]any{"type": "function_call", "call_id": callID, "name": name, "arguments": arguments})
 	}
 	return out, nil
@@ -403,6 +416,21 @@ func translateTools(raw any) ([]any, error) {
 		out = append(out, translated)
 	}
 	return out, nil
+}
+
+// normalizeServiceTier maps an OpenAI chat-completions service tier onto the
+// values the Codex Responses upstream accepts. "fast" is OpenAI's alias for
+// the same priority tier; every other value (default, auto, standard) is not
+// a Codex concept and is dropped rather than forwarded to a strict upstream.
+func normalizeServiceTier(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "fast", "priority":
+		return "priority"
+	case "ultrafast":
+		return "ultrafast"
+	default:
+		return ""
+	}
 }
 
 func translateToolChoice(raw any) (any, error) {
