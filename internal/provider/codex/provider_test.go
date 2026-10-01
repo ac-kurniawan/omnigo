@@ -1331,3 +1331,75 @@ func TestChatCompletionKeepsLegacyTransportForNonLiteModel(t *testing.T) {
 		t.Fatalf("response = %s, want the aggregated text", rr.Body.String())
 	}
 }
+
+// A 200 response whose stream closes with zero events is a transient fault of
+// that target, not a truncated generation: a typed 502 gets one same-target
+// retry at the combo layer and parks the target only after repeated strikes,
+// instead of the immediate drain a plain error causes.
+func TestProviderZeroPayloadDisconnectIsBadGateway(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+	}))
+	defer server.Close()
+	for _, stream := range []bool{false, true} {
+		// A fresh store per iteration: the first attempt legitimately cools
+		// the single account for 60s, which is pool bookkeeping this test
+		// does not exercise.
+		store := &memoryCredStore{creds: provider.Credentials{AccessToken: "access", AccountID: "account", ExpiresAt: time.Now().Add(time.Hour)}}
+		p := New(provider.Config{Name: "codex", BaseURL: server.URL, Timeout: time.Second}, store)
+		rr := httptest.NewRecorder()
+		err := p.ChatCompletion(context.Background(), provider.ChatRequest{Model: "gpt", Stream: stream, Raw: []byte(`{"messages":[{"role":"user","content":"hi"}]}`)}, rr)
+		var status *provider.HTTPStatusError
+		if !errors.As(err, &status) || status.HTTPStatus() != http.StatusBadGateway {
+			t.Fatalf("stream=%v: error = %v, want HTTPStatusError 502", stream, err)
+		}
+		if err.Error() != "codex: upstream stream closed before first payload" {
+			t.Fatalf("stream=%v: error = %q", stream, err.Error())
+		}
+	}
+}
+
+// Only a literally event-less stream is a 502. A handshake frame (or any other
+// event) without a terminal event stays the plain truncation error, which
+// surfaces after partial output and must never replay the request elsewhere.
+func TestProviderHandshakeOnlyDisconnectStaysIncomplete(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.WriteString(w, event("response.created", map[string]any{"response": map[string]any{"id": "r1"}}))
+	}))
+	defer server.Close()
+	store := &memoryCredStore{creds: provider.Credentials{AccessToken: "access", AccountID: "account", ExpiresAt: time.Now().Add(time.Hour)}}
+	p := New(provider.Config{Name: "codex", BaseURL: server.URL, Timeout: time.Second}, store)
+	rr := httptest.NewRecorder()
+	err := p.ChatCompletion(context.Background(), provider.ChatRequest{Model: "gpt", Stream: true, Raw: []byte(`{"messages":[{"role":"user","content":"hi"}]}`)}, rr)
+	if err == nil || !strings.Contains(err.Error(), "incomplete SSE response") {
+		t.Fatalf("error = %v, want the plain incomplete SSE response", err)
+	}
+}
+
+func TestProviderZeroPayloadDisconnectFailsOverAccounts(t *testing.T) {
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		if requests.Add(1) == 1 {
+			return
+		}
+		_, _ = io.WriteString(w, event("response.output_text.delta", map[string]any{"delta": "answer"})+
+			event("response.done", map[string]any{"response": map[string]any{"id": "resp_done", "status": "completed", "usage": map[string]any{"input_tokens": 4, "output_tokens": 1}}}))
+	}))
+	defer server.Close()
+	store := &poolCredStore{creds: []provider.Credentials{
+		{AccessToken: "access-1", AccountID: "account-a", ExpiresAt: time.Now().Add(time.Hour)},
+		{AccessToken: "access-2", AccountID: "account-b", ExpiresAt: time.Now().Add(time.Hour)},
+	}}
+	p := New(provider.Config{Name: "codex", BaseURL: server.URL, Timeout: 2 * time.Second}, store)
+	rr := httptest.NewRecorder()
+	if err := p.ChatCompletion(context.Background(), provider.ChatRequest{Model: "gpt", Stream: true, Raw: []byte(`{"messages":[{"role":"user","content":"hi"}]}`)}, rr); err != nil {
+		t.Fatalf("failover attempt returned error: %v", err)
+	}
+	if !strings.Contains(rr.Body.String(), "answer") {
+		t.Fatalf("response = %s, want the text from the second account", rr.Body.String())
+	}
+	if requests.Load() != 2 {
+		t.Fatalf("upstream requests = %d, want exactly 2", requests.Load())
+	}
+}
