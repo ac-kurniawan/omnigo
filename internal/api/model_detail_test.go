@@ -4,10 +4,12 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"testing"
 
 	"github.com/ac-kurniawan/omnigo/internal/auth"
 	"github.com/ac-kurniawan/omnigo/internal/config"
+	"github.com/ac-kurniawan/omnigo/internal/provider"
 	"github.com/ac-kurniawan/omnigo/internal/vault"
 )
 
@@ -48,6 +50,48 @@ func TestModelDetailSupportsSlashesInProviderModelID(t *testing.T) {
 		t.Fatalf("id = %q", body.ID)
 	}
 }
+func TestModelDetailCapabilities(t *testing.T) {
+	cfg := &config.Config{
+		Providers: []config.Provider{
+			{Name: "myrouter", Type: "openai", Models: []string{"routers9/grok-4.7", "gpt-4o"}},
+			{Name: "agy", Type: "antigravity", Models: []string{"gemini-3.7-flash-high"}},
+		},
+		Combos: []config.Combo{
+			{Name: "auto", Strategy: "priority", Targets: []config.ComboTarget{{Provider: "agy", Model: "gemini-3.7-flash-high"}, {Provider: "myrouter", Model: "gpt-4o"}}},
+			{Name: "empty", Strategy: "priority", Targets: []config.ComboTarget{{Provider: "missing", Model: "o1"}}},
+		},
+	}
+	for _, tc := range []struct {
+		path, id, owner string
+		reasoning       bool
+	}{
+		{"/v1/models/myrouter/routers9/grok-4.7", "myrouter/routers9/grok-4.7", "myrouter", true},
+		{"/v1/models/myrouter/gpt-4o", "myrouter/gpt-4o", "myrouter", false},
+		{"/v1/models/auto", "auto", "combo", true},
+		{"/v1/models/empty", "empty", "combo", false},
+	} {
+		body := requestModelDetail(t, cfg, tc.path)
+		if body.ID != tc.id || body.OwnedBy != tc.owner {
+			t.Fatalf("%s: %+v", tc.path, body)
+		}
+		if tc.reasoning {
+			if body.Capabilities == nil || !body.Capabilities.Reasoning || body.Capabilities.DefaultEffort != "medium" || !reflect.DeepEqual(body.Capabilities.ReasoningEfforts, []string{"low", "medium", "high"}) {
+				t.Fatalf("%s capabilities = %+v", tc.path, body.Capabilities)
+			}
+		} else if body.Capabilities != nil {
+			t.Fatalf("%s capabilities = %+v, want nil", tc.path, body.Capabilities)
+		}
+	}
+	entries := modelEntries(cfg)
+	for _, entry := range entries {
+		if entry.ID == "myrouter/routers9/grok-4.7" && entry.Capabilities == nil {
+			t.Fatal("list omits grok capabilities")
+		}
+		if entry.ID == "myrouter/gpt-4o" && entry.Capabilities != nil {
+			t.Fatal("list assigns gpt-4o capabilities")
+		}
+	}
+}
 
 func TestModelDetailUnknownModel(t *testing.T) {
 	cfg := &config.Config{}
@@ -78,10 +122,11 @@ func TestModelDetailUnknownModel(t *testing.T) {
 }
 
 type modelDetailResponse struct {
-	ID      string `json:"id"`
-	Object  string `json:"object"`
-	Created int    `json:"created"`
-	OwnedBy string `json:"owned_by"`
+	ID           string                      `json:"id"`
+	Object       string                      `json:"object"`
+	Created      int                         `json:"created"`
+	OwnedBy      string                      `json:"owned_by"`
+	Capabilities *provider.ModelCapabilities `json:"capabilities,omitempty"`
 }
 
 func requestModelDetail(t *testing.T, cfg *config.Config, path string) modelDetailResponse {

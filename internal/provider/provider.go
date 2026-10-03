@@ -150,9 +150,16 @@ func openAIPayload(parsed map[string]any, model string) map[string]any {
 	return out
 }
 
+type ModelCapabilities struct {
+	Reasoning        bool     `json:"reasoning"`
+	ReasoningEfforts []string `json:"reasoning_efforts,omitempty"`
+	DefaultEffort    string   `json:"default_effort,omitempty"`
+}
+
 type Model struct {
-	ID   string `json:"id"`
-	Name string `json:"name"`
+	ID           string             `json:"id"`
+	Name         string             `json:"name"`
+	Capabilities *ModelCapabilities `json:"capabilities,omitempty"`
 }
 
 type TestResult struct {
