@@ -2,9 +2,82 @@ package provider
 
 import (
 	"encoding/json"
+	"reflect"
 	"sync"
 	"testing"
 )
+
+func TestModelCapabilitiesJSON(t *testing.T) {
+	for _, tc := range []struct {
+		model Model
+		want  string
+	}{
+		{Model{ID: "reasoning", Capabilities: &ModelCapabilities{Reasoning: true, ReasoningEfforts: []string{"low", "medium", "high"}, DefaultEffort: "medium"}}, `{"id":"reasoning","name":"","capabilities":{"reasoning":true,"reasoning_efforts":["low","medium","high"],"default_effort":"medium"}}`},
+		{Model{ID: "plain"}, `{"id":"plain","name":""}`},
+	} {
+		got, err := json.Marshal(tc.model)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(got) != tc.want {
+			t.Fatalf("model JSON = %s, want %s", got, tc.want)
+		}
+	}
+}
+
+func TestCapabilitiesFor(t *testing.T) {
+	want := &ModelCapabilities{Reasoning: true, ReasoningEfforts: []string{"low", "medium", "high"}, DefaultEffort: "medium"}
+	hits := []struct{ typ, id string }{
+		{"openai", "o1"},
+		{"openai", "o3-mini"},
+		{"openai", "O4-MINI"},
+		{"openai", "xai/grok-4.7"},
+		{"openai", "deepseek-v4.1-flash"},
+		{"openai", "deepseek-r1"},
+		{"openai", "qwen-thinking"},
+		{"openai", "model-thinking-latest"},
+		{"codex", "o1"},
+		{"antigravity", "gemini-3.7-flash-high"},
+		{"antigravity", "gemini-3.7-flash-medium"},
+		{"antigravity", "gemini-3.7-flash-low"},
+		{"antigravity", "gemini-3.1-pro-low"},
+		{"antigravity", "claude-opus-4-6-thinking"},
+		{"antigravity", "gpt-oss-120b-medium"},
+		{"antigravity", "model-extra-low"},
+		{"antigravity", "model-tiered"},
+		{"antigravity", "model-high-preview"},
+	}
+	for _, tc := range hits {
+		got := CapabilitiesFor(tc.typ, tc.id)
+		if got == nil || got.Reasoning != want.Reasoning || got.DefaultEffort != want.DefaultEffort || !reflect.DeepEqual(got.ReasoningEfforts, want.ReasoningEfforts) {
+			t.Fatalf("CapabilitiesFor(%q, %q) = %+v, want %+v", tc.typ, tc.id, got, want)
+		}
+	}
+	misses := []struct{ typ, id string }{
+		{"openai", "gpt-4o"},
+		{"openai", "gpt-4o-mini"},
+		{"openai", "openai-gpt-4o"},
+		{"openai", "claude-sonnet-4-6"},
+		{"openai", "gemini-3.1-flash-lite"},
+		{"codex", "gpt-5.2"},
+		{"antigravity", "claude-sonnet-4-6"},
+		{"antigravity", "gemini-3.1-flash-lite"},
+		{"antigravity", "gpt-4o"},
+		{"", "o1"},
+		{"other", "o1"},
+	}
+	for _, tc := range misses {
+		if got := CapabilitiesFor(tc.typ, tc.id); got != nil {
+			t.Fatalf("CapabilitiesFor(%q, %q) = %+v, want nil", tc.typ, tc.id, got)
+		}
+	}
+	a := CapabilitiesFor("openai", "o1")
+	b := CapabilitiesFor("openai", "o1")
+	a.ReasoningEfforts[0] = "mutated"
+	if b.ReasoningEfforts[0] != "low" {
+		t.Fatal("CapabilitiesFor returned a shared efforts slice")
+	}
+}
 
 func TestChatRequestBodyReplacesModel(t *testing.T) {
 	req := ChatRequest{
