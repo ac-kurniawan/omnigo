@@ -5,13 +5,15 @@ import (
 	"net/http"
 
 	"github.com/ac-kurniawan/omnigo/internal/config"
+	"github.com/ac-kurniawan/omnigo/internal/provider"
 )
 
 type modelEntry struct {
-	ID      string `json:"id"`
-	Object  string `json:"object"`
-	Created int    `json:"created"`
-	OwnedBy string `json:"owned_by"`
+	ID           string                      `json:"id"`
+	Object       string                      `json:"object"`
+	Created      int                         `json:"created"`
+	OwnedBy      string                      `json:"owned_by"`
+	Capabilities *provider.ModelCapabilities `json:"capabilities,omitempty"`
 }
 
 func handleModels(getCfg func() *config.Config) http.HandlerFunc {
@@ -42,7 +44,19 @@ func handleModel(getCfg func() *config.Config) http.HandlerFunc {
 func modelEntries(cfg *config.Config) []modelEntry {
 	var entries []modelEntry
 	for _, cb := range cfg.Combos {
-		entries = append(entries, modelEntry{ID: cb.Name, Object: "model", Created: 0, OwnedBy: "combo"})
+		entry := modelEntry{ID: cb.Name, Object: "model", Created: 0, OwnedBy: "combo"}
+		for _, target := range cb.Targets {
+			for _, p := range cfg.Providers {
+				if p.Name == target.Provider && !p.Disabled && !p.IsModelDisabled(target.Model) && p.HasModel(target.Model) {
+					entry.Capabilities = provider.CapabilitiesFor(p.Type, target.Model)
+					break
+				}
+			}
+			if entry.Capabilities != nil {
+				break
+			}
+		}
+		entries = append(entries, entry)
 	}
 	for _, p := range cfg.Providers {
 		if p.Disabled {
@@ -50,7 +64,7 @@ func modelEntries(cfg *config.Config) []modelEntry {
 		}
 		for _, m := range p.Models {
 			if !p.IsModelDisabled(m) {
-				entries = append(entries, modelEntry{ID: p.Name + "/" + m, Object: "model", Created: 0, OwnedBy: p.Name})
+				entries = append(entries, modelEntry{ID: p.Name + "/" + m, Object: "model", Created: 0, OwnedBy: p.Name, Capabilities: provider.CapabilitiesFor(p.Type, m)})
 			}
 		}
 	}

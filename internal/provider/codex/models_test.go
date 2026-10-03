@@ -20,8 +20,18 @@ func TestModelsRecordsCatalogProfiles(t *testing.T) {
 	store := &memoryCredStore{creds: provider.Credentials{AccessToken: "access", AccountID: "account", ExpiresAt: time.Now().Add(time.Hour)}}
 	p := New(provider.Config{Name: "codex"}, store).(*Provider)
 	p.modelsURL = server.URL
-	if _, err := p.Models(context.Background()); err != nil {
+	models, err := p.Models(context.Background())
+	if err != nil {
 		t.Fatal(err)
+	}
+	var listed provider.Model
+	for _, model := range models {
+		if model.ID == "gpt-lite" {
+			listed = model
+		}
+	}
+	if listed.Capabilities == nil || !listed.Capabilities.Reasoning || listed.Capabilities.DefaultEffort != "medium" || !reflect.DeepEqual(listed.Capabilities.ReasoningEfforts, []string{"low", "medium"}) {
+		t.Fatalf("capabilities = %+v", listed.Capabilities)
 	}
 	profile, ok := p.profile("gpt-lite")
 	if !ok {
@@ -75,5 +85,38 @@ func TestModelsReplacesProfilesOnRefresh(t *testing.T) {
 	profile, ok := p.profile("gpt-x")
 	if !ok || profile.Lite {
 		t.Fatalf("second fetch profile(gpt-x) = %+v, %v; want legacy", profile, ok)
+	}
+}
+
+func TestFallbackModelCapabilities(t *testing.T) {
+	var gpt55, astra, gpt52 provider.Model
+	for _, model := range fallbackModels() {
+		switch model.ID {
+		case "gpt-5.5":
+			gpt55 = model
+		case "gpt-6-astra":
+			astra = model
+		case "gpt-5.2":
+			gpt52 = model
+		}
+	}
+	if gpt55.Capabilities == nil || !reflect.DeepEqual(gpt55.Capabilities.ReasoningEfforts, []string{"low", "medium", "high", "xhigh"}) || gpt55.Capabilities.DefaultEffort != "medium" {
+		t.Fatalf("gpt-5.5 capabilities = %+v", gpt55.Capabilities)
+	}
+	if astra.Capabilities == nil || !reflect.DeepEqual(astra.Capabilities.ReasoningEfforts, []string{"low", "medium", "high", "xhigh", "max", "ultra"}) || astra.Capabilities.DefaultEffort != "low" {
+		t.Fatalf("gpt-6-astra capabilities = %+v", astra.Capabilities)
+	}
+	if gpt52.Capabilities != nil {
+		t.Fatalf("gpt-5.2 capabilities = %+v, want nil", gpt52.Capabilities)
+	}
+}
+
+func TestKnownProfile(t *testing.T) {
+	profile, ok := KnownProfile("gpt-5.5")
+	if !ok || profile.Default != "medium" || !reflect.DeepEqual(profile.Levels, []string{"low", "medium", "high", "xhigh"}) {
+		t.Fatalf("KnownProfile(gpt-5.5) = %+v, %v", profile, ok)
+	}
+	if _, ok := KnownProfile("gpt-5.2"); ok {
+		t.Fatal("KnownProfile(gpt-5.2) unexpectedly hit")
 	}
 }

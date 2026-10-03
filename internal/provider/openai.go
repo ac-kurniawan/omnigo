@@ -123,7 +123,7 @@ func (p *openAIProvider) Models(ctx context.Context) ([]Model, error) {
 	}
 	models := make([]Model, 0, len(out.Data))
 	for _, m := range out.Data {
-		models = append(models, Model{ID: m.ID, Name: m.ID})
+		models = append(models, Model{ID: m.ID, Name: m.ID, Capabilities: CapabilitiesFor("openai", m.ID)})
 	}
 	return models, nil
 }
