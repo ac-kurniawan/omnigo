@@ -502,6 +502,31 @@ func TestModels(t *testing.T) {
 	}
 }
 
+func TestAntigravityModelsCapabilities(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"models":[{"name":"gemini-3.7-flash-medium"},{"name":"claude-sonnet-4-6"},{"name":"claude-opus-4-6-thinking"}]}`))
+	}))
+	defer srv.Close()
+	p := New(provider.Config{Name: "agy", BaseURL: srv.URL}, staticStore{provider.Credentials{AccessToken: "tok", ProjectID: "p", ExpiresAt: time.Now().Add(time.Hour)}})
+	models, err := p.Models(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	byID := map[string]provider.Model{}
+	for _, model := range models {
+		byID[model.ID] = model
+	}
+	for _, id := range []string{"gemini-3.7-flash-medium", "claude-opus-4-6-thinking"} {
+		got := byID[id].Capabilities
+		if got == nil || !got.Reasoning || got.DefaultEffort != "medium" || len(got.ReasoningEfforts) != 3 || got.ReasoningEfforts[0] != "low" || got.ReasoningEfforts[1] != "medium" || got.ReasoningEfforts[2] != "high" {
+			t.Fatalf("%s capabilities = %+v", id, got)
+		}
+	}
+	if byID["claude-sonnet-4-6"].Capabilities != nil {
+		t.Fatalf("claude-sonnet-4-6 capabilities = %+v, want nil", byID["claude-sonnet-4-6"].Capabilities)
+	}
+}
+
 func TestModelsAutoRefreshesExpiredToken(t *testing.T) {
 	// Upstream token endpoint for Refresh
 	tokenSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

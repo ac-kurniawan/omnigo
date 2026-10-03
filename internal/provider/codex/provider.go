@@ -160,11 +160,11 @@ func (p *Provider) Models(ctx context.Context) ([]provider.Model, error) {
 		if name == "" {
 			name = model.Slug
 		}
-		models = append(models, provider.Model{ID: model.Slug, Name: name})
 		levels := make([]string, 0, len(model.SupportedReasoningLevels))
 		for _, level := range model.SupportedReasoningLevels {
 			levels = append(levels, level.Effort)
 		}
+		models = append(models, provider.Model{ID: model.Slug, Name: name, Capabilities: capabilitiesFromLevels(levels, model.DefaultReasoningLevel)})
 		profiles[model.Slug] = modelProfile{
 			Lite:    model.UseResponsesLite,
 			Levels:  levels,

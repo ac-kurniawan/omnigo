@@ -441,6 +441,32 @@ func TestOpenAIModels(t *testing.T) {
 	}
 }
 
+func TestOpenAIModelsCapabilities(t *testing.T) {
+	p := newOpenAI(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"data":[{"id":"grok-4.7"},{"id":"deepseek-v4.1-flash"},{"id":"o3-mini"},{"id":"o1"},{"id":"gpt-4o"}]}`))
+	}))
+	models, err := p.Models(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	byID := map[string]Model{}
+	for _, model := range models {
+		byID[model.ID] = model
+	}
+	for _, id := range []string{"grok-4.7", "deepseek-v4.1-flash", "o3-mini", "o1"} {
+		got := byID[id].Capabilities
+		if got == nil || !got.Reasoning || got.DefaultEffort != "medium" || len(got.ReasoningEfforts) != 3 || got.ReasoningEfforts[0] != "low" || got.ReasoningEfforts[1] != "medium" || got.ReasoningEfforts[2] != "high" {
+			t.Fatalf("%s capabilities = %+v", id, got)
+		}
+	}
+	if byID["gpt-4o"].Capabilities != nil {
+		t.Fatalf("gpt-4o capabilities = %+v, want nil", byID["gpt-4o"].Capabilities)
+	}
+	if CapabilitiesFor("openai", "openai-gpt-4o") != nil {
+		t.Fatal("openai-gpt-4o matched the o1 prefix")
+	}
+}
+
 func TestOpenAIChatStreamsPassthrough(t *testing.T) {
 	p := newOpenAI(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/chat/completions" {

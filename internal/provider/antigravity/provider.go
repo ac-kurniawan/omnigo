@@ -100,7 +100,7 @@ func (p *Provider) Models(ctx context.Context) ([]provider.Model, error) {
 			if err == nil {
 				models := make([]provider.Model, 0, len(ids))
 				for _, id := range ids {
-					models = append(models, provider.Model{ID: id, Name: id})
+					models = append(models, provider.Model{ID: id, Name: id, Capabilities: provider.CapabilitiesFor("antigravity", id)})
 				}
 				return models, nil
 			}
