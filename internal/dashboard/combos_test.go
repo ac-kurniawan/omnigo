@@ -265,6 +265,33 @@ func TestCombosRenderLiveAlertWhenDrained(t *testing.T) {
 	}
 }
 
+func TestCombosRenderDrainCountdownAttributes(t *testing.T) {
+	cfg := &config.Config{
+		Combos: []config.Combo{{
+			Name:     "smart",
+			Strategy: "fill-first",
+			Targets:  []config.ComboTarget{{Provider: "openai", Model: "gpt-4o"}},
+		}},
+	}
+	store := vault.NewMemoryStore(&vault.Vault{})
+	tr := combo.NewTracker("")
+	tr.MarkDrained(combo.Target{Provider: "openai", Model: "gpt-4o"}, 2*time.Minute, "rate limit")
+
+	s := newServer(func() *config.Config { return cfg }, store, nil, tr)
+
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest("GET", "/combos", nil)
+	req.Header.Set("HX-Request", "true")
+	s.routes().ServeHTTP(rr, req)
+	body := rr.Body.String()
+	if !strings.Contains(body, "data-drain-until=") {
+		t.Fatalf("expected data-drain-until attribute in body: %s", body)
+	}
+	if !strings.Contains(body, "drain-countdown") {
+		t.Fatalf("expected drain-countdown class in body: %s", body)
+	}
+}
+
 func newComboTestServer(t *testing.T, cfg *config.Config, tracker *combo.Tracker) *Server {
 	t.Helper()
 	store := vault.NewMemoryStore(&vault.Vault{})
