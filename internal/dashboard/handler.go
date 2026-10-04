@@ -154,6 +154,16 @@ func newServer(getCfg func() *config.Config, store *vault.Store, mutate config.M
 			}
 			return tr.DrainReason(combo.Target{Provider: provider, Model: model})
 		},
+		"drainUntilEpochMs": func(tr *combo.Tracker, provider, model string) int64 {
+			if tr == nil {
+				return 0
+			}
+			rem := tr.DrainRemaining(combo.Target{Provider: provider, Model: model})
+			if rem <= 0 {
+				return 0
+			}
+			return time.Now().Add(rem).UnixMilli()
+		},
 		"providerSecret": func(v viewData, name string) vault.ProviderSecret {
 			if secret, ok := v.Secrets[name]; ok {
 				return secret
