@@ -632,7 +632,8 @@
             <form method="dialog" class="modal-backdrop"><button>close</button></form>
           </dialog>
 
-          <div id="combos" hx-get="/combos" hx-trigger="every 2s, refreshCombos from:body" hx-swap="innerHTML" hx-indicator="#combos-refresh-indicator">{{template "combos" .}}</div>
+          <!-- Combos Table -->
+          <div id="combos" hx-get="/combos" hx-trigger="load, refreshCombos from:body, {{if gt (drainedCount .Tracker) 0}}every 5s{{else}}every 30s{{end}}" hx-swap="innerHTML" hx-indicator="#combos-refresh-indicator">{{template "combos" .}}</div>
         </div>
       </div>
 
@@ -1638,7 +1639,36 @@
       if (event.detail.target && event.detail.target.id === 'providers') {
         restoreAccordions(event.detail.target);
       }
+      if (event.detail.target && (event.detail.target.id === 'combos' || event.detail.target.contains(document.querySelector('.drain-countdown')))) {
+        updateDrainCountdowns();
+      }
     });
+
+    function updateDrainCountdowns() {
+      const now = Date.now();
+      let shouldRefresh = false;
+      document.querySelectorAll('.drain-countdown').forEach(el => {
+        const untilMs = parseInt(el.getAttribute('data-drain-until'), 10);
+        if (isNaN(untilMs)) return;
+        const diffSec = Math.floor((untilMs - now) / 1000);
+        if (diffSec <= 0) {
+          shouldRefresh = true;
+        } else {
+          const txt = el.querySelector('.drain-remaining-text');
+          if (txt) {
+            const m = Math.floor(diffSec / 60);
+            const s = diffSec % 60;
+            txt.textContent = m > 0 ? `${m}m${s.toString().padStart(2, '0')}s` : `${s}s`;
+          }
+        }
+      });
+      if (shouldRefresh && window.htmx) {
+        htmx.trigger(document.body, 'refreshCombos');
+      }
+    }
+
+    setInterval(updateDrainCountdowns, 1000);
+    document.addEventListener('DOMContentLoaded', updateDrainCountdowns);
   </script>
 </body>
 </html>
@@ -2177,8 +2207,8 @@
                 {{end}}
                 <span class="text-primary font-bold">{{$t.Provider}}</span><span class="text-base-content/40">/</span><span>{{$t.Model}}</span>
                 {{if $drained}}
-                  <span class="badge badge-warning badge-xs font-sans px-1.5 py-0.5 text-[10px] gap-1" title="Drained for next {{$remaining}}{{if $reason}} &#10;Reason: {{$reason}}{{end}}">
-                    drained ({{$remaining}})
+                  <span class="badge badge-warning badge-xs font-sans px-1.5 py-0.5 text-[10px] gap-1 drain-countdown" data-drain-until="{{drainUntilEpochMs $.Tracker $t.Provider $t.Model}}" title="Drained for next {{$remaining}}{{if $reason}} &#10;Reason: {{$reason}}{{end}}">
+                    drained (<span class="drain-remaining-text">{{$remaining}}</span>)
                     <button type="button" hx-post="/combos/drains/reset" hx-vals='{"provider": "{{$t.Provider}}", "model": "{{$t.Model}}"}' hx-target="#combos" hx-swap="innerHTML" class="cursor-pointer font-bold hover:text-base-content" title="Clear drained state now">✕</button>
                   </span>
                 {{end}}
