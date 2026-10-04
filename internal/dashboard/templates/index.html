@@ -34,31 +34,23 @@
       }
     }
 
-    function copyToClipboard(text, btn, successText = 'Copied!') {
-      const originalText = btn ? btn.innerText : '';
-      const showSuccess = () => {
-        if (btn) {
-          btn.innerText = successText;
-          setTimeout(() => {
-            if (btn.innerText === successText) {
-              btn.innerText = originalText;
-            }
-          }, 2000);
-        }
-      };
-
+    function copyToClipboard(text, btn) {
+      const onSuccess = () => showToast('success', 'Copied to clipboard');
+      const onFailure = () => showToast('error', 'Could not copy. Select and copy manually.');
       if (navigator.clipboard && window.isSecureContext) {
-        navigator.clipboard.writeText(text).then(showSuccess).catch(() => {
-          fallbackCopy(text, btn, showSuccess);
+        navigator.clipboard.writeText(text).then(onSuccess).catch(() => {
+          if (fallbackCopy(text, btn)) { onSuccess(); } else { onFailure(); }
         });
-      } else {
-        fallbackCopy(text, btn, showSuccess);
+        return;
       }
+      if (fallbackCopy(text, btn)) { onSuccess(); } else { onFailure(); }
     }
 
-    function fallbackCopy(text, btn, onSuccess) {
+    function fallbackCopy(text, btn) {
+      // A dialog in the top layer keeps focus and selection inside itself, so
+      // the scratch textarea has to live in the same dialog.
+      const container = (btn && btn.closest('dialog')) || document.body;
       const textarea = document.createElement('textarea');
-      const container = btn.closest('dialog') || document.body;
       textarea.value = text;
       textarea.style.position = 'fixed';
       textarea.style.top = '-9999px';
@@ -66,14 +58,13 @@
       textarea.style.opacity = '0';
       textarea.setAttribute('readonly', '');
       container.appendChild(textarea);
-      textarea.focus();
-      textarea.select();
-      textarea.setSelectionRange(0, textarea.value.length);
       try {
-        const ok = document.execCommand('copy');
-        if (ok && onSuccess) onSuccess();
+        textarea.focus();
+        textarea.select();
+        textarea.setSelectionRange(0, textarea.value.length);
+        return document.execCommand('copy');
       } catch (err) {
-        console.error('Fallback copy failed:', err);
+        return false;
       } finally {
         container.removeChild(textarea);
       }
@@ -115,8 +106,8 @@
     /* Phone only. Everything here is under max-width so a later-loaded
        stylesheet (daisyUI) cannot restyle the desktop table. */
     @media (max-width: 639px) {
-      .tab-nav { display: flex; width: 100%; flex-wrap: wrap; }
-      .tab-nav .tab-nav-btn { flex: 1 1 30%; }
+      .tab-nav { display: flex; width: 100%; max-width: 100%; flex-wrap: nowrap; overflow-x: auto; white-space: nowrap; -webkit-overflow-scrolling: touch; }
+      .tab-nav .tab-nav-btn { flex: 0 0 auto; }
       .phone-table { overflow: visible; }
       .phone-table table,
       .phone-table thead,
@@ -160,17 +151,64 @@
       .phone-table td > button,
       .phone-table td > div:not(.dropdown) { min-width: 0; }
       .phone-table .dropdown-end .dropdown-content { right: 0; left: auto; }
-      .phone-table .btn,
-      .phone-table .toggle { min-height: 2.75rem; min-width: 2.75rem; }
+      .phone-table .btn { min-height: 2.75rem; min-width: 2.75rem; }
       .phone-table select { min-height: 2.75rem; }
       .phone-table td.whitespace-nowrap { white-space: normal; }
       .modal-box { width: calc(100vw - 1.5rem); max-width: calc(100vw - 1.5rem); margin-inline: auto; }
       .modal-action { flex-wrap: wrap; gap: 0.5rem; }
-      .toast { max-width: calc(100vw - 1rem); }
+      .toast { max-width: calc(100vw - 1rem); bottom: calc(env(safe-area-inset-bottom) + 0.5rem); }
+      /* Phones: 16px keeps iOS Safari from zooming on focus, and every
+         actionable control gets a 44px touch target. Icon-only and
+         text-chip elements are excluded so badges stay small. */
+      input:not([type="hidden"]):not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="file"]):not([type="color"]):not([type="button"]):not([type="submit"]):not([type="reset"]),
+      textarea,
+      select { font-size: 16px !important; }
+      .btn,
+      .tab,
+      select,
+      textarea,
+      input:not([type="hidden"]):not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="file"]):not([type="color"]),
+      input[type="range"],
+      .dropdown [role="button"],
+      .menu li > button,
+      .modal-action button { min-height: 2.75rem !important; min-width: 2.75rem !important; }
+      /* daisyUI sizes .checkbox/.toggle visually. Stretching the input itself
+         blows the widget up, so grow the wrapper the thumb actually hits. */
+      label:has(> input[type="checkbox"]),
+      label:has(> input[type="radio"]),
+      .checkbox-hit { min-height: 2.75rem; min-width: 2.75rem; }
+      .checkbox-hit:has(input[type="checkbox"]) { display: inline-flex; align-items: center; justify-content: center; }
+      /* flex-wrap must not fight an explicit flex-col direction, or the
+         children overflow sideways. Only wrap where the row really is a row. */
+      .model-modal-control-row:not(.flex-col) { flex-wrap: wrap; gap: 0.5rem; }
+      .model-modal-control-row .btn { flex: 1 1 auto; }
+      .model-modal-control-row > .flex { flex-wrap: wrap; }
+      .phone-table td .inline-flex:not(button):not([role="button"]) { flex-wrap: wrap; white-space: normal; overflow-wrap: anywhere; }
+      /* Interactive chips (see more, disabled count, Manage) must be tappable
+         on a phone without growing to the height of a real row. The chip keeps
+         its drawn size and only its hit area grows, matching the checkbox
+         wrapper approach below. */
+      .phone-table [onclick*="models-modal"] { position: relative; }
+      .phone-table [onclick*="models-modal"]::after { content: ""; position: absolute; left: 0; right: 0; top: 50%; height: 2.75rem; transform: translateY(-50%); }
+      .phone-table td > form,
+      .phone-table td > .flex,
+      .inspector-actions { flex-wrap: wrap; gap: 0.5rem; }
+      /* Model and target chips carry unbroken model ids, and daisyUI tooltips
+         render their bubble in normal flow. Both stretch a phone card, so let
+         the chips break inside the card and drop the bubble: touch has no
+         hover, so it was never visible there. */
+      .phone-table td .inline-flex { min-width: 0; }
+      .phone-table td .inline-flex:not(button):not([role="button"]) { flex-wrap: wrap; white-space: normal; overflow-wrap: anywhere; }
+      .phone-table .tooltip::before { display: none !important; }
       pre, code, .mockup-code { max-width: 100%; overflow-x: auto; }
     }
+    /* The indicator sits in the card header's own flex row, so a pending poll
+       reserves space instead of overlaying the heading. */
+    #combos-refresh-indicator { visibility: hidden; opacity: 0; display: flex; align-items: center; gap: 0.5rem; transition: visibility 0s linear 200ms, opacity 200ms ease-in 200ms; }
+    #combos-refresh-indicator.htmx-request.htmx-indicator { visibility: visible; opacity: 1; transition-delay: 200ms; }
+    #panel-combos.hidden #combos-refresh-indicator { display: none; }
     @media (min-width: 640px) {
-      .tab-nav { display: inline-flex; width: fit-content; flex-wrap: nowrap; }
+      .tab-nav { display: inline-flex; width: fit-content; max-width: 100%; flex-wrap: nowrap; overflow-x: auto; }
       .tab-nav .tab-nav-btn { flex: 0 0 auto; }
     }
     @media (prefers-reduced-motion: reduce) {
@@ -223,7 +261,7 @@
 
     <main class="max-w-6xl mx-auto px-3 sm:px-4 py-4 sm:py-8 space-y-5 sm:space-y-8 pb-[max(1rem,env(safe-area-inset-bottom))]">
       <!-- Live Toast / Notification Container -->
-      <div id="result" class="toast toast-top toast-end z-50 max-w-sm"></div>
+      <div id="result" class="toast toast-bottom toast-end z-50 max-w-sm" role="status" aria-live="polite"></div>
 
       <!-- Quick Metrics Bar -->
       <div class="grid grid-cols-1 min-[400px]:grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
@@ -246,7 +284,7 @@
           <div class="text-xs font-semibold text-base-content/60 uppercase tracking-wider">Gateway Endpoint</div>
           <div class="text-xs font-mono font-bold mt-2 truncate text-base-content bg-base-200/80 p-2.5 rounded-xl flex items-center justify-between gap-2 border border-base-content/10">
             <span id="gateway-endpoint-display" class="truncate">http://localhost:8080/v1</span>
-            <button type="button" class="btn btn-ghost btn-xs shrink-0 px-2 text-[10px]" onclick="copyToClipboard(document.getElementById('gateway-endpoint-display')?.innerText || (window.location.origin + '/v1'), this, '✓')">Copy</button>
+            <button type="button" class="btn btn-ghost btn-xs shrink-0 px-2 text-[10px]" onclick="copyToClipboard(document.getElementById('gateway-endpoint-display')?.innerText || (window.location.origin + '/v1'), this)">Copy</button>
           </div>
           <div class="text-[11px] text-base-content/50 mt-1">OpenAI-compatible wire format</div>
         </div>
@@ -341,6 +379,10 @@
             <div>
               <h2 class="text-xl font-bold">Model Combos &amp; Smart Routing</h2>
               <p class="text-xs text-base-content/60 mt-1">Route single model identifiers across ordered, reliable, quota-aware, or round-robin target chains.</p>
+            </div>
+            <div id="combos-refresh-indicator" class="htmx-indicator shrink-0 self-start" role="status" aria-live="polite">
+              <span class="skeleton h-4 w-28"></span>
+              <span class="text-xs text-base-content/60">Refreshing combos&hellip;</span>
             </div>
           </div>
 
@@ -590,8 +632,7 @@
             <form method="dialog" class="modal-backdrop"><button>close</button></form>
           </dialog>
 
-          <!-- Combos Table -->
-          <div id="combos" hx-get="/combos" hx-trigger="every 2s, refreshCombos from:body" hx-swap="innerHTML">{{template "combos" .}}</div>
+          <div id="combos" hx-get="/combos" hx-trigger="every 2s, refreshCombos from:body" hx-swap="innerHTML" hx-indicator="#combos-refresh-indicator">{{template "combos" .}}</div>
         </div>
       </div>
 
@@ -750,7 +791,7 @@
 
           <!-- Inspector Output Tabs -->
           <div class="space-y-2">
-            <div class="tabs tabs-bordered flex-wrap">
+            <div class="tabs tabs-bordered flex-wrap inspector-actions">
               <button type="button" class="tab tab-bordered tab-active font-semibold text-xs inspector-tab-btn" onclick="switchInspectorTab('stream', this)">Stream Output</button>
               <button type="button" class="tab tab-bordered font-semibold text-xs inspector-tab-btn" onclick="switchInspectorTab('raw', this)">Raw SSE Events</button>
               <button type="button" class="tab tab-bordered font-semibold text-xs inspector-tab-btn" onclick="switchInspectorTab('request', this)">Request JSON</button>
@@ -759,7 +800,7 @@
             <!-- Tab 1: Stream Output -->
             <div id="inspector-tab-stream" class="inspector-tab-content block">
               <div class="bg-base-200/50 border border-base-content/10 rounded-xl p-4 font-mono text-xs space-y-2">
-                <div class="flex items-center justify-between border-b border-base-content/10 pb-2 text-[11px] text-base-content/60">
+                <div class="inspector-actions flex items-center justify-between border-b border-base-content/10 pb-2 text-[11px] text-base-content/60">
                   <span>Stream Chunks: <strong id="playground-chunk-count" class="text-base-content">0</strong></span>
                   <button type="button" class="btn btn-ghost btn-xs" onclick="copyStreamOutput(this)">Copy Output</button>
                 </div>
@@ -898,7 +939,8 @@
       body.className = 'font-mono text-[11px] mt-0.5 whitespace-pre-wrap break-words';
       body.innerText = message;
       const close = document.createElement('button');
-      close.className = 'btn btn-ghost btn-xs shrink-0';
+      close.className = 'btn btn-ghost btn-xs shrink-0 min-h-11 min-w-11';
+      close.setAttribute('aria-label', 'Dismiss notification');
       close.innerText = '✕';
       close.onclick = () => el.remove();
       text.append(title, body);
@@ -1279,9 +1321,6 @@
       const el = document.getElementById('telemetry-traceid');
       if (!el || !el.dataset.fullTrace) return;
       copyToClipboard(el.dataset.fullTrace, null);
-      const orig = el.innerText;
-      el.innerText = 'Copied!';
-      setTimeout(() => { el.innerText = orig; }, 1500);
     }
 
     function copyStreamOutput(btn) {
@@ -1711,8 +1750,12 @@
               </span>
             {{end}}
 
-            <button type="button" class="btn btn-ghost btn-xs text-base-content/50 hover:text-primary p-1 rounded-md" onclick="document.getElementById('models-modal-{{.Name}}').showModal()" title="Manage models (add/disable)">
+            {{/* Always rendered: with <=3 models and none disabled there is no
+               "see more" or "disabled" chip, so this is the only way into the
+               modal. Styled as a chip so the row keeps its rhythm. */}}
+            <button type="button" class="px-2.5 py-1 text-xs font-semibold rounded-md bg-base-200/80 text-base-content/70 hover:text-primary border border-base-content/10 whitespace-nowrap leading-none cursor-pointer inline-flex items-center gap-1" onclick="document.getElementById('models-modal-{{.Name}}').showModal()" title="Manage models (add/disable)">
               <svg xmlns="http://www.w3.org/2000/svg" class="size-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/></svg>
+              Manage
             </button>
           </div>
 
@@ -1724,7 +1767,7 @@
 
         <td class="text-right py-3.5 px-4 whitespace-nowrap" data-label="Actions">
           <div class="flex items-center justify-end gap-2">
-            <input type="checkbox" class="toggle toggle-xs toggle-success" {{if not .Disabled}}checked{{end}} hx-post="/providers/{{.Name}}/toggle" hx-target="#providers" hx-swap="innerHTML" title="{{if .Disabled}}Enable provider{{else}}Disable provider{{end}}">
+            <label class="checkbox-hit"><input type="checkbox" class="toggle toggle-xs toggle-success" {{if not .Disabled}}checked{{end}} hx-post="/providers/{{.Name}}/toggle" hx-target="#providers" hx-swap="innerHTML" title="{{if .Disabled}}Enable provider{{else}}Disable provider{{end}}"></label>
             <div class="dropdown dropdown-end">
             <button type="button" tabindex="0" class="btn btn-ghost btn-xs btn-square" aria-label="Provider actions for {{.Name}}">
               <svg xmlns="http://www.w3.org/2000/svg" class="size-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 5v.01M12 12v.01M12 19v.01M12 6a1 1 0 110-2 1 1 0 010 2zm0 7a1 1 0 110-2 1 1 0 010 2zm0 7a1 1 0 110-2 1 1 0 010 2z"/></svg>
@@ -2262,7 +2305,7 @@
 <div id="models-content-{{.Name}}" class="modal-box max-w-lg text-left border border-base-content/10 shadow-2xl p-6 rounded-2xl">
   <div class="flex items-center justify-between border-b border-base-content/10 pb-3">
     <div>
-      <h3 class="text-base font-bold flex items-center gap-2">
+      <h3 class="text-base font-bold flex flex-wrap items-center gap-x-2 gap-y-1">
         <span class="font-mono text-primary">{{.Name}}</span>
         <span class="badge badge-ghost badge-sm px-2 py-0.5">{{len .Models}} active</span>
         {{if .DisabledModels}}
@@ -2277,7 +2320,7 @@
   </div>
 
   <!-- Manual Add Model Form -->
-  <form action="/providers/{{.Name}}/models" method="POST" hx-post="/providers/{{.Name}}/models" hx-target="#models-content-{{.Name}}" hx-swap="outerHTML" class="flex items-center gap-2 pt-4">
+  <form action="/providers/{{.Name}}/models" method="POST" hx-post="/providers/{{.Name}}/models" hx-target="#models-content-{{.Name}}" hx-swap="outerHTML" class="model-modal-control-row flex flex-col sm:flex-row items-stretch sm:items-center gap-2 pt-4">
     <input type="text" name="model_id" placeholder="Add model ID (e.g. gpt-4.5-preview, claude-3-7-sonnet)" class="input input-bordered input-sm flex-1 font-mono text-xs px-3.5 py-2.5 h-auto min-h-[2.5rem] rounded-xl" required>
     <button type="submit" class="btn btn-sm btn-primary px-4 h-auto min-h-[2.5rem] rounded-xl font-medium gap-1.5 shadow-sm">
       <svg xmlns="http://www.w3.org/2000/svg" class="size-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/></svg>
@@ -2290,11 +2333,11 @@
     <div>
       {{$provName := .Name}}
       <form action="/providers/{{$provName}}/models/disable" method="POST" hx-post="/providers/{{$provName}}/models/disable" hx-target="#models-content-{{$provName}}" hx-swap="outerHTML" class="space-y-2">
-        <div class="text-xs font-bold text-base-content/60 uppercase tracking-wider mb-2 flex items-center justify-between">
+        <div class="model-modal-control-row text-xs font-bold text-base-content/60 uppercase tracking-wider mb-2 flex flex-wrap items-center justify-between gap-2">
           <div class="flex items-center gap-2">
             <span>Active Models ({{len .Models}})</span>
             {{if .Models}}
-              <label class="normal-case font-normal text-xs text-base-content/70 flex items-center gap-1.5 cursor-pointer ml-2">
+              <label class="normal-case font-normal text-xs text-base-content/70 flex items-center gap-1.5 cursor-pointer ml-2 min-h-11">
                 <input type="checkbox" class="checkbox checkbox-xs checkbox-primary" onchange="document.querySelectorAll('.active-check-{{$provName}}').forEach(c => c.checked = this.checked)">
                 <span>Select all</span>
               </label>
@@ -2311,13 +2354,13 @@
         {{end}}
         <div class="space-y-1.5">
           {{range .Models}}
-          <div class="flex items-center justify-between p-2.5 rounded-xl bg-base-200/50 hover:bg-base-200/80 font-mono text-xs border border-base-content/5 transition-colors">
-            <label class="flex items-center gap-2.5 cursor-pointer flex-1 mr-2 min-w-0">
+          <div class="model-modal-row flex flex-wrap items-center justify-between gap-2 p-2.5 rounded-xl bg-base-200/50 hover:bg-base-200/80 font-mono text-xs border border-base-content/5 transition-colors">
+            <label class="flex items-center gap-2.5 cursor-pointer flex-1 min-w-0 basis-full sm:basis-auto">
               <input type="checkbox" name="model_id" value="{{.}}" class="checkbox checkbox-xs checkbox-warning active-check-{{$provName}}">
-              <span class="font-semibold text-base-content truncate">{{.}}</span>
+              <span class="font-semibold text-base-content truncate min-w-0">{{.}}</span>
             </label>
-            <div class="flex items-center gap-1.5 shrink-0">
-              <button type="button" class="btn btn-ghost btn-xs text-base-content/60 hover:text-base-content px-2 rounded-lg font-sans" onclick="copyToClipboard('{{.}}', this, 'Copied!')">Copy ID</button>
+            <div class="model-modal-row-actions flex items-center gap-1.5 shrink-0 ml-auto">
+              <button type="button" class="btn btn-ghost btn-xs text-base-content/60 hover:text-base-content px-2 rounded-lg font-sans" onclick="copyToClipboard('{{.}}', this)">Copy ID</button>
               
               <button type="button" hx-post="/providers/{{$provName}}/models/disable" hx-vals='{"model_id": "{{.}}"}' hx-target="#models-content-{{$provName}}" hx-swap="outerHTML" class="btn btn-ghost btn-xs text-warning hover:bg-warning/15 px-2 rounded-lg font-sans" title="Disable this model">Disable</button>
 
@@ -2334,10 +2377,10 @@
     <div class="border-t border-base-content/10 pt-3">
       {{$provName := .Name}}
       <form action="/providers/{{$provName}}/models/enable" method="POST" hx-post="/providers/{{$provName}}/models/enable" hx-target="#models-content-{{$provName}}" hx-swap="outerHTML" class="space-y-2">
-        <div class="text-xs font-bold text-warning/80 uppercase tracking-wider mb-2 flex items-center justify-between">
+        <div class="model-modal-control-row text-xs font-bold text-warning/80 uppercase tracking-wider mb-2 flex flex-wrap items-center justify-between gap-2">
           <div class="flex items-center gap-2">
             <span>Disabled Models ({{len .DisabledModels}})</span>
-            <label class="normal-case font-normal text-xs text-base-content/70 flex items-center gap-1.5 cursor-pointer ml-2">
+            <label class="normal-case font-normal text-xs text-base-content/70 flex items-center gap-1.5 cursor-pointer ml-2 min-h-11">
               <input type="checkbox" class="checkbox checkbox-xs checkbox-success" onchange="document.querySelectorAll('.disabled-check-{{$provName}}').forEach(c => c.checked = this.checked)">
               <span>Select all</span>
             </label>
@@ -2348,13 +2391,13 @@
         </div>
         <div class="space-y-1.5">
           {{range .DisabledModels}}
-          <div class="flex items-center justify-between p-2.5 rounded-xl bg-base-200/20 hover:bg-base-200/40 font-mono text-xs border border-dashed border-base-content/15 transition-colors">
-            <label class="flex items-center gap-2.5 cursor-pointer flex-1 mr-2 min-w-0">
+          <div class="model-modal-row flex flex-wrap items-center justify-between gap-2 p-2.5 rounded-xl bg-base-200/20 hover:bg-base-200/40 font-mono text-xs border border-dashed border-base-content/15 transition-colors">
+            <label class="flex items-center gap-2.5 cursor-pointer flex-1 min-w-0 basis-full sm:basis-auto">
               <input type="checkbox" name="model_id" value="{{.}}" class="checkbox checkbox-xs checkbox-success disabled-check-{{$provName}}">
-              <span class="font-medium text-base-content/50 line-through truncate">{{.}}</span>
+              <span class="font-medium text-base-content/50 line-through truncate min-w-0">{{.}}</span>
             </label>
-            <div class="flex items-center gap-1.5 shrink-0">
-              <button type="button" class="btn btn-ghost btn-xs text-base-content/60 hover:text-base-content px-2 rounded-lg font-sans" onclick="copyToClipboard('{{.}}', this, 'Copied!')">Copy ID</button>
+            <div class="model-modal-row-actions flex items-center gap-1.5 shrink-0 ml-auto">
+              <button type="button" class="btn btn-ghost btn-xs text-base-content/60 hover:text-base-content px-2 rounded-lg font-sans" onclick="copyToClipboard('{{.}}', this)">Copy ID</button>
 
               <button type="button" hx-post="/providers/{{$provName}}/models/enable" hx-vals='{"model_id": "{{.}}"}' hx-target="#models-content-{{$provName}}" hx-swap="outerHTML" class="btn btn-ghost btn-xs text-success hover:bg-success/15 px-2.5 rounded-lg font-sans" title="Enable this model">Enable</button>
 
@@ -2400,8 +2443,11 @@
     </span>
   {{end}}
 
-  <button type="button" class="btn btn-ghost btn-xs text-base-content/50 hover:text-primary p-1 rounded-md" onclick="document.getElementById('models-modal-{{.Name}}').showModal()" title="Manage models (add/disable)">
+  {{/* Always rendered, matching the in-table chip list: it is the only entry
+     point when there is no "see more" or "disabled" chip. */}}
+  <button type="button" class="px-2.5 py-1 text-xs font-semibold rounded-md bg-base-200/80 text-base-content/70 hover:text-primary border border-base-content/10 whitespace-nowrap leading-none cursor-pointer inline-flex items-center gap-1" onclick="document.getElementById('models-modal-{{.Name}}').showModal()" title="Manage models (add/disable)">
     <svg xmlns="http://www.w3.org/2000/svg" class="size-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/></svg>
+    Manage
   </button>
 </div>
 {{end}}
