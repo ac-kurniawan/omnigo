@@ -331,3 +331,33 @@ The full design and the TDD implementation plan live under `docs/superpowers/`.
 ## License
 
 MIT
+
+### Configurable Caching Layer
+
+OmniGo includes a high-performance, deterministic exact-match cache layer designed to eliminate redundant LLM token costs and cut latency without sacrificing output quality or introducing response looping.
+
+#### Guarantees & Architecture:
+- **Zero-Loop Exact Match:** Computes deterministic SHA-256 hashes across complete prompt histories, preventing repetitive agent turn loops.
+- **Strict Tenant Isolation:** Every cache key cryptographically incorporates the authenticated client/tenant ID (`omnigo:cache:{tenant_id}:{hash}`) to prevent cross-tenant response leakage (mitigating CacheProbe side-channel vulnerabilities).
+- **Default-Deny Posture:** Caching is strictly **disabled by default** (`enabled: false`).
+- **Automatic Bypass Rules:** Automatically bypasses cache on stochastic requests (`temperature > 0`), tool calling / function schemas, historical tool messages, or client `Cache-Control: no-cache` directives.
+- **Pluggable Backends:** Supports an in-memory bounded LRU (protecting OmniGo's <15 MiB RAM baseline) and external Redis/Valkey for distributed setups.
+
+#### Configuration Example (`config.yaml`):
+
+```yaml
+cache:
+  enabled: true             # Default: false (strictly opt-in)
+  backend: "memory"         # "memory" (bounded LRU) or "redis"
+  ttl: "1h"                 # Duration string (e.g., 30m, 1h, 24h)
+  max_items: 1000           # In-memory LRU capacity ceiling
+  redis_url: ""             # Required if backend is "redis" (e.g. redis://localhost:6379/0)
+```
+
+#### Environment Variables:
+- `OMNIGO_CACHE_ENABLED`: `true` / `false`
+- `OMNIGO_CACHE_BACKEND`: `memory` / `redis`
+- `OMNIGO_CACHE_TTL`: `1h`
+- `OMNIGO_CACHE_MAX_ITEMS`: `1000`
+- `OMNIGO_CACHE_REDIS_URL`: connection string for Redis/Valkey
+
