@@ -76,6 +76,8 @@ type Metrics struct {
 	comboAttempts    metric.Int64Counter
 	configReloads    metric.Int64Counter
 	tokens           metric.Int64Counter
+	cacheHits        metric.Int64Counter
+	cacheMisses      metric.Int64Counter
 
 	quotaRemainingRatio metric.Float64Gauge
 	quotaStatus         metric.Int64Gauge
@@ -165,6 +167,18 @@ func (m *Metrics) init(provider *sdkmetric.MeterProvider) error {
 	if m.configReloads, err = meter.Int64Counter(
 		"omnigo.config.reloads",
 		metric.WithDescription("Config reload attempts by outcome"),
+	); err != nil {
+		return err
+	}
+	if m.cacheHits, err = meter.Int64Counter(
+		"omnigo.cache.hits",
+		metric.WithDescription("Cache hits"),
+	); err != nil {
+		return err
+	}
+	if m.cacheMisses, err = meter.Int64Counter(
+		"omnigo.cache.misses",
+		metric.WithDescription("Cache misses"),
 	); err != nil {
 		return err
 	}
@@ -556,4 +570,26 @@ func (m *Metrics) RecordTokenUsage(ctx context.Context, providerName, model, acc
 		attrs = append(attrs, attribute.String(attrTokenKind, sample.kind))
 		m.tokens.Add(context.Background(), int64(sample.count), metric.WithAttributes(attrs...))
 	}
+}
+
+// RecordCacheHit records an exact-match cache hit for model.
+func (m *Metrics) RecordCacheHit(ctx context.Context, model string) {
+	if !m.Enabled() {
+		return
+	}
+	m.cacheHits.Add(context.Background(), 1, metric.WithAttributes(
+		attribute.String(attrModel, exactModelLabel(model)),
+		attribute.String(attrClientKey, clientKeyLabel(auth.CallerFrom(ctx).ID())),
+	))
+}
+
+// RecordCacheMiss records a cache miss for model.
+func (m *Metrics) RecordCacheMiss(ctx context.Context, model string) {
+	if !m.Enabled() {
+		return
+	}
+	m.cacheMisses.Add(context.Background(), 1, metric.WithAttributes(
+		attribute.String(attrModel, exactModelLabel(model)),
+		attribute.String(attrClientKey, clientKeyLabel(auth.CallerFrom(ctx).ID())),
+	))
 }
