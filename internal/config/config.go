@@ -228,6 +228,7 @@ type Config struct {
 	Quota         Quota         `yaml:"quota,omitempty"`
 	Providers     []Provider    `yaml:"providers"`
 	Combos        []Combo       `yaml:"combos"`
+	Cache         *CacheConfig  `yaml:"cache,omitempty"`
 	Timeout       string        `yaml:"timeout,omitempty"`
 }
 
@@ -281,6 +282,11 @@ var validTypes = map[string]bool{"openai": true, "antigravity": true, "codex": t
 var validStrategies = map[string]bool{"priority": true, "fill-first": true, "reliable": true, "round-robin": true}
 
 func (c *Config) Validate() error {
+	if c.Cache != nil {
+		if err := c.Cache.Validate(); err != nil {
+			return fmt.Errorf("cache: %w", err)
+		}
+	}
 	if c.Server.StreamTimeout != "" {
 		if err := validateStreamTimeout(c.Server.StreamTimeout); err != nil {
 			return fmt.Errorf("server: %w", err)
