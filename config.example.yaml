@@ -76,3 +76,12 @@ combos:
         model: gemini-3.7-flash-medium
       # - provider: openai-main
       #   model: gpt-4o
+
+# Optional exact-match cache layer (disabled by default)
+# cache:
+#   enabled: false
+#   backend: memory
+#   ttl: 1h
+#   max_items: 1000
+#   redis_url: ""
+
