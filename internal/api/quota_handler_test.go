@@ -81,7 +81,7 @@ func TestRouterRegistersQuotaEndpoints(t *testing.T) {
 	cache := quota.NewCache()
 	cache.Put(quota.AccountSnapshot{Provider: "cx", Identity: "a", Status: quota.StatusAvailable})
 
-	router := NewRouter(func() *config.Config { return cfg }, store, nil, nil, "test", nil, cache)
+	router := NewRouter(func() *config.Config { return cfg }, store, nil, nil, "test", nil, nil, cache)
 
 	req := dashboardRequest("/internal/quota")
 	req.Method = http.MethodGet

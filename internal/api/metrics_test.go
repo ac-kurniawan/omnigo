@@ -24,7 +24,7 @@ func newEndpointTestRouter(t *testing.T, cfg *config.Config) (http.Handler, *obs
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = metrics.Shutdown(context.Background()) })
-	return NewRouter(func() *config.Config { return cfg }, vault.NewMemoryStore(&vault.Vault{}), nil, nil, "test-version", metrics), metrics
+	return NewRouter(func() *config.Config { return cfg }, vault.NewMemoryStore(&vault.Vault{}), nil, nil, "test-version", metrics, nil), metrics
 }
 
 func TestActuatorMetricsDisabledByDefault(t *testing.T) {
@@ -93,6 +93,8 @@ func (m *testMetrics) RecordCombinationAttempt(ctx context.Context, combo, resul
 
 func (m *testMetrics) RecordTokenUsage(context.Context, string, string, string, string, provider.TokenUsage) {
 }
+func (m *testMetrics) RecordCacheHit(context.Context, string)  {}
+func (m *testMetrics) RecordCacheMiss(context.Context, string) {}
 
 // newRecordingRouter builds an authenticated router that records outcomes.
 func newRecordingRouter(t *testing.T, cfg *config.Config, m Metrics) (http.Handler, string) {
@@ -102,7 +104,7 @@ func newRecordingRouter(t *testing.T, cfg *config.Config, m Metrics) (http.Handl
 		t.Fatal(err)
 	}
 	v := &vault.Vault{ClientKeys: []vault.ClientKey{{ID: "k1", KeyHash: hash, Prefix: prefix, Active: true}}}
-	return NewRouter(func() *config.Config { return cfg }, vault.NewMemoryStore(v), nil, nil, "test-version", m), raw
+	return NewRouter(func() *config.Config { return cfg }, vault.NewMemoryStore(v), nil, nil, "test-version", m, nil), raw
 }
 
 func TestComboRecordsProviderAndComboOutcomes(t *testing.T) {
@@ -226,7 +228,7 @@ func TestUnlistedModelDoesNotCreateSeries(t *testing.T) {
 		t.Fatal(err)
 	}
 	v := &vault.Vault{ClientKeys: []vault.ClientKey{{ID: "k1", KeyHash: hash, Prefix: prefix, Active: true}}}
-	router := NewRouter(func() *config.Config { return cfg }, vault.NewMemoryStore(v), nil, nil, "test-version", metrics)
+	router := NewRouter(func() *config.Config { return cfg }, vault.NewMemoryStore(v), nil, nil, "test-version", metrics, nil)
 
 	for _, suffix := range []string{"a1", "a2", "a3", "a4", "a5", "a6", "a7", "a8", "a9", "b1"} {
 		req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions",
@@ -281,7 +283,7 @@ func TestProviderRequestKeepsExactModelLabel(t *testing.T) {
 		t.Fatal(err)
 	}
 	v := &vault.Vault{ClientKeys: []vault.ClientKey{{ID: "k1", KeyHash: hash, Prefix: prefix, Active: true}}}
-	router := NewRouter(func() *config.Config { return cfg }, vault.NewMemoryStore(v), nil, nil, "test-version", metrics)
+	router := NewRouter(func() *config.Config { return cfg }, vault.NewMemoryStore(v), nil, nil, "test-version", metrics, nil)
 
 	direct := httptest.NewRequest(http.MethodPost, "/v1/chat/completions",
 		strings.NewReader(`{"model":"probe/gemini-3.8-flash-tiered","messages":[]}`))
@@ -379,7 +381,7 @@ func TestMetricsCarryClientKeyIDLabel(t *testing.T) {
 		t.Fatal(err)
 	}
 	v := &vault.Vault{ClientKeys: []vault.ClientKey{{ID: "k1", KeyHash: hash, Prefix: prefix, Active: true}}}
-	router := NewRouter(func() *config.Config { return cfg }, vault.NewMemoryStore(v), nil, nil, "test-version", metrics)
+	router := NewRouter(func() *config.Config { return cfg }, vault.NewMemoryStore(v), nil, nil, "test-version", metrics, nil)
 	app := metrics.Middleware(router)
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"solo/m1","messages":[]}`))
@@ -445,7 +447,7 @@ func TestChatRecordsTokenUsagePerUpstream(t *testing.T) {
 		t.Fatal(err)
 	}
 	v := &vault.Vault{ClientKeys: []vault.ClientKey{{ID: "k1", KeyHash: hash, Prefix: prefix, Active: true}}}
-	app := metrics.Middleware(NewRouter(func() *config.Config { return cfg }, vault.NewMemoryStore(v), nil, nil, "test-version", metrics))
+	app := metrics.Middleware(NewRouter(func() *config.Config { return cfg }, vault.NewMemoryStore(v), nil, nil, "test-version", metrics, nil))
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"auto","messages":[]}`))
 	req.Header.Set("Authorization", "Bearer "+raw)
@@ -487,7 +489,7 @@ func TestClientKeyLabelIsBoundedToValidatedKeys(t *testing.T) {
 		t.Fatal(err)
 	}
 	v := &vault.Vault{ClientKeys: []vault.ClientKey{{ID: "k1", KeyHash: hash, Prefix: prefix, Active: true}}}
-	router := NewRouter(func() *config.Config { return cfg }, vault.NewMemoryStore(v), nil, nil, "test-version", metrics)
+	router := NewRouter(func() *config.Config { return cfg }, vault.NewMemoryStore(v), nil, nil, "test-version", metrics, nil)
 	app := metrics.Middleware(router)
 
 	for _, suffix := range []string{"A1", "A2", "A3", "A4", "A5"} {

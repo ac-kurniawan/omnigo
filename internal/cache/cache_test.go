@@ -2,6 +2,7 @@ package cache
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 	"time"
 )
@@ -43,14 +44,48 @@ func TestComputeCacheKey(t *testing.T) {
 	msgs1 := []NormalMessage{{Role: "user", Content: "hello"}}
 	msgs2 := []NormalMessage{{Role: "user", Content: "hello"}}
 
-	key1 := ComputeCacheKey("tenantA", "gpt-4o", msgs1, 0.0)
-	key2 := ComputeCacheKey("tenantA", "gpt-4o", msgs2, 0.0)
-	keyTenantB := ComputeCacheKey("tenantB", "gpt-4o", msgs1, 0.0)
+	key1, err := ComputeCacheKey("tenantA", "gpt-4o", msgs1, 0.0, 0)
+	if err != nil {
+		t.Fatalf("key1: %v", err)
+	}
+	key2, err := ComputeCacheKey("tenantA", "gpt-4o", msgs2, 0.0, 0)
+	if err != nil {
+		t.Fatalf("key2: %v", err)
+	}
+	keyTenantB, err := ComputeCacheKey("tenantB", "gpt-4o", msgs1, 0.0, 0)
+	if err != nil {
+		t.Fatalf("keyTenantB: %v", err)
+	}
+	keyCapped, err := ComputeCacheKey("tenantA", "gpt-4o", msgs1, 0.0, 16)
+	if err != nil {
+		t.Fatalf("keyCapped: %v", err)
+	}
+	keyOtherContent, err := ComputeCacheKey("tenantA", "gpt-4o", []NormalMessage{{Role: "user", Content: "other"}}, 0.0, 0)
+	if err != nil {
+		t.Fatalf("keyOtherContent: %v", err)
+	}
 
 	if key1 != key2 {
 		t.Fatalf("expected identical keys for identical payloads")
 	}
 	if key1 == keyTenantB {
 		t.Fatalf("expected tenant isolation to produce different keys")
+	}
+	if key1 == keyCapped {
+		t.Fatalf("expected different maxTokens to produce different keys")
+	}
+	if key1 == keyOtherContent {
+		t.Fatalf("expected different message content to produce different keys")
+	}
+	zeroField, err := json.Marshal(CanonicalKeyPayload{TenantID: "tenantA", Model: "gpt-4o", Messages: msgs1})
+	if err != nil {
+		t.Fatalf("marshal zero payload: %v", err)
+	}
+	explicitZero, err := json.Marshal(CanonicalKeyPayload{TenantID: "tenantA", Model: "gpt-4o", Messages: msgs1, MaxTokens: 0})
+	if err != nil {
+		t.Fatalf("marshal explicit zero: %v", err)
+	}
+	if string(zeroField) != string(explicitZero) {
+		t.Fatalf("maxTokens 0 must omit the field:\n zero=%s\n explicit=%s", zeroField, explicitZero)
 	}
 }

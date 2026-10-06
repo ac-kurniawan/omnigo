@@ -131,6 +131,7 @@ type CanonicalKeyPayload struct {
 	Model       string          `json:"m"`
 	Messages    []NormalMessage `json:"msg"`
 	Temperature float64         `json:"temp"`
+	MaxTokens   int             `json:"max_t,omitempty"`
 }
 
 type NormalMessage struct {
@@ -138,14 +139,18 @@ type NormalMessage struct {
 	Content string `json:"c"`
 }
 
-func ComputeCacheKey(tenantID, model string, messages []NormalMessage, temp float64) string {
+func ComputeCacheKey(tenantID, model string, messages []NormalMessage, temp float64, maxTokens int) (string, error) {
 	payload := CanonicalKeyPayload{
 		TenantID:    tenantID,
 		Model:       strings.ToLower(strings.TrimSpace(model)),
 		Messages:    messages,
 		Temperature: temp,
+		MaxTokens:   maxTokens,
 	}
-	raw, _ := json.Marshal(payload)
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return "", err
+	}
 	sum := sha256.Sum256(raw)
-	return fmt.Sprintf("omnigo:cache:%s:%s", tenantID, hex.EncodeToString(sum[:]))
+	return fmt.Sprintf("omnigo:cache:%s:%s", tenantID, hex.EncodeToString(sum[:])), nil
 }

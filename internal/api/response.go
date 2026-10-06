@@ -311,6 +311,44 @@ func (w *commitTracker) Flush() {
 	}
 }
 
+// bodyRecorder keeps a non-streaming provider response off the client until
+// the handler decides whether it is cacheable. Flush is a no-op so a provider
+// that type-asserts http.Flusher cannot push a partial body.
+type bodyRecorder struct {
+	http.ResponseWriter
+	status int
+	wrote  bool
+	body   bytes.Buffer
+}
+
+func (w *bodyRecorder) WriteHeader(status int) {
+	if w.wrote {
+		return
+	}
+	w.status = status
+	w.wrote = true
+}
+
+func (w *bodyRecorder) Write(data []byte) (int, error) {
+	if !w.wrote {
+		w.status = http.StatusOK
+		w.wrote = true
+	}
+	return w.body.Write(data)
+}
+
+func (w *bodyRecorder) Flush() {}
+
+func (w *bodyRecorder) statusCode() int {
+	if !w.wrote {
+		return http.StatusOK
+	}
+	if w.status == 0 {
+		return http.StatusOK
+	}
+	return w.status
+}
+
 // writeStreamError tells a client whose stream already started that the
 // generation did not finish. The response is committed, so failover is no
 // longer possible and a JSON envelope would be parsed as a malformed chunk; an
