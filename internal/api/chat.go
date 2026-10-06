@@ -182,29 +182,19 @@ func cacheMessages(msgs []provider.Message) ([]cache.NormalMessage, bool) {
 }
 
 func cacheParams(parsed map[string]any) (temp float64, maxTokens int, deterministic bool) {
-	temp = 0
 	if value, present := parsed["temperature"]; present {
 		number, ok := value.(json.Number)
 		if !ok {
-			if floating, isFloat := value.(float64); isFloat {
-				number = json.Number(strconv.FormatFloat(floating, 'f', -1, 64))
-			} else {
-				return 0, 0, false
-			}
+			return 0, 0, false
 		}
 		parsedTemp, err := number.Float64()
 		if err != nil || parsedTemp != 0 {
 			return 0, 0, false
 		}
 	}
-	maxTokens = 0
 	if value, present := parsed["max_tokens"]; present {
 		number, ok := value.(json.Number)
 		if !ok {
-			if floating, isFloat := value.(float64); isFloat && floating == float64(int(floating)) {
-				maxTokens = int(floating)
-				return 0, maxTokens, true
-			}
 			return 0, 0, false
 		}
 		parsedMaxTokens, err := number.Int64()
@@ -213,7 +203,7 @@ func cacheParams(parsed map[string]any) (temp float64, maxTokens int, determinis
 		}
 		maxTokens = int(parsedMaxTokens)
 	}
-	return temp, maxTokens, true
+	return 0, maxTokens, true
 }
 
 func minInt() int { return -int(^uint(0)>>1) - 1 }
