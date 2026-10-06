@@ -1643,3 +1643,31 @@ func TestChatCacheProviderIsolation(t *testing.T) {
 		t.Fatalf("upstream calls = %d, want 2", calls.Load())
 	}
 }
+
+func TestChatCacheMissingCallerBypasses(t *testing.T) {
+	var calls atomic.Int32
+	provider.Register("openai", func(cfg provider.Config, store provider.CredStore) provider.Provider {
+		return &fakeProvider{name: cfg.Name, chat: func(r provider.ChatRequest) error {
+			calls.Add(1)
+			return nil
+		}}
+	})
+	on := true
+	cfg := &config.Config{
+		Providers: []config.Provider{{Name: "openai", Type: "openai", Models: []string{"gpt-4o"}}},
+		Cache:     &config.CacheConfig{Enabled: &on, Backend: "memory", TTL: "1h", MaxItems: 8},
+	}
+	store := vault.NewMemoryStore(&vault.Vault{ProviderSecrets: map[string]vault.ProviderSecret{"openai": {}}})
+	registry := newProviderRegistry(store)
+	registry.ensure(cfg)
+	handler := handleChat(func() *config.Config { return cfg }, registry, nil, nil, cache.NewLRUCache(8))
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"openai/gpt-4o","messages":[{"role":"user","content":"hi"}]}`))
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK || calls.Load() != 1 {
+		t.Fatalf("status=%d calls=%d body=%s", rr.Code, calls.Load(), rr.Body.String())
+	}
+	if got := rr.Header().Get("X-Cache"); got != "" {
+		t.Fatalf("X-Cache = %q, want absent", got)
+	}
+}
