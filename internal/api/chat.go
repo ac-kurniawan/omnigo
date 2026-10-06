@@ -107,7 +107,7 @@ func handleChat(getCfg func() *config.Config, registry *providerRegistry, tracke
 			writeProviderError(w, providerErr)
 			return
 		}
-		if providerErr == nil && !recorded.committed && !recorded.flushed && recorded.statusCode() == http.StatusOK && recorded.body.Len() > 0 && r.Context().Err() == nil {
+		if providerErr == nil && !recorded.committed && recorded.statusCode() == http.StatusOK && recorded.body.Len() > 0 && r.Context().Err() == nil {
 			_ = responseCache.Set(context.WithoutCancel(r.Context()), key, recorded.body.Bytes(), cfg.Cache.ParsedTTL())
 		}
 		copyRecorded(w, recorded)

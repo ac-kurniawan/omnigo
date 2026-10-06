@@ -1508,6 +1508,7 @@ func TestChatCacheFlushDoesNotCommitPartialResponse(t *testing.T) {
 	}
 }
 func TestChatCacheTenantIsolation(t *testing.T) {
+
 	var calls atomic.Int32
 	provider.Register("openai", func(cfg provider.Config, store provider.CredStore) provider.Provider {
 		return &fakeProvider{name: cfg.Name, chat: func(r provider.ChatRequest) error {
@@ -1594,4 +1595,30 @@ func doChat(router http.Handler, rawKey, body string, header map[string]string) 
 	rr := httptest.NewRecorder()
 	router.ServeHTTP(rr, req)
 	return rr
+}
+
+func TestChatCacheSuccessfulFlushIsCached(t *testing.T) {
+	var calls atomic.Int32
+	provider.Register("openai", func(cfg provider.Config, store provider.CredStore) provider.Provider {
+		return &responseProvider{name: cfg.Name, chat: func(ctx context.Context, req provider.ChatRequest, w http.ResponseWriter) error {
+			calls.Add(1)
+			_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"ok"}}]}`))
+			w.(http.Flusher).Flush()
+			return nil
+		}}
+	})
+	cfg, v, raw := cacheTestFixture(t, "k1")
+	router := cacheTestRouter(cfg, v)
+	body := `{"model":"openai/gpt-4o","messages":[{"role":"user","content":"hi"}]}`
+	first := doChat(router, raw["k1"], body, nil)
+	second := doChat(router, raw["k1"], body, nil)
+	if first.Header().Get("X-Cache") != "MISS" || second.Header().Get("X-Cache") != "HIT" {
+		t.Fatalf("X-Cache = %q, %q; want MISS, HIT", first.Header().Get("X-Cache"), second.Header().Get("X-Cache"))
+	}
+	if first.Body.String() != second.Body.String() {
+		t.Fatalf("replayed body = %s, want %s", second.Body.String(), first.Body.String())
+	}
+	if calls.Load() != 1 {
+		t.Fatalf("upstream calls = %d, want 1", calls.Load())
+	}
 }
