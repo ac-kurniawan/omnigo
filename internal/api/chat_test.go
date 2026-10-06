@@ -1416,6 +1416,8 @@ func TestChatCacheBypass(t *testing.T) {
 		{name: "bypass header", body: `{"model":"openai/gpt-4o","messages":[{"role":"user","content":"hi"}]}`, header: map[string]string{"X-Bypass-Cache": "true"}},
 		{name: "array content", body: `{"model":"openai/gpt-4o","messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}]}`},
 		{name: "disabled", body: `{"model":"openai/gpt-4o","messages":[{"role":"user","content":"hi"}]}`, disable: true},
+		{name: "null temperature", body: `{"model":"openai/gpt-4o","messages":[{"role":"user","content":"hi"}],"temperature":null}`},
+		{name: "null max_tokens", body: `{"model":"openai/gpt-4o","messages":[{"role":"user","content":"hi"}],"max_tokens":null}`},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
