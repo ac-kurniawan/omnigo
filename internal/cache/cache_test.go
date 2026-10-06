@@ -77,6 +77,17 @@ func TestComputeCacheKey(t *testing.T) {
 	if key1 == keyOtherContent {
 		t.Fatalf("expected different message content to produce different keys")
 	}
+	largeA, err := ComputeCacheKey("tenantA", "gpt-4o", msgs1, 0, 9007199254740992)
+	if err != nil {
+		t.Fatalf("largeA: %v", err)
+	}
+	largeB, err := ComputeCacheKey("tenantA", "gpt-4o", msgs1, 0, 9007199254740993)
+	if err != nil {
+		t.Fatalf("largeB: %v", err)
+	}
+	if largeA == largeB {
+		t.Fatalf("distinct maxTokens above 2^53 produced the same key")
+	}
 	zeroField, err := json.Marshal(CanonicalKeyPayload{TenantID: "tenantA", Model: "gpt-4o", Messages: msgs1})
 	if err != nil {
 		t.Fatalf("marshal zero payload: %v", err)
