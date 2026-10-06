@@ -536,14 +536,16 @@
               {{if not .Models}}
                 <div class="text-[11px] text-base-content/40 italic py-1">No active cached models for this provider.</div>
               {{else}}
-                <div class="grid grid-cols-1 gap-1.5">
+                <div class="grid grid-cols-1 gap-2">
                   {{range .Models}}
-                    <label class="picker-model-item flex items-center justify-between p-2 rounded-lg bg-base-100 hover:bg-base-200/80 cursor-pointer font-mono text-xs border border-base-content/5 transition-colors" data-search="{{$provName}} {{.}}">
-                      <div class="flex items-center gap-2.5 min-w-0">
-                        <input type="checkbox" class="checkbox checkbox-xs checkbox-primary picker-model-checkbox" data-target="{{$provName}}/{{.}}" data-provider="{{$provName}}" data-model="{{.}}" onchange="updatePickerCounter()">
-                        <span class="font-medium text-base-content truncate">{{.}}</span>
+                    <label class="picker-model-item flex flex-col gap-1.5 p-2.5 rounded-lg bg-base-100 hover:bg-base-200/80 cursor-pointer font-mono text-xs border border-base-content/5 transition-colors" data-search="{{$provName}} {{.}}">
+                      <div class="flex items-start gap-2.5 min-w-0">
+                        <input type="checkbox" class="checkbox checkbox-xs checkbox-primary picker-model-checkbox shrink-0 mt-0.5" data-target="{{$provName}}/{{.}}" data-provider="{{$provName}}" data-model="{{.}}" onchange="updatePickerCounter()">
+                        <span class="font-medium text-base-content break-all leading-snug">{{.}}</span>
                       </div>
-                      <span class="text-[10px] text-base-content/40 font-mono shrink-0 ml-2">{{$provName}}/{{.}}</span>
+                      <div class="pl-6 flex items-center justify-between text-[10px] text-base-content/40 font-mono">
+                        <span class="break-all">{{$provName}}/{{.}}</span>
+                      </div>
                     </label>
                   {{end}}
                 </div>
@@ -1123,19 +1125,19 @@
         const isLast = idx === targets.length - 1;
         const priorityLabel = idx === 0 ? 'Primary' : `Fallback ${idx}`;
         return `
-          <div class="flex items-center justify-between p-2.5 rounded-xl bg-base-200/60 hover:bg-base-200 border border-base-content/10 font-mono text-xs transition-colors">
-            <div class="flex items-center gap-2.5 min-w-0 flex-1">
+          <div class="flex flex-col gap-2 p-2.5 rounded-xl bg-base-200/60 hover:bg-base-200 border border-base-content/10 font-mono text-xs transition-colors">
+            <div class="flex items-center justify-between gap-2">
               <span class="badge ${idx === 0 ? 'badge-primary' : 'badge-ghost'} badge-xs font-sans font-bold px-2 py-0.5 shrink-0">#${idx + 1} ${priorityLabel}</span>
-              <div class="flex items-center gap-1.5 truncate">
-                <span class="font-bold text-primary">${prov}</span>
-                <span class="text-base-content/40">/</span>
-                <span class="font-medium text-base-content truncate">${model}</span>
+              <div class="flex items-center gap-1 shrink-0 font-sans">
+                <button type="button" class="btn btn-ghost btn-xs size-7 min-h-0 p-0 rounded-lg text-base-content/70 hover:text-primary ${isFirst ? 'opacity-20 cursor-not-allowed' : ''}" ${isFirst ? 'disabled' : ''} onclick="${moveFn}(${idx}, -1)" title="Move up in priority">▲</button>
+                <button type="button" class="btn btn-ghost btn-xs size-7 min-h-0 p-0 rounded-lg text-base-content/70 hover:text-primary ${isLast ? 'opacity-20 cursor-not-allowed' : ''}" ${isLast ? 'disabled' : ''} onclick="${moveFn}(${idx}, 1)" title="Move down in priority">▼</button>
+                <button type="button" class="btn btn-ghost btn-xs size-7 min-h-0 p-0 rounded-lg text-error hover:bg-error/15" onclick="${removeFn}(${idx})" title="Remove from combo">✕</button>
               </div>
             </div>
-            <div class="flex items-center gap-1 shrink-0 ml-2 font-sans">
-              <button type="button" class="btn btn-ghost btn-xs size-7 min-h-0 p-0 rounded-lg text-base-content/70 hover:text-primary ${isFirst ? 'opacity-20 cursor-not-allowed' : ''}" ${isFirst ? 'disabled' : ''} onclick="${moveFn}(${idx}, -1)" title="Move up in priority">▲</button>
-              <button type="button" class="btn btn-ghost btn-xs size-7 min-h-0 p-0 rounded-lg text-base-content/70 hover:text-primary ${isLast ? 'opacity-20 cursor-not-allowed' : ''}" ${isLast ? 'disabled' : ''} onclick="${moveFn}(${idx}, 1)" title="Move down in priority">▼</button>
-              <button type="button" class="btn btn-ghost btn-xs size-7 min-h-0 p-0 rounded-lg text-error hover:bg-error/15" onclick="${removeFn}(${idx})" title="Remove from combo">✕</button>
+            <div class="flex items-start gap-1.5 break-all pl-1 leading-snug">
+              <span class="font-bold text-primary shrink-0">${prov}</span>
+              <span class="text-base-content/40 shrink-0">/</span>
+              <span class="font-medium text-base-content break-all">${model}</span>
             </div>
           </div>
         `;
