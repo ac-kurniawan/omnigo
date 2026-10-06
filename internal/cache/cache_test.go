@@ -44,23 +44,27 @@ func TestComputeCacheKey(t *testing.T) {
 	msgs1 := []NormalMessage{{Role: "user", Content: "hello"}}
 	msgs2 := []NormalMessage{{Role: "user", Content: "hello"}}
 
-	key1, err := ComputeCacheKey("tenantA", "gpt-4o", msgs1, 0.0, 0)
+	key1, err := ComputeCacheKey("tenantA", "provider-a", "gpt-4o", msgs1, 0.0, 0)
 	if err != nil {
 		t.Fatalf("key1: %v", err)
 	}
-	key2, err := ComputeCacheKey("tenantA", "gpt-4o", msgs2, 0.0, 0)
+	key2, err := ComputeCacheKey("tenantA", "provider-a", "gpt-4o", msgs2, 0.0, 0)
 	if err != nil {
 		t.Fatalf("key2: %v", err)
 	}
-	keyTenantB, err := ComputeCacheKey("tenantB", "gpt-4o", msgs1, 0.0, 0)
+	keyTenantB, err := ComputeCacheKey("tenantB", "provider-a", "gpt-4o", msgs1, 0.0, 0)
 	if err != nil {
 		t.Fatalf("keyTenantB: %v", err)
 	}
-	keyCapped, err := ComputeCacheKey("tenantA", "gpt-4o", msgs1, 0.0, 16)
+	keyProviderB, err := ComputeCacheKey("tenantA", "provider-b", "gpt-4o", msgs1, 0.0, 0)
+	if err != nil {
+		t.Fatalf("keyProviderB: %v", err)
+	}
+	keyCapped, err := ComputeCacheKey("tenantA", "provider-a", "gpt-4o", msgs1, 0.0, 16)
 	if err != nil {
 		t.Fatalf("keyCapped: %v", err)
 	}
-	keyOtherContent, err := ComputeCacheKey("tenantA", "gpt-4o", []NormalMessage{{Role: "user", Content: "other"}}, 0.0, 0)
+	keyOtherContent, err := ComputeCacheKey("tenantA", "provider-a", "gpt-4o", []NormalMessage{{Role: "user", Content: "other"}}, 0.0, 0)
 	if err != nil {
 		t.Fatalf("keyOtherContent: %v", err)
 	}
@@ -71,17 +75,20 @@ func TestComputeCacheKey(t *testing.T) {
 	if key1 == keyTenantB {
 		t.Fatalf("expected tenant isolation to produce different keys")
 	}
+	if key1 == keyProviderB {
+		t.Fatalf("expected provider isolation to produce different keys")
+	}
 	if key1 == keyCapped {
 		t.Fatalf("expected different maxTokens to produce different keys")
 	}
 	if key1 == keyOtherContent {
 		t.Fatalf("expected different message content to produce different keys")
 	}
-	largeA, err := ComputeCacheKey("tenantA", "gpt-4o", msgs1, 0, 9007199254740992)
+	largeA, err := ComputeCacheKey("tenantA", "provider-a", "gpt-4o", msgs1, 0, 9007199254740992)
 	if err != nil {
 		t.Fatalf("largeA: %v", err)
 	}
-	largeB, err := ComputeCacheKey("tenantA", "gpt-4o", msgs1, 0, 9007199254740993)
+	largeB, err := ComputeCacheKey("tenantA", "provider-a", "gpt-4o", msgs1, 0, 9007199254740993)
 	if err != nil {
 		t.Fatalf("largeB: %v", err)
 	}
