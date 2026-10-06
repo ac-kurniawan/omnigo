@@ -70,14 +70,14 @@ func handleChat(getCfg func() *config.Config, registry *providerRegistry, tracke
 			return
 		}
 		req.Model = resolvedModel
-		callerID := auth.CallerFrom(r.Context()).ID()
+		caller := auth.CallerFrom(r.Context())
 		normal, hashable := cacheMessages(msgs)
 		temp, maxTokens, deterministic := cacheParams(parsed)
-		if callerID == "" || !hashable || !deterministic {
+		if caller == nil || caller.ID() == "" || !hashable || !deterministic {
 			serveResolved(w, r, p, provName, resolvedModel, req, metrics, startTime, tc)
 			return
 		}
-		key, keyErr := cache.ComputeCacheKey(callerID, provName, resolvedModel, normal, temp, maxTokens)
+		key, keyErr := cache.ComputeCacheKey(caller.ID(), provName, resolvedModel, normal, temp, maxTokens)
 		if keyErr != nil {
 			serveResolved(w, r, p, provName, resolvedModel, req, metrics, startTime, tc)
 			return
