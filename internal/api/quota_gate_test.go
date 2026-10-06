@@ -17,7 +17,7 @@ func TestQuotaEndpointsDisabledWhenConfigOff(t *testing.T) {
 		Quota:     config.Quota{Enabled: &off},
 	}
 	cache := quota.NewCache()
-	router := NewRouter(func() *config.Config { return cfg }, vault.NewMemoryStore(&vault.Vault{}), nil, nil, "test", nil, cache)
+	router := NewRouter(func() *config.Config { return cfg }, vault.NewMemoryStore(&vault.Vault{}), nil, nil, "test", nil, nil, cache)
 
 	req := dashboardRequest("/internal/quota")
 	req.Method = http.MethodGet

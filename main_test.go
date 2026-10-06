@@ -30,7 +30,7 @@ func TestAppServesDashboardAndGateV1(t *testing.T) {
 	store := vault.NewMemoryStore(&vault.Vault{ProviderSecrets: map[string]vault.ProviderSecret{}})
 	app, _ := newApp(func() *config.Config { return cfg }, store, func(fn func(*config.Config) error) error {
 		return fn(cfg)
-	}, nil, nil, nil)
+	}, nil, nil, nil, nil)
 
 	rr := httptest.NewRecorder()
 	app.ServeHTTP(rr, httptest.NewRequest("GET", "/health", nil))
@@ -62,7 +62,7 @@ func TestAppServesDashboardAndGateV1(t *testing.T) {
 
 func TestAppKeepsV1ProtectedFromDashboardCredentials(t *testing.T) {
 	cfg := &config.Config{}
-	app, _ := newApp(func() *config.Config { return cfg }, vault.NewMemoryStore(&vault.Vault{}), nil, nil, nil, nil)
+	app, _ := newApp(func() *config.Config { return cfg }, vault.NewMemoryStore(&vault.Vault{}), nil, nil, nil, nil, nil)
 	req := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
 	req.Host = "omnigo.test"
 	req.Header.Set("Origin", "http://omnigo.test")
@@ -81,7 +81,7 @@ func TestAppDashboardDisabledInConfig(t *testing.T) {
 	t.Setenv("OMNIGO_DASH_PASS", "s3cret")
 	off := false
 	cfg := &config.Config{Dashboard: config.Dashboard{Enabled: &off}}
-	app, _ := newApp(func() *config.Config { return cfg }, vault.NewMemoryStore(&vault.Vault{}), nil, nil, nil, nil)
+	app, _ := newApp(func() *config.Config { return cfg }, vault.NewMemoryStore(&vault.Vault{}), nil, nil, nil, nil, nil)
 
 	// The whole dashboard surface is absent while disabled, basic auth included.
 	for _, path := range []string{"/", "/providers", "/static/htmx.min.js"} {
@@ -183,7 +183,7 @@ func TestPlaygroundDashboardAndV1TelemetryIntegration(t *testing.T) {
 		}
 	})
 
-	app, _ := newApp(func() *config.Config { return cfg }, store, nil, nil, nil, nil)
+	app, _ := newApp(func() *config.Config { return cfg }, store, nil, nil, nil, nil, nil)
 
 	// 1. Dashboard renders the Inspector & Playground
 	dashReq := httptest.NewRequest(http.MethodGet, "/", nil)
@@ -267,7 +267,7 @@ func TestActuatorMetricsEndToEndWithApp(t *testing.T) {
 	}
 	defer func() { _ = metrics.Shutdown(context.Background()) }()
 
-	app, _ := newApp(func() *config.Config { return cfg }, store, nil, nil, metrics, nil)
+	app, _ := newApp(func() *config.Config { return cfg }, store, nil, nil, metrics, nil, nil)
 
 	// 1. Initially scrape works and shows the service resource
 	rr := httptest.NewRecorder()

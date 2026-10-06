@@ -62,7 +62,7 @@ func TestStreamsEveryChunkBeforeUpstreamEOF(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer func() { _ = metrics.Shutdown(context.Background()) }()
-			router := NewRouter(func() *config.Config { return cfg }, vault.NewMemoryStore(v), nil, nil, "test-version", metrics)
+			router := NewRouter(func() *config.Config { return cfg }, vault.NewMemoryStore(v), nil, nil, "test-version", metrics, nil)
 			// Real server so writes are actually flushed over a connection; wrap the
 			// router exactly as main does to prove metrics preserve SSE streaming.
 			gw := httptest.NewServer(metrics.Middleware(router))
@@ -140,7 +140,7 @@ func TestDirectPostCommitFailureDoesNotAppendJSONError(t *testing.T) {
 	}
 	raw, hash, prefix, _ := auth.GenerateKey()
 	v := &vault.Vault{ClientKeys: []vault.ClientKey{{ID: "k1", KeyHash: hash, Prefix: prefix, Active: true}}}
-	router := NewRouter(func() *config.Config { return cfg }, vault.NewMemoryStore(v), nil, nil, "test-version", nil)
+	router := NewRouter(func() *config.Config { return cfg }, vault.NewMemoryStore(v), nil, nil, "test-version", nil, nil)
 	gw := httptest.NewServer(router)
 	defer gw.Close()
 
@@ -199,7 +199,7 @@ func TestPostCommitStreamFailureEmitsSSEError(t *testing.T) {
 	}
 	raw, hash, prefix, _ := auth.GenerateKey()
 	v := &vault.Vault{ClientKeys: []vault.ClientKey{{ID: "k1", KeyHash: hash, Prefix: prefix, Active: true}}}
-	router := NewRouter(func() *config.Config { return cfg }, vault.NewMemoryStore(v), nil, nil, "test-version", nil)
+	router := NewRouter(func() *config.Config { return cfg }, vault.NewMemoryStore(v), nil, nil, "test-version", nil, nil)
 	gw := httptest.NewServer(router)
 	defer gw.Close()
 
@@ -269,7 +269,7 @@ func TestComboCommitsOnFirstContentFrameBeforeUpstreamEOF(t *testing.T) {
 	}
 	raw, hash, prefix, _ := auth.GenerateKey()
 	v := &vault.Vault{ClientKeys: []vault.ClientKey{{ID: "k1", KeyHash: hash, Prefix: prefix, Active: true}}}
-	gw := httptest.NewServer(NewRouter(func() *config.Config { return cfg }, vault.NewMemoryStore(v), nil, nil, "test-version", nil))
+	gw := httptest.NewServer(NewRouter(func() *config.Config { return cfg }, vault.NewMemoryStore(v), nil, nil, "test-version", nil, nil))
 	defer gw.Close()
 
 	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, gw.URL+"/v1/chat/completions",

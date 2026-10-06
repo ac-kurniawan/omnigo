@@ -16,6 +16,7 @@ import (
 
 	"github.com/ac-kurniawan/omnigo/internal/api"
 	"github.com/ac-kurniawan/omnigo/internal/auth"
+	"github.com/ac-kurniawan/omnigo/internal/cache"
 	"github.com/ac-kurniawan/omnigo/internal/combo"
 	"github.com/ac-kurniawan/omnigo/internal/config"
 	"github.com/ac-kurniawan/omnigo/internal/dashboard"
@@ -105,8 +106,12 @@ func (s *appState) mutate(fn func(*config.Config) error) error {
 	return s.reload()
 }
 
-func newApp(getCfg func() *config.Config, store *vault.Store, mutate config.MutateFunc, tracker *combo.Tracker, metrics *observability.Metrics, quotaCache *quota.Cache) (http.Handler, *api.ProviderRuntime) {
-	apiHandler, runtime := api.NewRouterWithQuota(getCfg, store, mutate, tracker, version.Value, metrics, quotaCache)
+// newApp wires the HTTP handler. responseCache is created once in main from
+// the startup config. A reload that flips cache.enabled off is honored per
+// request; a reload that turns the cache on does not create an LRU if startup
+// left this nil. Capacity is not resized on reload.
+func newApp(getCfg func() *config.Config, store *vault.Store, mutate config.MutateFunc, tracker *combo.Tracker, metrics *observability.Metrics, quotaCache *quota.Cache, responseCache cache.CacheBackend) (http.Handler, *api.ProviderRuntime) {
+	apiHandler, runtime := api.NewRouterWithQuota(getCfg, store, mutate, tracker, version.Value, metrics, quotaCache, responseCache)
 
 	root := http.NewServeMux()
 	root.Handle("/health", apiHandler)
@@ -256,7 +261,14 @@ func main() {
 	// router's provider instances, so polling and serving share one set of
 	// per-account token managers.
 	quotaCache := quota.NewCache()
-	app, runtime := newApp(state.getCfg, state.store, state.mutate, tracker, metrics, quotaCache)
+	var responseCache cache.CacheBackend
+	if startup := state.getCfg(); startup != nil && startup.Cache.EnabledOrDefault() {
+		if startup.Cache.BackendOrDefault() != "memory" {
+			log.Fatalf("startup: cache backend %q is not implemented", startup.Cache.BackendOrDefault())
+		}
+		responseCache = cache.NewLRUCache(startup.Cache.MaxItemsOrDefault())
+	}
+	app, runtime := newApp(state.getCfg, state.store, state.mutate, tracker, metrics, quotaCache, responseCache)
 	quotaSyncer := quota.NewSyncer(quota.Options{
 		Cache:   quotaCache,
 		Targets: runtime.QuotaTargets(state.getCfg),

@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -15,6 +16,7 @@ import (
 	"time"
 
 	"github.com/ac-kurniawan/omnigo/internal/auth"
+	"github.com/ac-kurniawan/omnigo/internal/cache"
 	"github.com/ac-kurniawan/omnigo/internal/combo"
 	"github.com/ac-kurniawan/omnigo/internal/config"
 	"github.com/ac-kurniawan/omnigo/internal/provider"
@@ -589,7 +591,7 @@ func TestChatFillFirstUsesTrackerAndDrains(t *testing.T) {
 	raw, hash, prefix, _ := auth.GenerateKey()
 	v := &vault.Vault{ClientKeys: []vault.ClientKey{{ID: "k1", KeyHash: hash, Prefix: prefix, Active: true}}}
 
-	router := NewRouter(func() *config.Config { return cfg }, vault.NewMemoryStore(v), nil, tr, "test-version", nil)
+	router := NewRouter(func() *config.Config { return cfg }, vault.NewMemoryStore(v), nil, tr, "test-version", nil, nil)
 
 	// Request 1: prov-a fails, marks drained, falls back to prov-b
 	req1 := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(`{"model":"smart","messages":[{"role":"user","content":"hi"}]}`))
@@ -970,7 +972,7 @@ func performChat(t *testing.T, cfg *config.Config, tr *combo.Tracker, body strin
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
 	req.Header.Set("Authorization", "Bearer "+raw)
 	rr := httptest.NewRecorder()
-	NewRouter(func() *config.Config { return cfg }, vault.NewMemoryStore(v), nil, tr, "test-version", nil).ServeHTTP(rr, req)
+	NewRouter(func() *config.Config { return cfg }, vault.NewMemoryStore(v), nil, tr, "test-version", nil, nil).ServeHTTP(rr, req)
 	return rr
 }
 
@@ -1220,7 +1222,7 @@ func TestComboClientAbortMidStreamDoesNotDrain(t *testing.T) {
 	tr := combo.NewTracker("")
 	raw, hash, prefix, _ := auth.GenerateKey()
 	v := &vault.Vault{ClientKeys: []vault.ClientKey{{ID: "k1", KeyHash: hash, Prefix: prefix, Active: true}}}
-	router := NewRouter(func() *config.Config { return cfg }, vault.NewMemoryStore(v), nil, tr, "test-version", nil)
+	router := NewRouter(func() *config.Config { return cfg }, vault.NewMemoryStore(v), nil, tr, "test-version", nil, nil)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"safe","messages":[],"stream":true}`)).WithContext(ctx)
@@ -1348,5 +1350,324 @@ func TestSanitizeFailureRedactsEmbeddedCredentials(t *testing.T) {
 		if out := sanitizeFailure(errors.New(in)); strings.Contains(out, "sk-embedded-fixture") {
 			t.Errorf("credential survived redaction:\n  in : %s\n  out: %s", in, out)
 		}
+	}
+}
+
+func TestChatCacheHitMiss(t *testing.T) {
+	var calls atomic.Int32
+	provider.Register("openai", func(cfg provider.Config, store provider.CredStore) provider.Provider {
+		return &fakeProvider{name: cfg.Name, chat: func(r provider.ChatRequest) error {
+			calls.Add(1)
+			return nil
+		}}
+	})
+	cfg, v, raw := cacheTestFixture(t, "k1")
+	router := cacheTestRouter(cfg, v)
+	body := `{"model":"openai/gpt-4o","messages":[{"role":"user","content":"hi"}]}`
+
+	first := doChat(router, raw["k1"], body, nil)
+	if first.Code != http.StatusOK {
+		t.Fatalf("first status = %d body %s", first.Code, first.Body.String())
+	}
+	if first.Header().Get("X-Cache") != "MISS" {
+		t.Fatalf("first X-Cache = %q, want MISS", first.Header().Get("X-Cache"))
+	}
+	if first.Body.String() != `{"choices":[{"message":{"content":"ok"}}]}` {
+		t.Fatalf("first body = %s", first.Body.String())
+	}
+	if calls.Load() != 1 {
+		t.Fatalf("calls after first = %d, want 1", calls.Load())
+	}
+
+	second := doChat(router, raw["k1"], body, nil)
+	if second.Code != http.StatusOK {
+		t.Fatalf("second status = %d body %s", second.Code, second.Body.String())
+	}
+	if second.Header().Get("X-Cache") != "HIT" {
+		t.Fatalf("second X-Cache = %q, want HIT", second.Header().Get("X-Cache"))
+	}
+	if second.Body.String() != first.Body.String() {
+		t.Fatalf("hit body = %s, want %s", second.Body.String(), first.Body.String())
+	}
+	if calls.Load() != 1 {
+		t.Fatalf("calls after hit = %d, want 1", calls.Load())
+	}
+}
+
+func TestChatCacheBypass(t *testing.T) {
+	cases := []struct {
+		name    string
+		body    string
+		header  map[string]string
+		stream  bool
+		disable bool
+	}{
+		{name: "stream", body: `{"model":"openai/gpt-4o","messages":[{"role":"user","content":"hi"}],"stream":true}`, stream: true},
+		{name: "temperature", body: `{"model":"openai/gpt-4o","messages":[{"role":"user","content":"hi"}],"temperature":0.2}`},
+		{name: "top_p", body: `{"model":"openai/gpt-4o","messages":[{"role":"user","content":"hi"}],"top_p":0.2}`},
+		{name: "max_completion_tokens", body: `{"model":"openai/gpt-4o","messages":[{"role":"user","content":"hi"}],"max_completion_tokens":16}`},
+		{name: "response_format", body: `{"model":"openai/gpt-4o","messages":[{"role":"user","content":"hi"}],"response_format":{"type":"json_object"}}`},
+		{name: "message name", body: `{"model":"openai/gpt-4o","messages":[{"role":"user","content":"hi","name":"alice"}]}`},
+		{name: "message metadata", body: `{"model":"openai/gpt-4o","messages":[{"role":"user","content":"hi","cache_control":{"type":"ephemeral"}}]}`},
+		{name: "unknown field", body: `{"model":"openai/gpt-4o","messages":[{"role":"user","content":"hi"}],"provider_option":true}`},
+		{name: "tools", body: `{"model":"openai/gpt-4o","messages":[{"role":"user","content":"hi"}],"tools":[{"type":"function","function":{"name":"a"}}]}`},
+		{name: "tool role", body: `{"model":"openai/gpt-4o","messages":[{"role":"tool","content":"hi"}]}`},
+		{name: "empty role", body: `{"model":"openai/gpt-4o","messages":[{"role":"","content":"hi"}]}`},
+		{name: "no-cache", body: `{"model":"openai/gpt-4o","messages":[{"role":"user","content":"hi"}]}`, header: map[string]string{"Cache-Control": "no-cache"}},
+		{name: "bypass header", body: `{"model":"openai/gpt-4o","messages":[{"role":"user","content":"hi"}]}`, header: map[string]string{"X-Bypass-Cache": "true"}},
+		{name: "array content", body: `{"model":"openai/gpt-4o","messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}]}`},
+		{name: "disabled", body: `{"model":"openai/gpt-4o","messages":[{"role":"user","content":"hi"}]}`, disable: true},
+		{name: "null temperature", body: `{"model":"openai/gpt-4o","messages":[{"role":"user","content":"hi"}],"temperature":null}`},
+		{name: "null max_tokens", body: `{"model":"openai/gpt-4o","messages":[{"role":"user","content":"hi"}],"max_tokens":null}`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var calls atomic.Int32
+			provider.Register("openai", func(cfg provider.Config, store provider.CredStore) provider.Provider {
+				if tc.stream {
+					return &responseProvider{name: cfg.Name, chat: func(ctx context.Context, req provider.ChatRequest, w http.ResponseWriter) error {
+						calls.Add(1)
+						w.Header().Set("Content-Type", "text/event-stream")
+						_, err := w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"ok\"}}]}\n\n"))
+						return err
+					}}
+				}
+				return &fakeProvider{name: cfg.Name, chat: func(r provider.ChatRequest) error {
+					calls.Add(1)
+					return nil
+				}}
+			})
+			cfg, v, raw := cacheTestFixture(t, "k1")
+			if tc.disable {
+				off := false
+				cfg.Cache.Enabled = &off
+			}
+			router := cacheTestRouter(cfg, v)
+			for i := range 2 {
+				rr := doChat(router, raw["k1"], tc.body, tc.header)
+				if rr.Code != http.StatusOK {
+					t.Fatalf("request %d status = %d body %s", i+1, rr.Code, rr.Body.String())
+				}
+				if got := rr.Header().Get("X-Cache"); got != "" {
+					t.Fatalf("request %d X-Cache = %q, want absent", i+1, got)
+				}
+			}
+			if calls.Load() != 2 {
+				t.Fatalf("calls = %d, want 2", calls.Load())
+			}
+		})
+	}
+}
+
+func TestChatCacheOversizedResponseIsNotStored(t *testing.T) {
+	var calls atomic.Int32
+	provider.Register("openai", func(cfg provider.Config, store provider.CredStore) provider.Provider {
+		return &responseProvider{name: cfg.Name, chat: func(ctx context.Context, req provider.ChatRequest, w http.ResponseWriter) error {
+			calls.Add(1)
+			_, err := w.Write(bytes.Repeat([]byte("x"), maxRecordedBody+1))
+			return err
+		}}
+	})
+	cfg, v, raw := cacheTestFixture(t, "k1")
+	router := cacheTestRouter(cfg, v)
+	body := `{"model":"openai/gpt-4o","messages":[{"role":"user","content":"hi"}]}`
+	for range 2 {
+		rr := doChat(router, raw["k1"], body, nil)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("status = %d, body length %d", rr.Code, rr.Body.Len())
+		}
+		if rr.Body.Len() != maxRecordedBody+1 {
+			t.Fatalf("body length = %d, want %d", rr.Body.Len(), maxRecordedBody+1)
+		}
+		if got := rr.Header().Get("X-Cache"); got != "MISS" {
+			t.Fatalf("X-Cache = %q, want MISS", got)
+		}
+	}
+	if calls.Load() != 2 {
+		t.Fatalf("upstream calls = %d, want 2", calls.Load())
+	}
+}
+
+func TestChatCacheFlushDoesNotCommitPartialResponse(t *testing.T) {
+	provider.Register("openai", func(cfg provider.Config, store provider.CredStore) provider.Provider {
+		return &responseProvider{name: cfg.Name, chat: func(ctx context.Context, req provider.ChatRequest, w http.ResponseWriter) error {
+			_, _ = w.Write([]byte(`{"partial":true}`))
+			w.(http.Flusher).Flush()
+			return errors.New("upstream failed")
+		}}
+	})
+	cfg, v, raw := cacheTestFixture(t, "k1")
+	router := cacheTestRouter(cfg, v)
+	body := `{"model":"openai/gpt-4o","messages":[{"role":"user","content":"hi"}]}`
+	rr := doChat(router, raw["k1"], body, nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want implicit 200; body=%s", rr.Code, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), `"partial":true`) {
+		t.Fatalf("buffered partial response missing: %s", rr.Body.String())
+	}
+}
+func TestChatCacheTenantIsolation(t *testing.T) {
+
+	var calls atomic.Int32
+	provider.Register("openai", func(cfg provider.Config, store provider.CredStore) provider.Provider {
+		return &fakeProvider{name: cfg.Name, chat: func(r provider.ChatRequest) error {
+			calls.Add(1)
+			return nil
+		}}
+	})
+	cfg, v, raw := cacheTestFixture(t, "k1", "k2")
+	router := cacheTestRouter(cfg, v)
+	body := `{"model":"openai/gpt-4o","messages":[{"role":"user","content":"hi"}]}`
+
+	first := doChat(router, raw["k1"], body, nil)
+	second := doChat(router, raw["k2"], body, nil)
+	if first.Header().Get("X-Cache") != "MISS" || second.Header().Get("X-Cache") != "MISS" {
+		t.Fatalf("X-Cache = %q, %q; want MISS, MISS", first.Header().Get("X-Cache"), second.Header().Get("X-Cache"))
+	}
+	if calls.Load() != 2 {
+		t.Fatalf("calls after two tenants = %d, want 2", calls.Load())
+	}
+	third := doChat(router, raw["k1"], body, nil)
+	if third.Header().Get("X-Cache") != "HIT" {
+		t.Fatalf("third X-Cache = %q, want HIT", third.Header().Get("X-Cache"))
+	}
+	if calls.Load() != 2 {
+		t.Fatalf("calls after tenant hit = %d, want 2", calls.Load())
+	}
+}
+
+func TestChatCacheSkipsStoreOnUpstreamError(t *testing.T) {
+	var calls atomic.Int32
+	provider.Register("openai", func(cfg provider.Config, store provider.CredStore) provider.Provider {
+		return &fakeProvider{name: cfg.Name, chat: func(r provider.ChatRequest) error {
+			calls.Add(1)
+			return errors.New("upstream down")
+		}}
+	})
+	cfg, v, raw := cacheTestFixture(t, "k1")
+	router := cacheTestRouter(cfg, v)
+	body := `{"model":"openai/gpt-4o","messages":[{"role":"user","content":"hi"}]}`
+
+	first := doChat(router, raw["k1"], body, nil)
+	second := doChat(router, raw["k1"], body, nil)
+	if first.Code != http.StatusBadGateway || second.Code != http.StatusBadGateway {
+		t.Fatalf("status = %d, %d; want 502, 502", first.Code, second.Code)
+	}
+	if first.Header().Get("X-Cache") != "MISS" || second.Header().Get("X-Cache") != "MISS" {
+		t.Fatalf("X-Cache = %q, %q; want MISS, MISS", first.Header().Get("X-Cache"), second.Header().Get("X-Cache"))
+	}
+	if calls.Load() != 2 {
+		t.Fatalf("calls = %d, want 2", calls.Load())
+	}
+}
+
+func cacheTestFixture(t *testing.T, ids ...string) (*config.Config, *vault.Vault, map[string]string) {
+	t.Helper()
+	on := true
+	cfg := &config.Config{
+		Providers: []config.Provider{{Name: "openai", Type: "openai", BaseURL: "https://x", Models: []string{"gpt-4o"}}},
+		Cache:     &config.CacheConfig{Enabled: &on, Backend: "memory", TTL: "1h", MaxItems: 8},
+	}
+	v := &vault.Vault{ClientKeys: make([]vault.ClientKey, 0, len(ids))}
+	raw := map[string]string{}
+	for _, id := range ids {
+		key, hash, prefix, err := auth.GenerateKey()
+		if err != nil {
+			t.Fatalf("GenerateKey: %v", err)
+		}
+		v.ClientKeys = append(v.ClientKeys, vault.ClientKey{ID: id, KeyHash: hash, Prefix: prefix, Active: true})
+		raw[id] = key
+	}
+	return cfg, v, raw
+}
+
+func cacheTestRouter(cfg *config.Config, v *vault.Vault) http.Handler {
+	return NewRouter(func() *config.Config { return cfg }, vault.NewMemoryStore(v), nil, nil, "test-version", nil, cache.NewLRUCache(8))
+}
+
+func doChat(router http.Handler, rawKey, body string, header map[string]string) *httptest.ResponseRecorder {
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+rawKey)
+	for k, v := range header {
+		req.Header.Set(k, v)
+	}
+	rr := httptest.NewRecorder()
+	router.ServeHTTP(rr, req)
+	return rr
+}
+
+func TestChatCacheSuccessfulFlushIsCached(t *testing.T) {
+	var calls atomic.Int32
+	provider.Register("openai", func(cfg provider.Config, store provider.CredStore) provider.Provider {
+		return &responseProvider{name: cfg.Name, chat: func(ctx context.Context, req provider.ChatRequest, w http.ResponseWriter) error {
+			calls.Add(1)
+			_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"ok"}}]}`))
+			w.(http.Flusher).Flush()
+			return nil
+		}}
+	})
+	cfg, v, raw := cacheTestFixture(t, "k1")
+	router := cacheTestRouter(cfg, v)
+	body := `{"model":"openai/gpt-4o","messages":[{"role":"user","content":"hi"}]}`
+	first := doChat(router, raw["k1"], body, nil)
+	second := doChat(router, raw["k1"], body, nil)
+	if first.Header().Get("X-Cache") != "MISS" || second.Header().Get("X-Cache") != "HIT" {
+		t.Fatalf("X-Cache = %q, %q; want MISS, HIT", first.Header().Get("X-Cache"), second.Header().Get("X-Cache"))
+	}
+	if first.Body.String() != second.Body.String() {
+		t.Fatalf("replayed body = %s, want %s", second.Body.String(), first.Body.String())
+	}
+	if calls.Load() != 1 {
+		t.Fatalf("upstream calls = %d, want 1", calls.Load())
+	}
+}
+
+func TestChatCacheProviderIsolation(t *testing.T) {
+	var calls atomic.Int32
+	provider.Register("openai", func(cfg provider.Config, store provider.CredStore) provider.Provider {
+		return &fakeProvider{name: cfg.Name, chat: func(r provider.ChatRequest) error {
+			calls.Add(1)
+			return nil
+		}}
+	})
+	cfg, v, raw := cacheTestFixture(t, "k1")
+	cfg.Providers = append(cfg.Providers, config.Provider{Name: "openai2", Type: "openai", Models: []string{"gpt-4o"}})
+	router := cacheTestRouter(cfg, v)
+	first := doChat(router, raw["k1"], `{"model":"openai/gpt-4o","messages":[{"role":"user","content":"hi"}]}`, nil)
+	second := doChat(router, raw["k1"], `{"model":"openai2/gpt-4o","messages":[{"role":"user","content":"hi"}]}`, nil)
+	if first.Header().Get("X-Cache") != "MISS" || second.Header().Get("X-Cache") != "MISS" {
+		t.Fatalf("X-Cache = %q, %q; want MISS, MISS", first.Header().Get("X-Cache"), second.Header().Get("X-Cache"))
+	}
+	if calls.Load() != 2 {
+		t.Fatalf("upstream calls = %d, want 2", calls.Load())
+	}
+}
+
+func TestChatCacheMissingCallerBypasses(t *testing.T) {
+	var calls atomic.Int32
+	provider.Register("openai", func(cfg provider.Config, store provider.CredStore) provider.Provider {
+		return &fakeProvider{name: cfg.Name, chat: func(r provider.ChatRequest) error {
+			calls.Add(1)
+			return nil
+		}}
+	})
+	on := true
+	cfg := &config.Config{
+		Providers: []config.Provider{{Name: "openai", Type: "openai", Models: []string{"gpt-4o"}}},
+		Cache:     &config.CacheConfig{Enabled: &on, Backend: "memory", TTL: "1h", MaxItems: 8},
+	}
+	store := vault.NewMemoryStore(&vault.Vault{ProviderSecrets: map[string]vault.ProviderSecret{"openai": {}}})
+	registry := newProviderRegistry(store)
+	registry.ensure(cfg)
+	handler := handleChat(func() *config.Config { return cfg }, registry, nil, nil, cache.NewLRUCache(8))
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"openai/gpt-4o","messages":[{"role":"user","content":"hi"}]}`))
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK || calls.Load() != 1 {
+		t.Fatalf("status=%d calls=%d body=%s", rr.Code, calls.Load(), rr.Body.String())
+	}
+	if got := rr.Header().Get("X-Cache"); got != "" {
+		t.Fatalf("X-Cache = %q, want absent", got)
 	}
 }
