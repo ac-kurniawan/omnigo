@@ -1487,6 +1487,26 @@ func TestChatCacheOversizedResponseIsNotStored(t *testing.T) {
 		t.Fatalf("upstream calls = %d, want 2", calls.Load())
 	}
 }
+
+func TestChatCacheFlushDoesNotCommitPartialResponse(t *testing.T) {
+	provider.Register("openai", func(cfg provider.Config, store provider.CredStore) provider.Provider {
+		return &responseProvider{name: cfg.Name, chat: func(ctx context.Context, req provider.ChatRequest, w http.ResponseWriter) error {
+			_, _ = w.Write([]byte(`{"partial":true}`))
+			w.(http.Flusher).Flush()
+			return errors.New("upstream failed")
+		}}
+	})
+	cfg, v, raw := cacheTestFixture(t, "k1")
+	router := cacheTestRouter(cfg, v)
+	body := `{"model":"openai/gpt-4o","messages":[{"role":"user","content":"hi"}]}`
+	rr := doChat(router, raw["k1"], body, nil)
+	if rr.Code != http.StatusBadGateway {
+		t.Fatalf("status = %d, want 502; body=%s", rr.Code, rr.Body.String())
+	}
+	if strings.Contains(rr.Body.String(), `"partial":true`) {
+		t.Fatalf("partial response was committed: %s", rr.Body.String())
+	}
+}
 func TestChatCacheTenantIsolation(t *testing.T) {
 	var calls atomic.Int32
 	provider.Register("openai", func(cfg provider.Config, store provider.CredStore) provider.Provider {

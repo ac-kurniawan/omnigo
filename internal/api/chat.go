@@ -102,14 +102,15 @@ func handleChat(getCfg func() *config.Config, registry *providerRegistry, tracke
 		recorded := &bodyRecorder{ResponseWriter: w}
 		providerCtx := withTokenUsage(r.Context(), metrics, provName, resolvedModel, "")
 		providerErr := p.ChatCompletion(providerCtx, req, recorded)
-		metrics.RecordProviderRequest(r.Context(), provName, resolvedModel, classifyProviderError(providerErr, false, r.Context().Err() != nil))
-		if providerErr == nil && recorded.statusCode() == http.StatusOK && recorded.body.Len() > 0 && r.Context().Err() == nil {
+		metrics.RecordProviderRequest(r.Context(), provName, resolvedModel, classifyProviderError(providerErr, recorded.committed, r.Context().Err() != nil))
+		if providerErr != nil && !recorded.committed {
+			writeProviderError(w, providerErr)
+			return
+		}
+		if providerErr == nil && !recorded.committed && !recorded.flushed && recorded.statusCode() == http.StatusOK && recorded.body.Len() > 0 && r.Context().Err() == nil {
 			_ = responseCache.Set(context.WithoutCancel(r.Context()), key, recorded.body.Bytes(), cfg.Cache.ParsedTTL())
 		}
 		copyRecorded(w, recorded)
-		if providerErr != nil && recorded.body.Len() == 0 && !recorded.wrote {
-			writeProviderError(w, providerErr)
-		}
 	}
 }
 

@@ -350,10 +350,6 @@ func (w *bodyRecorder) Write(data []byte) (int, error) {
 
 func (w *bodyRecorder) Flush() {
 	w.flushed = true
-	w.commit()
-	if flusher, ok := w.ResponseWriter.(http.Flusher); ok {
-		flusher.Flush()
-	}
 }
 
 func (w *bodyRecorder) commit() {
