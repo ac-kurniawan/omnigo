@@ -6,14 +6,19 @@ import (
 	"testing"
 
 	"github.com/ac-kurniawan/omnigo/internal/auth"
+	"github.com/ac-kurniawan/omnigo/internal/cache"
 	"github.com/ac-kurniawan/omnigo/internal/config"
 	"github.com/ac-kurniawan/omnigo/internal/vault"
 )
 
 func testRouter(t *testing.T, cfg *config.Config, v *vault.Vault) http.Handler {
+	var responseCache cache.CacheBackend
+	if cfg != nil && cfg.Cache.EnabledOrDefault() && cfg.Cache.BackendOrDefault() == "memory" {
+		responseCache = cache.NewLRUCache(cfg.Cache.MaxItemsOrDefault())
+	}
 	return NewRouter(func() *config.Config { return cfg }, vault.NewMemoryStore(v), func(fn func(*config.Config) error) error {
 		return fn(cfg)
-	}, nil, "test-version", nil)
+	}, nil, "test-version", nil, responseCache)
 }
 
 func TestHealth(t *testing.T) {

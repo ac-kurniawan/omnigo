@@ -4,6 +4,7 @@ import (
 	"net/http"
 
 	"github.com/ac-kurniawan/omnigo/internal/auth"
+	"github.com/ac-kurniawan/omnigo/internal/cache"
 	"github.com/ac-kurniawan/omnigo/internal/combo"
 	"github.com/ac-kurniawan/omnigo/internal/config"
 	"github.com/ac-kurniawan/omnigo/internal/quota"
@@ -12,8 +13,9 @@ import (
 
 // NewRouter builds the gateway mux. m may be nil, in which case a no-op
 // recorder is used. quotaCache is optional: when omitted, the quota endpoints
-// answer 404, matching an unregistered path.
-func NewRouter(getCfg func() *config.Config, store *vault.Store, mutate config.MutateFunc, tracker *combo.Tracker, version string, m Metrics, quotaCache ...*quota.Cache) http.Handler {
+// answer 404, matching an unregistered path. responseCache may be nil, which
+// leaves chat completions uncached.
+func NewRouter(getCfg func() *config.Config, store *vault.Store, mutate config.MutateFunc, tracker *combo.Tracker, version string, m Metrics, responseCache cache.CacheBackend, quotaCache ...*quota.Cache) http.Handler {
 	var cache *quota.Cache
 	if len(quotaCache) > 0 {
 		cache = quotaCache[0]
@@ -21,7 +23,7 @@ func NewRouter(getCfg func() *config.Config, store *vault.Store, mutate config.M
 	registry := newProviderRegistry(store)
 	registry.quotaCache = cache
 	registry.ensure(getCfg())
-	return routerWith(getCfg, store, mutate, tracker, version, m, registry, cache)
+	return routerWith(getCfg, store, mutate, tracker, version, m, registry, cache, responseCache)
 }
 
 // NewRouterWithQuota builds the gateway mux together with the ProviderRuntime
@@ -32,17 +34,22 @@ func NewRouter(getCfg func() *config.Config, store *vault.Store, mutate config.M
 // traffic. That sharing is required for Codex: each instance owns per-account
 // token managers, and a second instance polling in parallel would run a
 // competing refresh cycle against the same rotating refresh token.
-func NewRouterWithQuota(getCfg func() *config.Config, store *vault.Store, mutate config.MutateFunc, tracker *combo.Tracker, version string, m Metrics, cache *quota.Cache) (http.Handler, *ProviderRuntime) {
+//
+// responseCache is the process-wide exact-match chat cache. A nil value
+// disables lookup and store. The instance is not rebuilt when config reloads:
+// handleChat still honors cache.enabled on each request, but a process that
+// started with the cache off stays off until restart.
+func NewRouterWithQuota(getCfg func() *config.Config, store *vault.Store, mutate config.MutateFunc, tracker *combo.Tracker, version string, m Metrics, cache *quota.Cache, responseCache cache.CacheBackend) (http.Handler, *ProviderRuntime) {
 	registry := newProviderRegistry(store)
 	registry.quotaCache = cache
 	registry.ensure(getCfg())
 	runtime := &ProviderRuntime{registry: registry, cache: cache}
-	return routerWith(getCfg, store, mutate, tracker, version, m, registry, cache), runtime
+	return routerWith(getCfg, store, mutate, tracker, version, m, registry, cache, responseCache), runtime
 }
 
 // routerWith assembles the mux around an existing registry, so both
 // constructors share one wiring definition.
-func routerWith(getCfg func() *config.Config, store *vault.Store, mutate config.MutateFunc, tracker *combo.Tracker, version string, m Metrics, registry *providerRegistry, cache *quota.Cache) http.Handler {
+func routerWith(getCfg func() *config.Config, store *vault.Store, mutate config.MutateFunc, tracker *combo.Tracker, version string, m Metrics, registry *providerRegistry, cache *quota.Cache, responseCache cache.CacheBackend) http.Handler {
 	m = orNoop(m)
 	mux := http.NewServeMux()
 	authed := auth.Middleware(store.Get)
@@ -50,8 +57,10 @@ func routerWith(getCfg func() *config.Config, store *vault.Store, mutate config.
 	mux.HandleFunc("GET /health", handleHealth(version))
 	mux.Handle("GET /actuator/metrics", metricsHandler(getCfg, m))
 
-	// /v1/* is gated by client API keys.
-	mux.Handle("POST /v1/chat/completions", authed(http.HandlerFunc(handleChat(getCfg, registry, tracker, m))))
+	// /v1/* is gated by client API keys. Chat needs the caller id for the cache
+	// key. Metrics middleware installs the holder when it wraps the router; a
+	// bare router still gets one here so auth.Middleware can fill it.
+	mux.Handle("POST /v1/chat/completions", ensureCaller(authed(http.HandlerFunc(handleChat(getCfg, registry, tracker, m, responseCache)))))
 	mux.Handle("GET /v1/models", authed(http.HandlerFunc(handleModels(getCfg))))
 	mux.Handle("GET /v1/models/{model...}", authed(http.HandlerFunc(handleModel(getCfg))))
 
@@ -61,6 +70,15 @@ func routerWith(getCfg func() *config.Config, store *vault.Store, mutate config.
 	mux.Handle("POST /internal/refresh-quota/{provider}/{identity}", dashboardEnabled(getCfg, quotaEnabled(getCfg, auth.DashboardMiddleware(handleRefreshQuota(getCfg, registry, cache)))))
 
 	return mux
+}
+
+func ensureCaller(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if auth.CallerFrom(r.Context()) == nil {
+			r = r.WithContext(auth.WithCaller(r.Context(), &auth.Caller{}))
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 // quotaEnabled gates the quota endpoints on quota.enabled, mirroring the

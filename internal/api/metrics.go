@@ -23,6 +23,10 @@ type Metrics interface {
 	// RecordTokenUsage adds the token counts one completed upstream response
 	// reported. combo is empty for a direct provider call.
 	RecordTokenUsage(ctx context.Context, providerName, model, account, combo string, usage provider.TokenUsage)
+	// RecordCacheHit counts a stored 200 replayed for model.
+	RecordCacheHit(ctx context.Context, model string)
+	// RecordCacheMiss counts a cacheable lookup that found nothing for model.
+	RecordCacheMiss(ctx context.Context, model string)
 }
 
 type noopMetrics struct{}
@@ -31,6 +35,8 @@ func (noopMetrics) RecordProviderRequest(context.Context, string, string, string
 func (noopMetrics) RecordCombinationAttempt(context.Context, string, string)      {}
 func (noopMetrics) RecordTokenUsage(context.Context, string, string, string, string, provider.TokenUsage) {
 }
+func (noopMetrics) RecordCacheHit(context.Context, string)  {}
+func (noopMetrics) RecordCacheMiss(context.Context, string) {}
 
 // Bounded dispatch result labels. Cardinality is fixed by this set, never by
 // client input.
