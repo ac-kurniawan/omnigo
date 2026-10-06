@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -1458,6 +1459,34 @@ func TestChatCacheBypass(t *testing.T) {
 	}
 }
 
+func TestChatCacheOversizedResponseIsNotStored(t *testing.T) {
+	var calls atomic.Int32
+	provider.Register("openai", func(cfg provider.Config, store provider.CredStore) provider.Provider {
+		return &responseProvider{name: cfg.Name, chat: func(ctx context.Context, req provider.ChatRequest, w http.ResponseWriter) error {
+			calls.Add(1)
+			_, err := w.Write(bytes.Repeat([]byte("x"), maxRecordedBody+1))
+			return err
+		}}
+	})
+	cfg, v, raw := cacheTestFixture(t, "k1")
+	router := cacheTestRouter(cfg, v)
+	body := `{"model":"openai/gpt-4o","messages":[{"role":"user","content":"hi"}]}`
+	for range 2 {
+		rr := doChat(router, raw["k1"], body, nil)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("status = %d, body length %d", rr.Code, rr.Body.Len())
+		}
+		if rr.Body.Len() != maxRecordedBody+1 {
+			t.Fatalf("body length = %d, want %d", rr.Body.Len(), maxRecordedBody+1)
+		}
+		if got := rr.Header().Get("X-Cache"); got != "MISS" {
+			t.Fatalf("X-Cache = %q, want MISS", got)
+		}
+	}
+	if calls.Load() != 2 {
+		t.Fatalf("upstream calls = %d, want 2", calls.Load())
+	}
+}
 func TestChatCacheTenantIsolation(t *testing.T) {
 	var calls atomic.Int32
 	provider.Register("openai", func(cfg provider.Config, store provider.CredStore) provider.Provider {
