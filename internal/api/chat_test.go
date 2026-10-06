@@ -1500,11 +1500,11 @@ func TestChatCacheFlushDoesNotCommitPartialResponse(t *testing.T) {
 	router := cacheTestRouter(cfg, v)
 	body := `{"model":"openai/gpt-4o","messages":[{"role":"user","content":"hi"}]}`
 	rr := doChat(router, raw["k1"], body, nil)
-	if rr.Code != http.StatusBadGateway {
-		t.Fatalf("status = %d, want 502; body=%s", rr.Code, rr.Body.String())
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want implicit 200; body=%s", rr.Code, rr.Body.String())
 	}
-	if strings.Contains(rr.Body.String(), `"partial":true`) {
-		t.Fatalf("partial response was committed: %s", rr.Body.String())
+	if !strings.Contains(rr.Body.String(), `"partial":true`) {
+		t.Fatalf("buffered partial response missing: %s", rr.Body.String())
 	}
 }
 func TestChatCacheTenantIsolation(t *testing.T) {
@@ -1620,5 +1620,26 @@ func TestChatCacheSuccessfulFlushIsCached(t *testing.T) {
 	}
 	if calls.Load() != 1 {
 		t.Fatalf("upstream calls = %d, want 1", calls.Load())
+	}
+}
+
+func TestChatCacheProviderIsolation(t *testing.T) {
+	var calls atomic.Int32
+	provider.Register("openai", func(cfg provider.Config, store provider.CredStore) provider.Provider {
+		return &fakeProvider{name: cfg.Name, chat: func(r provider.ChatRequest) error {
+			calls.Add(1)
+			return nil
+		}}
+	})
+	cfg, v, raw := cacheTestFixture(t, "k1")
+	cfg.Providers = append(cfg.Providers, config.Provider{Name: "openai2", Type: "openai", Models: []string{"gpt-4o"}})
+	router := cacheTestRouter(cfg, v)
+	first := doChat(router, raw["k1"], `{"model":"openai/gpt-4o","messages":[{"role":"user","content":"hi"}]}`, nil)
+	second := doChat(router, raw["k1"], `{"model":"openai2/gpt-4o","messages":[{"role":"user","content":"hi"}]}`, nil)
+	if first.Header().Get("X-Cache") != "MISS" || second.Header().Get("X-Cache") != "MISS" {
+		t.Fatalf("X-Cache = %q, %q; want MISS, MISS", first.Header().Get("X-Cache"), second.Header().Get("X-Cache"))
+	}
+	if calls.Load() != 2 {
+		t.Fatalf("upstream calls = %d, want 2", calls.Load())
 	}
 }

@@ -77,7 +77,7 @@ func handleChat(getCfg func() *config.Config, registry *providerRegistry, tracke
 			serveResolved(w, r, p, provName, resolvedModel, req, metrics, startTime, tc)
 			return
 		}
-		key, keyErr := cache.ComputeCacheKey(callerID, resolvedModel, normal, temp, maxTokens)
+		key, keyErr := cache.ComputeCacheKey(callerID, provName, resolvedModel, normal, temp, maxTokens)
 		if keyErr != nil {
 			serveResolved(w, r, p, provName, resolvedModel, req, metrics, startTime, tc)
 			return
@@ -104,7 +104,11 @@ func handleChat(getCfg func() *config.Config, registry *providerRegistry, tracke
 		providerErr := p.ChatCompletion(providerCtx, req, recorded)
 		metrics.RecordProviderRequest(r.Context(), provName, resolvedModel, classifyProviderError(providerErr, recorded.committed, r.Context().Err() != nil))
 		if providerErr != nil && !recorded.committed {
-			writeProviderError(w, providerErr)
+			if recorded.body.Len() == 0 && !recorded.wrote {
+				writeProviderError(w, providerErr)
+				return
+			}
+			copyRecorded(w, recorded)
 			return
 		}
 		if providerErr == nil && !recorded.committed && recorded.statusCode() == http.StatusOK && recorded.body.Len() > 0 && r.Context().Err() == nil {

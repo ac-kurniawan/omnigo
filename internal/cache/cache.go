@@ -128,6 +128,7 @@ func (c *LRUCache) removeOrder(key string) {
 
 type CanonicalKeyPayload struct {
 	TenantID    string          `json:"t"`
+	Provider    string          `json:"p"`
 	Model       string          `json:"m"`
 	Messages    []NormalMessage `json:"msg"`
 	Temperature float64         `json:"temp"`
@@ -139,9 +140,10 @@ type NormalMessage struct {
 	Content string `json:"c"`
 }
 
-func ComputeCacheKey(tenantID, model string, messages []NormalMessage, temp float64, maxTokens int) (string, error) {
+func ComputeCacheKey(tenantID, providerName, model string, messages []NormalMessage, temp float64, maxTokens int) (string, error) {
 	payload := CanonicalKeyPayload{
 		TenantID:    tenantID,
+		Provider:    strings.ToLower(strings.TrimSpace(providerName)),
 		Model:       strings.ToLower(strings.TrimSpace(model)),
 		Messages:    messages,
 		Temperature: temp,
