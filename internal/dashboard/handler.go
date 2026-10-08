@@ -1,6 +1,7 @@
 package dashboard
 
 import (
+	"context"
 	"crypto/rand"
 	"embed"
 	"encoding/hex"
@@ -17,6 +18,7 @@ import (
 	"github.com/ac-kurniawan/omnigo/internal/config"
 	"github.com/ac-kurniawan/omnigo/internal/provider/antigravity"
 	"github.com/ac-kurniawan/omnigo/internal/provider/codex"
+	"github.com/ac-kurniawan/omnigo/internal/provider/muse"
 	"github.com/ac-kurniawan/omnigo/internal/quota"
 	"github.com/ac-kurniawan/omnigo/internal/vault"
 	"github.com/ac-kurniawan/omnigo/internal/version"
@@ -80,8 +82,31 @@ type Server struct {
 	// provider (defaults to the codex package).
 	codexExchange func(r *http.Request, code, verifier, redirectURI string) (*codex.Token, error)
 
-	oauthMu      sync.Mutex
-	oauthPending map[string]oauthPendingState
+	museClient museOAuthClient
+
+	oauthMu       sync.Mutex
+	oauthPending  map[string]oauthPendingState
+	devicePending map[string]devicePendingState
+}
+
+type museOAuthClient interface {
+	RequestDeviceCode(ctx context.Context) (*muse.DeviceCodeResponse, error)
+	PollToken(ctx context.Context, deviceCode string) (muse.PollTokenResult, error)
+	MintSubscriptionKey(ctx context.Context, accessToken string) (*muse.KeyMintResponse, error)
+}
+
+type devicePendingState struct {
+	provider   string
+	flowID     string
+	deviceCode string
+	userCode   string
+	verifyURI  string
+	interval   int
+	expiresAt  time.Time
+	createdAt  time.Time
+	inflight   bool
+	done       bool
+	lastError  string
 }
 
 func NewHandler(getCfg func() *config.Config, store *vault.Store, mutate config.MutateFunc, tracker ...*combo.Tracker) http.Handler {
@@ -373,7 +398,9 @@ func newServer(getCfg func() *config.Config, store *vault.Store, mutate config.M
 	s.codexExchange = func(r *http.Request, code, verifier, redirectURI string) (*codex.Token, error) {
 		return codex.ExchangeCode(r.Context(), code, verifier, redirectURI)
 	}
+	s.museClient = muse.NewOAuthClient()
 	s.oauthPending = make(map[string]oauthPendingState)
+	s.devicePending = make(map[string]devicePendingState)
 	return s
 }
 
@@ -384,6 +411,8 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("GET /oauth/login/{provider}", s.oauthLogin)
 	mux.HandleFunc("GET /oauth/callback", s.oauthCallback)
 	mux.HandleFunc("POST /oauth/{provider}/paste-callback", s.oauthPasteCallback)
+	mux.HandleFunc("POST /providers/{provider}/oauth/device/start", s.deviceOAuthStart)
+	mux.HandleFunc("GET /providers/{provider}/oauth/device/poll", s.deviceOAuthPoll)
 	mux.HandleFunc("GET /providers", s.getProviders)
 	mux.HandleFunc("POST /providers", s.createProvider)
 	mux.HandleFunc("POST /providers/{name}/timeouts", s.updateProviderTimeouts)
