@@ -8,7 +8,6 @@ import (
 	"github.com/ac-kurniawan/omnigo/internal/provider"
 	_ "github.com/ac-kurniawan/omnigo/internal/provider/antigravity"
 	_ "github.com/ac-kurniawan/omnigo/internal/provider/codex"
-	_ "github.com/ac-kurniawan/omnigo/internal/provider/muse"
 	"github.com/ac-kurniawan/omnigo/internal/vault"
 )
 
