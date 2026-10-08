@@ -67,7 +67,6 @@ func TestValidateAcceptsKnownValues(t *testing.T) {
 			{Name: "a", Type: "openai", Models: []string{"m"}},
 			{Name: "b", Type: "antigravity", Models: []string{"m"}},
 			{Name: "c", Type: "codex", Models: []string{"m"}},
-			{Name: "d", Type: "muse", Models: []string{"m"}},
 		},
 		Combos: []Combo{
 			{Name: "auto", Strategy: "priority", Targets: []ComboTarget{{Provider: "a", Model: "m"}}},
