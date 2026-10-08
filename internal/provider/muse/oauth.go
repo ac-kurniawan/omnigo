@@ -14,11 +14,11 @@ import (
 )
 
 const (
-	ClientID              = "1031625952748946"
-	DefaultDeviceAuthURL  = "https://auth.meta.com/oidc/device/authorization/"
-	DefaultTokenURL       = "https://auth.meta.com/oidc/device/token/"
-	DefaultKeyMintURL     = "https://api.meta.ai/muse-code/key"
-	APIVersion            = "1.0.0"
+	ClientID             = "1031625952748946"
+	DefaultDeviceAuthURL = "https://auth.meta.com/oidc/device/authorization/"
+	DefaultTokenURL      = "https://auth.meta.com/oidc/device/token/"
+	DefaultKeyMintURL    = "https://api.meta.ai/muse-code/key"
+	APIVersion           = "1.0.0"
 )
 
 type DeviceCodeResponse struct {
@@ -90,6 +90,15 @@ func NewOAuthClient(opts ...Option) *OAuthClient {
 	return c
 }
 
+func IsSafeVerificationURL(raw string) bool {
+	u, err := url.Parse(raw)
+	if err != nil || u.Scheme != "https" {
+		return false
+	}
+	h := strings.ToLower(u.Hostname())
+	return h == "auth.meta.com" || strings.HasSuffix(h, ".meta.com") || h == "meta.com"
+}
+
 func (c *OAuthClient) RequestDeviceCode(ctx context.Context) (*DeviceCodeResponse, error) {
 	data := url.Values{}
 	data.Set("client_id", c.clientID)
@@ -109,16 +118,24 @@ func (c *OAuthClient) RequestDeviceCode(ctx context.Context) (*DeviceCodeRespons
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		b, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
-		return nil, fmt.Errorf("device authorization failed (status %d): %s", resp.StatusCode, string(b))
+		return nil, fmt.Errorf("device authorization failed (status %d)", resp.StatusCode)
 	}
 
 	var out DeviceCodeResponse
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
 		return nil, fmt.Errorf("decode device authorization: %w", err)
 	}
+	if strings.TrimSpace(out.DeviceCode) == "" || strings.TrimSpace(out.UserCode) == "" {
+		return nil, errors.New("upstream device response missing required codes")
+	}
+	if !IsSafeVerificationURL(out.VerificationURI) {
+		return nil, fmt.Errorf("upstream returned untrusted verification URL: %s", out.VerificationURI)
+	}
 	if out.Interval <= 0 {
 		out.Interval = 5
+	}
+	if out.ExpiresIn <= 0 {
+		out.ExpiresIn = 300
 	}
 	return &out, nil
 }
@@ -154,27 +171,21 @@ func (c *OAuthClient) PollToken(ctx context.Context, deviceCode string) (PollTok
 	}
 
 	errCode, _ := parsed["error"].(string)
-	errDesc, _ := parsed["error_description"].(string)
 
 	if errCode == "authorization_pending" || errCode == "slow_down" {
 		return PollTokenResult{
-			Pending:          true,
-			Error:            errCode,
-			ErrorDescription: errDesc,
+			Pending: true,
+			Error:   errCode,
 		}, nil
 	}
 
 	if resp.StatusCode != http.StatusOK || errCode != "" {
 		msg := errCode
-		if errDesc != "" {
-			msg = fmt.Sprintf("%s: %s", errCode, errDesc)
-		}
 		if msg == "" {
 			msg = fmt.Sprintf("status %d", resp.StatusCode)
 		}
 		return PollTokenResult{
-			Error:            errCode,
-			ErrorDescription: errDesc,
+			Error: errCode,
 		}, fmt.Errorf("token endpoint returned %s", msg)
 	}
 
@@ -186,6 +197,17 @@ func (c *OAuthClient) PollToken(ctx context.Context, deviceCode string) (PollTok
 	return PollTokenResult{
 		AccessToken: tok,
 	}, nil
+}
+
+func (c *OAuthClient) sleepWithContext(ctx context.Context, d time.Duration) error {
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
 }
 
 func (c *OAuthClient) MintSubscriptionKey(ctx context.Context, accessToken string) (*KeyMintResponse, error) {
@@ -205,7 +227,9 @@ func (c *OAuthClient) MintSubscriptionKey(ctx context.Context, accessToken strin
 		resp, err := c.httpClient.Do(req)
 		if err != nil {
 			lastErr = err
-			time.Sleep(c.retryBackoff * time.Duration(attempt+1))
+			if sleepErr := c.sleepWithContext(ctx, c.retryBackoff*time.Duration(attempt+1)); sleepErr != nil {
+				return nil, sleepErr
+			}
 			continue
 		}
 
@@ -218,14 +242,16 @@ func (c *OAuthClient) MintSubscriptionKey(ctx context.Context, accessToken strin
 		if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500 {
 			lastErr = fmt.Errorf("mint endpoint returned transient status %d", resp.StatusCode)
 			if attempt < 2 {
-				time.Sleep(c.retryBackoff * time.Duration(attempt+1))
+				if sleepErr := c.sleepWithContext(ctx, c.retryBackoff*time.Duration(attempt+1)); sleepErr != nil {
+					return nil, sleepErr
+				}
 				continue
 			}
 			return nil, lastErr
 		}
 
 		if resp.StatusCode != http.StatusOK {
-			return nil, fmt.Errorf("key mint failed (status %d): %s", resp.StatusCode, string(b))
+			return nil, fmt.Errorf("key mint failed (status %d)", resp.StatusCode)
 		}
 
 		var mintResp KeyMintResponse
@@ -237,9 +263,6 @@ func (c *OAuthClient) MintSubscriptionKey(ctx context.Context, accessToken strin
 			return nil, errors.New("Muse Code subscription is inactive — please activate it on muse.ai")
 		}
 		if mintResp.APIKey == "" {
-			if mintResp.ActionURL != "" {
-				return nil, fmt.Errorf("Muse Code subscription required: %s", mintResp.ActionURL)
-			}
 			return nil, errors.New("Muse Code key response missing api_key")
 		}
 

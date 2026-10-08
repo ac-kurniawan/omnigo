@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ac-kurniawan/omnigo/internal/config"
 	"github.com/ac-kurniawan/omnigo/internal/provider/muse"
@@ -34,69 +35,87 @@ func (f *fakeMuseOAuth) MintSubscriptionKey(ctx context.Context, accessToken str
 }
 
 func TestMuseDeviceFlowStartAndPoll(t *testing.T) {
-	store := vault.NewMemoryStore(&vault.Vault{
-		ProviderAccounts: make(map[string][]vault.ProviderSecret),
-	})
-	cfg := &config.Config{
-		Providers: []config.Provider{
-			{Name: "meta-muse", Type: "muse"},
-		},
-	}
-
+	store := vault.NewMemoryStore(&vault.Vault{ProviderAccounts: make(map[string][]vault.ProviderSecret)})
+	cfg := &config.Config{Providers: []config.Provider{{Name: "meta-muse", Type: "muse"}}}
 	s := newServer(func() *config.Config { return cfg }, store, nil)
-	fake := &fakeMuseOAuth{
-		devResp: &muse.DeviceCodeResponse{
-			DeviceCode:      "dev-999",
-			UserCode:        "USER-777",
-			VerificationURI: "https://auth.meta.com/device",
-			ExpiresIn:       300,
-			Interval:        5,
-		},
-		pollRes: muse.PollTokenResult{
-			AccessToken: "access-token-ok",
-		},
-		mintResp: &muse.KeyMintResponse{
-			APIKey:       "LLM|minted-key",
-			UserEmail:    "test@meta.com",
-			SubsTierName: "Muse Code",
-			IsSubsActive: true,
-		},
+	s.museClient = &fakeMuseOAuth{
+		devResp:  &muse.DeviceCodeResponse{DeviceCode: "dev-999", UserCode: "USER-777", VerificationURI: "https://auth.meta.com/device", ExpiresIn: 300, Interval: 5},
+		pollRes:  muse.PollTokenResult{AccessToken: "access-token-ok"},
+		mintResp: &muse.KeyMintResponse{APIKey: "LLM|minted-key", UserEmail: "test@meta.com", SubsTierName: "Muse Code", IsSubsActive: true},
 	}
-	s.museClient = fake
 
-	// Step 1: Start device flow
+	// Step 1: Start device flow without CSRF -> Rejected
+	startReqNoCSRF := httptest.NewRequest("POST", "/providers/meta-muse/oauth/device/start", nil)
+	recNoCSRF := httptest.NewRecorder()
+	s.routes().ServeHTTP(recNoCSRF, startReqNoCSRF)
+	if recNoCSRF.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 on start without CSRF, got %d", recNoCSRF.Code)
+	}
+
+	// Step 2: Start with valid CSRF
 	startReq := httptest.NewRequest("POST", "/providers/meta-muse/oauth/device/start", nil)
-	rrStart := httptest.NewRecorder()
-	s.routes().ServeHTTP(rrStart, startReq)
-
-	if rrStart.Code != http.StatusOK {
-		t.Fatalf("expected 200 on start, got %d: %s", rrStart.Code, rrStart.Body.String())
-	}
-	if !strings.Contains(rrStart.Body.String(), "USER-777") {
-		t.Fatalf("expected user code in response, got %s", rrStart.Body.String())
+	startReq.AddCookie(&http.Cookie{Name: "omnigo_csrf", Value: "csrf-val"})
+	startReq.Header.Set("X-Omnigo-CSRF", "csrf-val")
+	startRec := httptest.NewRecorder()
+	s.routes().ServeHTTP(startRec, startReq)
+	if startRec.Code != http.StatusOK || !strings.Contains(startRec.Body.String(), "USER-777") {
+		t.Fatalf("start code=%d body=%s", startRec.Code, startRec.Body.String())
 	}
 
-	// Step 2: Poll device flow
+	cookies := startRec.Result().Cookies()
+	var flowCookie *http.Cookie
+	for _, c := range cookies {
+		if c.Name == deviceCookieName {
+			flowCookie = c
+			break
+		}
+	}
+	if flowCookie == nil {
+		t.Fatal("expected device flow session cookie")
+	}
+
+	// Step 3: Poll device flow with cookie
 	pollReq := httptest.NewRequest("GET", "/providers/meta-muse/oauth/device/poll", nil)
-	rrPoll := httptest.NewRecorder()
-	s.routes().ServeHTTP(rrPoll, pollReq)
-
-	if rrPoll.Code != http.StatusOK {
-		t.Fatalf("expected 200 on poll, got %d: %s", rrPoll.Code, rrPoll.Body.String())
+	pollReq.AddCookie(flowCookie)
+	pollRec := httptest.NewRecorder()
+	s.routes().ServeHTTP(pollRec, pollReq)
+	if pollRec.Code != http.StatusOK || !strings.Contains(pollRec.Body.String(), "Connected") {
+		t.Fatalf("poll code=%d body=%s", pollRec.Code, pollRec.Body.String())
 	}
-	if !strings.Contains(rrPoll.Body.String(), "Connected") && !strings.Contains(rrPoll.Body.String(), "success") {
-		t.Fatalf("expected success message in poll, got %s", rrPoll.Body.String())
+	if strings.Contains(pollRec.Body.String(), "LLM|minted-key") {
+		t.Fatal("poll response leaked secret API key")
 	}
 
 	// Check vault has updated key
 	accounts := store.Get().Accounts("meta-muse")
-	if len(accounts) == 0 {
-		t.Fatal("expected account in vault")
+	if len(accounts) == 0 || accounts[0].APIKey != "LLM|minted-key" || accounts[0].Email != "test@meta.com" {
+		t.Fatalf("unexpected vault accounts: %+v", accounts)
 	}
-	if accounts[0].APIKey != "LLM|minted-key" {
-		t.Errorf("APIKey=%s, want LLM|minted-key", accounts[0].APIKey)
+}
+
+func TestMuseDeviceFlowConcurrentPollGuard(t *testing.T) {
+	store := vault.NewMemoryStore(&vault.Vault{ProviderAccounts: make(map[string][]vault.ProviderSecret)})
+	cfg := &config.Config{Providers: []config.Provider{{Name: "meta-muse", Type: "muse"}}}
+	s := newServer(func() *config.Config { return cfg }, store, nil)
+
+	s.oauthMu.Lock()
+	flowID := "flow-123"
+	s.devicePending[flowID] = devicePendingState{
+		provider:   "meta-muse",
+		flowID:     flowID,
+		deviceCode: "dev-code",
+		inflight:   true,
+		expiresAt:  time.Now().Add(time.Minute),
+		interval:   5,
 	}
-	if accounts[0].Email != "test@meta.com" {
-		t.Errorf("Email=%s, want test@meta.com", accounts[0].Email)
+	s.oauthMu.Unlock()
+
+	pollReq := httptest.NewRequest("GET", "/providers/meta-muse/oauth/device/poll", nil)
+	pollReq.AddCookie(&http.Cookie{Name: deviceCookieName, Value: flowID})
+	rec := httptest.NewRecorder()
+	s.routes().ServeHTTP(rec, pollReq)
+
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "Waiting for authorization") {
+		t.Fatalf("expected non-racing response when inflight, got %s", rec.Body.String())
 	}
 }

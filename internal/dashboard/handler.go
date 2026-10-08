@@ -84,8 +84,8 @@ type Server struct {
 
 	museClient museOAuthClient
 
-	oauthMu      sync.Mutex
-	oauthPending map[string]oauthPendingState
+	oauthMu       sync.Mutex
+	oauthPending  map[string]oauthPendingState
 	devicePending map[string]devicePendingState
 }
 
@@ -97,8 +97,16 @@ type museOAuthClient interface {
 
 type devicePendingState struct {
 	provider   string
+	flowID     string
 	deviceCode string
+	userCode   string
+	verifyURI  string
+	interval   int
+	expiresAt  time.Time
 	createdAt  time.Time
+	inflight   bool
+	done       bool
+	lastError  string
 }
 
 func NewHandler(getCfg func() *config.Config, store *vault.Store, mutate config.MutateFunc, tracker ...*combo.Tracker) http.Handler {
