@@ -346,7 +346,6 @@
                       <option value="openai">openai (Bearer API Key)</option>
                       <option value="antigravity">antigravity (Google OAuth2 SSO)</option>
                       <option value="codex">codex (ChatGPT OAuth + PKCE)</option>
-                      <option value="muse">muse (Meta Model API / Muse Code)</option>
                     </select>
                   </div>
                   <div>
@@ -1698,7 +1697,6 @@
       {{range .Providers}}
       {{$provName := .Name}}
       {{$sec := providerSecret $ .Name}}
-      {{$provType := .Type}}
       {{$accounts := index $.Accounts .Name}}
       {{$hasKey := or (and $sec $sec.APIKey) .APIKey}}
       <tr class="hover:bg-base-200/40 transition-colors{{if .Disabled}} opacity-50{{end}}">
@@ -1723,17 +1721,6 @@
                 </div>
               {{else}}
                 <div class="tooltip tooltip-right inline-flex items-center" data-tip="Not Connected — Click Connect ChatGPT">
-                  <span class="size-2.5 rounded-full bg-error ring-4 ring-error/20 shrink-0"></span>
-                </div>
-              {{end}}
-            {{else if eq .Type "muse"}}
-              {{if or $accounts (and $sec $sec.APIKey)}}
-                <div class="tooltip tooltip-right inline-flex items-center gap-1.5" data-tip="{{if $accounts}}{{healthyCount $accounts}} healthy of {{len $accounts}} registered{{else}}Connected{{end}}{{if $sec.Email}} ({{$sec.Email}}){{end}}{{if $sec.AccountID}} — Tier: {{$sec.AccountID}}{{end}}">
-                  <span class="size-2.5 rounded-full bg-success ring-4 ring-success/20 shrink-0"></span>
-                  {{if $accounts}}<span class="text-[11px] font-mono text-base-content/70 leading-none">{{healthyCount $accounts}}/{{len $accounts}} connected</span>{{end}}
-                </div>
-              {{else}}
-                <div class="tooltip tooltip-right inline-flex items-center" data-tip="Not Connected — Click Connect Meta">
                   <span class="size-2.5 rounded-full bg-error ring-4 ring-error/20 shrink-0"></span>
                 </div>
               {{end}}
@@ -1764,11 +1751,6 @@
             <span class="px-2.5 py-1 text-xs font-mono font-medium rounded-lg bg-accent/15 text-accent border border-accent/20 inline-flex items-center gap-1.5 leading-none">
               <svg xmlns="http://www.w3.org/2000/svg" class="size-3" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2a10 10 0 100 20 10 10 0 000-20zm0 4a6 6 0 110 12 6 6 0 010-12z"/></svg>
               codex
-            </span>
-          {{else if eq .Type "muse"}}
-            <span class="px-2.5 py-1 text-xs font-mono font-medium rounded-lg bg-primary/15 text-primary border border-primary/20 inline-flex items-center gap-1.5 leading-none">
-              <svg xmlns="http://www.w3.org/2000/svg" class="size-3" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2L1 21h22L12 2zm0 3.99L19.53 19H4.47L12 5.99zM11 16h2v2h-2zm0-6h2v4h-2z"/></svg>
-              muse
             </span>
           {{else}}
             <span class="px-2.5 py-1 text-xs font-mono font-medium rounded-lg bg-info/15 text-info border border-info/20 inline-flex items-center gap-1.5 leading-none">
@@ -1837,10 +1819,6 @@
               {{if eq .Type "codex"}}
                 <li><button type="button" onclick="document.getElementById('modal-{{.Name}}').showModal()">Connect ChatGPT</button></li>
               {{end}}
-              {{if eq .Type "muse"}}
-                <li><button type="button" onclick="document.getElementById('device-modal-{{.Name}}').showModal()">Connect Meta</button></li>
-                <li><button type="button" onclick="document.getElementById('key-modal-{{.Name}}').showModal()">Set API Key</button></li>
-              {{end}}
               <li><button type="button" hx-post="/internal/test/{{.Name}}" hx-target="#result" hx-swap="innerHTML">Test</button></li>
               <li><button type="button" hx-post="/internal/refresh-models/{{.Name}}" hx-target="#result" hx-swap="innerHTML" hx-on::after-request="htmx.ajax('GET', '/providers', {target:'#providers', swap:'innerHTML'})">Refresh Models</button></li>
               <li><button type="button" class="text-error" hx-post="/providers/{{.Name}}/delete" hx-target="#providers" hx-swap="innerHTML" hx-confirm="Remove provider {{.Name}}?">Delete</button></li>
@@ -1873,7 +1851,7 @@
             <form method="dialog" class="modal-backdrop"><button>close</button></form>
           </dialog>
 
-          {{if or (eq .Type "openai") (eq .Type "muse")}}
+          {{if eq .Type "openai"}}
             <dialog id="key-modal-{{.Name}}" class="modal modal-bottom sm:modal-middle">
               <div class="modal-box max-w-md text-left border border-base-content/10 shadow-2xl p-6 rounded-2xl">
                 <h3 class="text-base font-bold flex items-center gap-2 text-primary">
@@ -1945,20 +1923,6 @@
             </dialog>
           {{end}}
 
-          {{if eq .Type "muse"}}
-            <dialog id="device-modal-{{.Name}}" class="modal modal-bottom sm:modal-middle">
-              <div class="modal-box max-w-md text-left border border-base-content/10 shadow-2xl p-6 rounded-2xl">
-                <h3 class="text-base font-bold flex items-center gap-2 text-primary">Connect Meta &bull; {{.Name}}</h3>
-                <p class="text-xs text-base-content/60 mt-1">Sign in with a Muse Code subscription. For pay-as-you-go access, use Set API Key.</p>
-                <div class="mt-4" id="device-content-{{.Name}}">
-                  <button type="button" hx-post="/providers/{{.Name}}/oauth/device/start" hx-target="#device-content-{{.Name}}" hx-swap="innerHTML" class="btn btn-primary btn-sm">Generate Device Login Code</button>
-                </div>
-                <div class="modal-action border-t border-base-content/10 pt-3"><form method="dialog"><button class="btn btn-sm btn-ghost">Close</button></form></div>
-              </div>
-              <form method="dialog" class="modal-backdrop"><button>close</button></form>
-            </dialog>
-          {{end}}
-
           {{if eq .Type "codex"}}
             <dialog id="modal-{{.Name}}" class="modal modal-bottom sm:modal-middle">
               <div class="modal-box max-w-xl text-left border border-base-content/10 shadow-2xl p-6 rounded-2xl">
@@ -2002,7 +1966,7 @@
 
         </td>
       </tr>
-      {{if or (eq .Type "antigravity") (eq .Type "codex") (eq .Type "muse")}}
+      {{if or (eq .Type "antigravity") (eq .Type "codex")}}
       <tr class="bg-base-200/20">
         <td colspan="4" class="px-4 py-3">
           <div class="collapse collapse-arrow accounts-collapse border border-base-content/10 rounded-xl bg-base-100/40" data-accordion="{{$provName}}">
@@ -2036,12 +2000,8 @@
                       {{end}}
                     </div>
                     <div class="flex items-center gap-1">
-                      {{if ne $provType "muse"}}<button type="button" hx-post="{{$refresh}}" hx-target="#result" hx-swap="innerHTML" hx-on::after-request="htmx.ajax('GET', '/providers', {target:'#providers', swap:'innerHTML'})" class="btn btn-ghost btn-xs" title="Refresh quota now">&#8635;</button>{{end}}
-                      {{if eq $provType "muse"}}
-                        <button type="button" onclick="document.getElementById('device-modal-{{$provName}}').showModal()" class="btn btn-ghost btn-xs min-h-11 focus-visible:ring-2 focus-visible:ring-primary">Reconnect</button>
-                      {{else}}
-                        <a href="/oauth/login/{{$provName}}" target="_blank" class="btn btn-ghost btn-xs min-h-11 focus-visible:ring-2 focus-visible:ring-primary">Reconnect</a>
-                      {{end}}
+                      <button type="button" hx-post="{{$refresh}}" hx-target="#result" hx-swap="innerHTML" hx-on::after-request="htmx.ajax('GET', '/providers', {target:'#providers', swap:'innerHTML'})" class="btn btn-ghost btn-xs" title="Refresh quota now">&#8635;</button>
+                      <a href="/oauth/login/{{$provName}}" target="_blank" class="btn btn-ghost btn-xs min-h-11 focus-visible:ring-2 focus-visible:ring-primary">Reconnect</a>
                       <button type="button" hx-post="/providers/{{$provName}}/accounts/{{urlEscape (accountIdentity .)}}/delete" hx-target="#providers" hx-swap="innerHTML" hx-confirm="Remove account {{if .Email}}{{.Email}}{{else}}{{.AccountID}}{{end}}?" class="btn btn-error btn-outline btn-xs min-h-11 focus-visible:ring-2 focus-visible:ring-error">Remove</button>
                     </div>
                   </div>
