@@ -1698,6 +1698,7 @@
       {{range .Providers}}
       {{$provName := .Name}}
       {{$sec := providerSecret $ .Name}}
+      {{$provType := .Type}}
       {{$accounts := index $.Accounts .Name}}
       {{$hasKey := or (and $sec $sec.APIKey) .APIKey}}
       <tr class="hover:bg-base-200/40 transition-colors{{if .Disabled}} opacity-50{{end}}">
@@ -2001,7 +2002,7 @@
 
         </td>
       </tr>
-      {{if or (eq .Type "antigravity") (eq .Type "codex")}}
+      {{if or (eq .Type "antigravity") (eq .Type "codex") (eq .Type "muse")}}
       <tr class="bg-base-200/20">
         <td colspan="4" class="px-4 py-3">
           <div class="collapse collapse-arrow accounts-collapse border border-base-content/10 rounded-xl bg-base-100/40" data-accordion="{{$provName}}">
@@ -2035,8 +2036,12 @@
                       {{end}}
                     </div>
                     <div class="flex items-center gap-1">
-                      <button type="button" hx-post="{{$refresh}}" hx-target="#result" hx-swap="innerHTML" hx-on::after-request="htmx.ajax('GET', '/providers', {target:'#providers', swap:'innerHTML'})" class="btn btn-ghost btn-xs" title="Refresh quota now">&#8635;</button>
-                      <a href="/oauth/login/{{$provName}}" target="_blank" class="btn btn-ghost btn-xs min-h-11 focus-visible:ring-2 focus-visible:ring-primary">Reconnect</a>
+                      {{if ne $provType "muse"}}<button type="button" hx-post="{{$refresh}}" hx-target="#result" hx-swap="innerHTML" hx-on::after-request="htmx.ajax('GET', '/providers', {target:'#providers', swap:'innerHTML'})" class="btn btn-ghost btn-xs" title="Refresh quota now">&#8635;</button>{{end}}
+                      {{if eq $provType "muse"}}
+                        <button type="button" onclick="document.getElementById('device-modal-{{$provName}}').showModal()" class="btn btn-ghost btn-xs min-h-11 focus-visible:ring-2 focus-visible:ring-primary">Reconnect</button>
+                      {{else}}
+                        <a href="/oauth/login/{{$provName}}" target="_blank" class="btn btn-ghost btn-xs min-h-11 focus-visible:ring-2 focus-visible:ring-primary">Reconnect</a>
+                      {{end}}
                       <button type="button" hx-post="/providers/{{$provName}}/accounts/{{urlEscape (accountIdentity .)}}/delete" hx-target="#providers" hx-swap="innerHTML" hx-confirm="Remove account {{if .Email}}{{.Email}}{{else}}{{.AccountID}}{{end}}?" class="btn btn-error btn-outline btn-xs min-h-11 focus-visible:ring-2 focus-visible:ring-error">Remove</button>
                     </div>
                   </div>

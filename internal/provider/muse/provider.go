@@ -92,6 +92,11 @@ func (p *museProvider) ChatCompletion(ctx context.Context, req provider.ChatRequ
 	}
 
 	endpoint := p.baseURL + "/chat/completions"
+	ctx, cancel := context.WithCancelCause(ctx)
+	defer cancel(nil)
+	guard := provider.NewIdleGuard(p.idle, provider.StreamBudget(p.streamTimeout, req.Stream), func() { cancel(provider.ErrUpstreamStall) })
+	defer guard.Stop()
+
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
 	if err != nil {
 		return fmt.Errorf("create request: %w", err)
@@ -113,7 +118,7 @@ func (p *museProvider) ChatCompletion(ctx context.Context, req provider.ChatRequ
 
 	resp, err := client.Do(httpReq)
 	if err != nil {
-		return fmt.Errorf("forward request to muse: %w", err)
+		return guard.Err(fmt.Errorf("forward request to muse: %w", err))
 	}
 	defer resp.Body.Close()
 
@@ -131,15 +136,15 @@ func (p *museProvider) ChatCompletion(ctx context.Context, req provider.ChatRequ
 
 	if req.Stream {
 		flusher, _ := w.(http.Flusher)
-		_, err = io.Copy(w, resp.Body)
+		_, err = io.Copy(w, guard.Wrap(resp.Body))
 		if flusher != nil {
 			flusher.Flush()
 		}
-		return err
+		return guard.Err(err)
 	}
 
-	_, err = io.Copy(w, resp.Body)
-	return err
+	_, err = io.Copy(w, guard.Wrap(resp.Body))
+	return guard.Err(err)
 }
 
 func (p *museProvider) Models(ctx context.Context) ([]provider.Model, error) {
