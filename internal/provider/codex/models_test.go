@@ -89,13 +89,15 @@ func TestModelsReplacesProfilesOnRefresh(t *testing.T) {
 }
 
 func TestFallbackModelCapabilities(t *testing.T) {
-	var gpt55, astra, gpt52 provider.Model
+	var gpt55, astra, sol61, gpt52 provider.Model
 	for _, model := range fallbackModels() {
 		switch model.ID {
 		case "gpt-5.5":
 			gpt55 = model
 		case "gpt-6-astra":
 			astra = model
+		case "gpt-6.1-sol":
+			sol61 = model
 		case "gpt-5.2":
 			gpt52 = model
 		}
@@ -106,6 +108,9 @@ func TestFallbackModelCapabilities(t *testing.T) {
 	if astra.Capabilities == nil || !reflect.DeepEqual(astra.Capabilities.ReasoningEfforts, []string{"low", "medium", "high", "xhigh", "max", "ultra"}) || astra.Capabilities.DefaultEffort != "low" {
 		t.Fatalf("gpt-6-astra capabilities = %+v", astra.Capabilities)
 	}
+	if sol61.Capabilities == nil || !reflect.DeepEqual(sol61.Capabilities.ReasoningEfforts, []string{"low", "medium", "high", "xhigh", "max"}) || sol61.Capabilities.DefaultEffort != "medium" {
+		t.Fatalf("gpt-6.1-sol capabilities = %+v", sol61.Capabilities)
+	}
 	if gpt52.Capabilities != nil {
 		t.Fatalf("gpt-5.2 capabilities = %+v, want nil", gpt52.Capabilities)
 	}
@@ -115,6 +120,10 @@ func TestKnownProfile(t *testing.T) {
 	profile, ok := KnownProfile("gpt-5.5")
 	if !ok || profile.Default != "medium" || !reflect.DeepEqual(profile.Levels, []string{"low", "medium", "high", "xhigh"}) {
 		t.Fatalf("KnownProfile(gpt-5.5) = %+v, %v", profile, ok)
+	}
+	profile61, ok := KnownProfile("gpt-6.1-sol")
+	if !ok || !profile61.Lite || profile61.Default != "medium" || !reflect.DeepEqual(profile61.Levels, []string{"low", "medium", "high", "xhigh", "max"}) {
+		t.Fatalf("KnownProfile(gpt-6.1-sol) = %+v, %v", profile61, ok)
 	}
 	if _, ok := KnownProfile("gpt-5.2"); ok {
 		t.Fatal("KnownProfile(gpt-5.2) unexpectedly hit")

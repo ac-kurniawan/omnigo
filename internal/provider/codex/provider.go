@@ -22,7 +22,7 @@ import (
 const (
 	DefaultResponsesURL = "https://chatgpt.com/backend-api/codex/responses"
 	DefaultModelsURL    = "https://raw.githubusercontent.com/openai/codex/main/codex-rs/models-manager/models.json"
-	ClientVersion       = "0.155.0"
+	ClientVersion       = "0.159.0"
 	Originator          = "codex_cli_rs"
 	UserAgent           = Originator + "/" + ClientVersion + " (OmniGo)"
 	BetaVersion         = "responses=experimental"
