@@ -96,6 +96,10 @@ func TestApplyModelProfileNormalisesEffort(t *testing.T) {
 		{"gpt-6-luna", "ultra", "max"},
 		{"gpt-6-sol", "minimal", "low"},
 		{"gpt-6-sol", "ultra", "ultra"},
+		{"gpt-6.1-sol", "none", "low"},
+		{"gpt-6.1-sol", "minimal", "low"},
+		{"gpt-6.1-sol", "ultra", "max"},
+		{"gpt-6.1-sol", "medium", "medium"},
 		{"gpt-5.5", "max", "xhigh"},
 		{"gpt-5.5", "high", "high"},
 	}
