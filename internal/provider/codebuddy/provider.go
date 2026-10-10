@@ -446,7 +446,12 @@ func (p *codebuddyProvider) chatWithKey(ctx context.Context, req provider.ChatRe
 // DefaultIntlModels are returned when upstream CodeBuddy Intl has no /v2/models endpoint (404) or fails.
 var DefaultIntlModels = []provider.Model{
 	{ID: "glm-5.2", Name: "glm-5.2"},
+	{ID: "glm-5.1", Name: "glm-5.1"},
 	{ID: "deepseek-v3", Name: "deepseek-v3"},
+	{ID: "deepseek-v4.1-flash", Name: "deepseek-v4.1-flash"},
+	{ID: "hy4-preview", Name: "hy4-preview"},
+	{ID: "minimax-m3", Name: "minimax-m3"},
+	{ID: "kimi-k2.7", Name: "kimi-k2.7"},
 }
 
 func (p *codebuddyProvider) Models(ctx context.Context) ([]provider.Model, error) {
