@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"regexp"
 	"strings"
@@ -22,6 +23,11 @@ const NeutralSystemPrompt = "You are a helpful AI assistant that helps with soft
 const DefaultUserAgent = "CLI/2.108.1 CodeBuddy/2.108.1"
 const IntlUserAgent = "IDE/2.108.1 CodeBuddy/2.108.1"
 const IntlSystemPrompt = "You are CodeBuddy Code."
+
+// EdgeOneAnycastIP is the Tencent EdgeOne anycast IP used when public DNS
+// sinkholes www.codebuddy.ai to 0.0.0.1 or fails to resolve.
+const EdgeOneAnycastIP = "43.170.214.92"
+const CodeBuddyIntlHost = "www.codebuddy.ai"
 
 var agentSystemPromptPattern = regexp.MustCompile(`(?i)` + strings.Join([]string{
 	`you are claude code`,
@@ -67,13 +73,88 @@ func init() {
 	})
 }
 
+// dialContextFunc is a function type for dialing network connections.
+type dialContextFunc func(ctx context.Context, network, addr string) (net.Conn, error)
+
+// newCodebuddyFallbackDialer wraps dialer function to intercept connections to www.codebuddy.ai.
+// If DNS resolution for www.codebuddy.ai yields 0.0.0.1 or fails, it connects to Tencent EdgeOne Anycast IP.
+func newCodebuddyFallbackDialer(baseDial dialContextFunc) dialContextFunc {
+	return func(ctx context.Context, network, addr string) (net.Conn, error) {
+		host, port, err := net.SplitHostPort(addr)
+		if err != nil {
+			return baseDial(ctx, network, addr)
+		}
+
+		if host != CodeBuddyIntlHost {
+			return baseDial(ctx, network, addr)
+		}
+
+		// Perform DNS lookup for www.codebuddy.ai
+		ips, lookupErr := net.DefaultResolver.LookupIP(ctx, "ip", host)
+		useFallback := false
+		if lookupErr != nil || len(ips) == 0 {
+			useFallback = true
+		} else {
+			// Check if all resolved IPs are sinkholed (e.g. 0.0.0.1 or 0.0.0.0)
+			allSinkholed := true
+			for _, ip := range ips {
+				ipStr := ip.String()
+				if ipStr != "0.0.0.1" && ipStr != "0.0.0.0" {
+					allSinkholed = false
+					break
+				}
+			}
+			if allSinkholed {
+				useFallback = true
+			}
+		}
+
+		if useFallback {
+			return baseDial(ctx, network, net.JoinHostPort(EdgeOneAnycastIP, port))
+		}
+
+		// Try standard dial first, fallback on dial failure
+		conn, err := baseDial(ctx, network, addr)
+		if err != nil {
+			return baseDial(ctx, network, net.JoinHostPort(EdgeOneAnycastIP, port))
+		}
+		return conn, nil
+	}
+}
+
+// wrapTransportWithDNSFallback ensures HTTP transport has DNS fallback for www.codebuddy.ai.
+func wrapTransportWithDNSFallback(base http.RoundTripper) http.RoundTripper {
+	var tr *http.Transport
+	if base == nil {
+		tr = http.DefaultTransport.(*http.Transport).Clone()
+	} else if existingTr, ok := base.(*http.Transport); ok {
+		tr = existingTr.Clone()
+	} else {
+		// Non-*http.Transport RoundTripper passed (e.g. in tests)
+		return base
+	}
+
+	netDialer := &net.Dialer{
+		Timeout:   30 * time.Second,
+		KeepAlive: 30 * time.Second,
+	}
+
+	dialContext := tr.DialContext
+	if dialContext == nil {
+		dialContext = netDialer.DialContext
+	}
+
+	tr.DialContext = newCodebuddyFallbackDialer(dialContext)
+	return tr
+}
+
 // New returns a CodeBuddy provider for CN or Intl.
 func New(cfg provider.Config, store provider.CredStore, forceIntl bool) provider.Provider {
 	timeout := cfg.Timeout
 	if timeout <= 0 {
 		timeout = 60 * time.Second
 	}
-	client := &http.Client{Timeout: timeout, Transport: cfg.Transport}
+	transport := cfg.Transport
 	base := strings.TrimRight(cfg.BaseURL, "/")
 	if base == "" {
 		if forceIntl || strings.Contains(cfg.Name, "intl") {
@@ -83,6 +164,11 @@ func New(cfg provider.Config, store provider.CredStore, forceIntl bool) provider
 		}
 	}
 	isIntl := forceIntl || strings.Contains(base, "codebuddy.ai") || strings.Contains(cfg.Name, "intl")
+	if isIntl {
+		transport = wrapTransportWithDNSFallback(transport)
+	}
+
+	client := &http.Client{Timeout: timeout, Transport: transport}
 	return &codebuddyProvider{
 		name:          cfg.Name,
 		baseURL:       base,
@@ -357,6 +443,12 @@ func (p *codebuddyProvider) chatWithKey(ctx context.Context, req provider.ChatRe
 	return guard.Err(err)
 }
 
+// DefaultIntlModels are returned when upstream CodeBuddy Intl has no /v2/models endpoint (404) or fails.
+var DefaultIntlModels = []provider.Model{
+	{ID: "glm-5.2", Name: "glm-5.2"},
+	{ID: "deepseek-v3", Name: "deepseek-v3"},
+}
+
 func (p *codebuddyProvider) Models(ctx context.Context) ([]provider.Model, error) {
 	apiKey, _ := p.apiKey()
 	endpoint := p.baseURL + "/models"
@@ -368,11 +460,17 @@ func (p *codebuddyProvider) Models(ctx context.Context) ([]provider.Model, error
 
 	resp, err := p.client.Do(httpReq)
 	if err != nil {
+		if p.isIntl() {
+			return append([]provider.Model(nil), DefaultIntlModels...), nil
+		}
 		return nil, fmt.Errorf("query models: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
+		if p.isIntl() && resp.StatusCode == http.StatusNotFound {
+			return append([]provider.Model(nil), DefaultIntlModels...), nil
+		}
 		return nil, fmt.Errorf("models query failed with status %d", resp.StatusCode)
 	}
 
@@ -394,8 +492,15 @@ func (p *codebuddyProvider) Models(ctx context.Context) ([]provider.Model, error
 
 func (p *codebuddyProvider) Test(ctx context.Context) provider.TestResult {
 	start := time.Now()
+	res := provider.TestResult{}
+	if _, ok := p.apiKey(); !ok {
+		res.LatencyMS = time.Since(start).Milliseconds()
+		res.Error = "no API key configured for codebuddy provider"
+		return res
+	}
+
 	_, err := p.Models(ctx)
-	res := provider.TestResult{LatencyMS: time.Since(start).Milliseconds()}
+	res.LatencyMS = time.Since(start).Milliseconds()
 	if err != nil {
 		res.Error = err.Error()
 		return res
