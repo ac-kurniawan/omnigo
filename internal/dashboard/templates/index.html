@@ -2019,8 +2019,10 @@
                       {{end}}
                     </div>
                     <div class="flex items-center gap-1">
-                      {{if or (eq $provType "antigravity") (eq $provType "codex")}}
+                      {{if or (eq $provType "antigravity") (eq $provType "codex") (eq $provType "codebuddy") (eq $provType "codebuddy-cn") (eq $provType "codebuddy-intl")}}
                         <button type="button" hx-post="{{$refresh}}" hx-target="#result" hx-swap="innerHTML" hx-on::after-request="htmx.ajax('GET', '/providers', {target:'#providers', swap:'innerHTML'})" class="btn btn-ghost btn-xs" title="Refresh quota now">&#8635;</button>
+                      {{end}}
+                      {{if or (eq $provType "antigravity") (eq $provType "codex")}}
                         <a href="/oauth/login/{{$provName}}" target="_blank" class="btn btn-ghost btn-xs min-h-11 focus-visible:ring-2 focus-visible:ring-primary">Reconnect</a>
                       {{end}}
                       <button type="button" hx-post="/providers/{{$provName}}/accounts/{{urlEscape (accountIdentity .)}}/delete" hx-target="#providers" hx-swap="innerHTML" hx-confirm="Remove account {{if .Email}}{{.Email}}{{else}}{{.AccountID}}{{end}}?" class="btn btn-error btn-outline btn-xs min-h-11 focus-visible:ring-2 focus-visible:ring-error">Remove</button>
