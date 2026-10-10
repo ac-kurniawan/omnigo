@@ -44,6 +44,7 @@ type codebuddyProvider struct {
 	name          string
 	baseURL       string
 	store         provider.CredStore
+	pool          provider.AccountPool
 	client        *http.Client
 	stream        *http.Client
 	idle          time.Duration
@@ -265,8 +266,8 @@ func (p *codebuddyProvider) buildHeaders(req *http.Request, apiKey string, strea
 }
 
 func (p *codebuddyProvider) ChatCompletion(ctx context.Context, req provider.ChatRequest, w http.ResponseWriter) error {
-	apiKey, hasKey := p.apiKey()
-	if !hasKey {
+	accounts, _ := p.pool.AvailableForModel(p.store, req.Model)
+	if len(accounts) == 0 {
 		return errors.New("no API key configured for codebuddy provider")
 	}
 
@@ -275,6 +276,34 @@ func (p *codebuddyProvider) ChatCompletion(ctx context.Context, req provider.Cha
 		return err
 	}
 
+	var lastErr error
+	for _, account := range accounts {
+		key := account.APIKey
+		if key == "" {
+			key = account.AccessToken
+		}
+		if key == "" {
+			continue
+		}
+
+		attempt := provider.NewStreamingAttemptWriter(w, req.Stream)
+		lastErr = p.chatWithKey(ctx, req, body, key, attempt)
+		if lastErr == nil {
+			return attempt.Commit(w)
+		}
+		if attempt.Committed() {
+			return lastErr
+		}
+		if errors.Is(lastErr, context.Canceled) || errors.Is(lastErr, context.DeadlineExceeded) {
+			return lastErr
+		}
+		p.pool.MarkFailed(account, req.Model, lastErr)
+	}
+
+	return lastErr
+}
+
+func (p *codebuddyProvider) chatWithKey(ctx context.Context, req provider.ChatRequest, body []byte, apiKey string, w http.ResponseWriter) error {
 	endpoint := p.baseURL + "/chat/completions"
 	ctx, cancel := context.WithCancelCause(ctx)
 	defer cancel(nil)

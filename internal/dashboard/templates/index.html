@@ -1698,6 +1698,7 @@
       {{end}}
       {{range .Providers}}
       {{$provName := .Name}}
+      {{$provType := .Type}}
       {{$sec := providerSecret $ .Name}}
       {{$accounts := index $.Accounts .Name}}
       {{$hasKey := or (and $sec $sec.APIKey) .APIKey}}
@@ -1808,11 +1809,11 @@
             </button>
             <ul tabindex="0" class="dropdown-content menu menu-sm bg-base-100 rounded-box border border-base-content/10 shadow-lg z-10 w-44 p-1">
               <li><button type="button" onclick="document.getElementById('edit-modal-{{.Name}}').showModal()">Edit</button></li>
-              {{if eq .Type "openai"}}
-                {{if $hasKey}}
-                  <li><button type="button" onclick="document.getElementById('key-modal-{{.Name}}').showModal()">Update Key</button></li>
+              {{if or (eq .Type "openai") (eq .Type "codebuddy") (eq .Type "codebuddy-cn") (eq .Type "codebuddy-intl") (eq .Type "muse")}}
+                {{if or $hasKey $accounts}}
+                  <li><button type="button" onclick="document.getElementById('key-modal-{{.Name}}').showModal()">Manage API Keys</button></li>
                 {{else}}
-                  <li><button type="button" onclick="document.getElementById('key-modal-{{.Name}}').showModal()">Set Key</button></li>
+                  <li><button type="button" onclick="document.getElementById('key-modal-{{.Name}}').showModal()">Set API Key</button></li>
                 {{end}}
               {{end}}
               {{if eq .Type "antigravity"}}
@@ -1853,30 +1854,46 @@
             <form method="dialog" class="modal-backdrop"><button>close</button></form>
           </dialog>
 
-          {{if eq .Type "openai"}}
+          {{if or (eq .Type "openai") (eq .Type "codebuddy") (eq .Type "codebuddy-cn") (eq .Type "codebuddy-intl") (eq .Type "muse")}}
             <dialog id="key-modal-{{.Name}}" class="modal modal-bottom sm:modal-middle">
-              <div class="modal-box max-w-md text-left border border-base-content/10 shadow-2xl p-6 rounded-2xl">
+              <div class="modal-box max-w-lg text-left border border-base-content/10 shadow-2xl p-6 rounded-2xl">
                 <h3 class="text-base font-bold flex items-center gap-2 text-primary">
                   <svg xmlns="http://www.w3.org/2000/svg" class="size-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 7a2 2 0 012 2m4 0a6 6 0 01-7.743 5.743L11 17H9v2H7v2H4a1 1 0 01-1-1v-2.586a1 1 0 01.293-.707l5.964-5.964A6 6 0 1121 9z" /></svg>
-                  Configure API Key &bull; {{.Name}}
+                  Configure API Keys &bull; {{.Name}}
                 </h3>
-                <p class="text-xs text-base-content/60 mt-1">Set the Bearer API key for this provider. Saved encrypted in auth.yaml.</p>
+                <p class="text-xs text-base-content/60 mt-1">Configure single or bulk API keys for multi-key rotation and failover. Saved encrypted in auth.yaml.</p>
                 {{$currKey := ""}}
                 {{if and $sec $sec.APIKey}}{{$currKey = $sec.APIKey}}{{else if .APIKey}}{{$currKey = .APIKey}}{{end}}
-                {{if $currKey}}
+                {{if or $currKey $accounts}}
                   <div class="mt-3 p-3 rounded-xl bg-base-200/80 border border-base-content/10 text-xs">
-                    <span class="text-base-content/60">Current Status:</span>
-                    <code class="font-mono ml-1 text-success font-semibold">Configured (len: {{len $currKey}})</code>
+                    <span class="text-base-content/60">Configured Pool:</span>
+                    {{if $accounts}}
+                      <code class="font-mono ml-1 text-success font-semibold">{{len $accounts}} key{{if ne (len $accounts) 1}}s{{end}} active</code>
+                    {{else}}
+                      <code class="font-mono ml-1 text-success font-semibold">1 key (len: {{len $currKey}})</code>
+                    {{end}}
                   </div>
                 {{end}}
                 <form action="/providers/{{.Name}}/key" method="POST" hx-post="/providers/{{.Name}}/key" hx-target="#providers" hx-swap="innerHTML" onsubmit="document.getElementById('key-modal-{{.Name}}').close()" class="space-y-4 my-4">
                   <div>
-                    <label class="label pb-1.5 pt-0 text-xs font-semibold text-base-content/70">Bearer API Key</label>
-                    <input type="password" name="api_key" placeholder="Enter API key (e.g. sk-...)" class="input input-bordered input-sm w-full font-mono text-xs px-3.5 py-2.5 h-auto min-h-[2.5rem] rounded-xl" required>
+                    <div class="flex justify-between items-baseline mb-1">
+                      <label class="label pb-0 pt-0 text-xs font-semibold text-base-content/70">Bulk Add API Keys (One key per line)</label>
+                      <span class="text-[11px] text-base-content/50 font-mono">key OR name|key</span>
+                    </div>
+                    <textarea name="bulk_keys" rows="4" placeholder="key-12345&#10;account-2|key-67890" class="textarea textarea-bordered textarea-sm w-full font-mono text-xs p-3 rounded-xl leading-relaxed"></textarea>
+                  </div>
+                  <div class="flex items-center gap-2">
+                    <input type="checkbox" id="append-keys-{{.Name}}" name="append" value="true" class="checkbox checkbox-xs checkbox-primary rounded">
+                    <label for="append-keys-{{.Name}}" class="text-xs text-base-content/70 cursor-pointer select-none">Append to existing keys (instead of replacing)</label>
+                  </div>
+                  <div class="divider my-1 text-[11px] text-base-content/40">OR SINGLE KEY</div>
+                  <div>
+                    <label class="label pb-1.5 pt-0 text-xs font-semibold text-base-content/70">Single Bearer API Key</label>
+                    <input type="password" name="api_key" placeholder="Enter single API key (sk-...)" class="input input-bordered input-sm w-full font-mono text-xs px-3.5 py-2.5 h-auto min-h-[2.5rem] rounded-xl">
                   </div>
                   <div class="flex justify-end gap-2 pt-2">
                     <button type="button" class="btn btn-sm btn-ghost px-4 rounded-xl" onclick="document.getElementById('key-modal-{{.Name}}').close()">Cancel</button>
-                    <button type="submit" class="btn btn-sm btn-primary px-5 rounded-xl font-medium shadow-sm">Save Key</button>
+                    <button type="submit" class="btn btn-sm btn-primary px-5 rounded-xl font-medium shadow-sm">Save Keys</button>
                   </div>
                 </form>
               </div>
@@ -1968,7 +1985,7 @@
 
         </td>
       </tr>
-      {{if or (eq .Type "antigravity") (eq .Type "codex")}}
+      {{if or (eq .Type "antigravity") (eq .Type "codex") (and (or (eq .Type "codebuddy") (eq .Type "codebuddy-cn") (eq .Type "codebuddy-intl") (eq .Type "openai") (eq .Type "muse")) $accounts)}}
       <tr class="bg-base-200/20">
         <td colspan="4" class="px-4 py-3">
           <div class="collapse collapse-arrow accounts-collapse border border-base-content/10 rounded-xl bg-base-100/40" data-accordion="{{$provName}}">
@@ -2002,8 +2019,10 @@
                       {{end}}
                     </div>
                     <div class="flex items-center gap-1">
-                      <button type="button" hx-post="{{$refresh}}" hx-target="#result" hx-swap="innerHTML" hx-on::after-request="htmx.ajax('GET', '/providers', {target:'#providers', swap:'innerHTML'})" class="btn btn-ghost btn-xs" title="Refresh quota now">&#8635;</button>
-                      <a href="/oauth/login/{{$provName}}" target="_blank" class="btn btn-ghost btn-xs min-h-11 focus-visible:ring-2 focus-visible:ring-primary">Reconnect</a>
+                      {{if or (eq $provType "antigravity") (eq $provType "codex")}}
+                        <button type="button" hx-post="{{$refresh}}" hx-target="#result" hx-swap="innerHTML" hx-on::after-request="htmx.ajax('GET', '/providers', {target:'#providers', swap:'innerHTML'})" class="btn btn-ghost btn-xs" title="Refresh quota now">&#8635;</button>
+                        <a href="/oauth/login/{{$provName}}" target="_blank" class="btn btn-ghost btn-xs min-h-11 focus-visible:ring-2 focus-visible:ring-primary">Reconnect</a>
+                      {{end}}
                       <button type="button" hx-post="/providers/{{$provName}}/accounts/{{urlEscape (accountIdentity .)}}/delete" hx-target="#providers" hx-swap="innerHTML" hx-confirm="Remove account {{if .Email}}{{.Email}}{{else}}{{.AccountID}}{{end}}?" class="btn btn-error btn-outline btn-xs min-h-11 focus-visible:ring-2 focus-visible:ring-error">Remove</button>
                     </div>
                   </div>
