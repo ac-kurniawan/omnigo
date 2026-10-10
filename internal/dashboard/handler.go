@@ -190,6 +190,9 @@ func newServer(getCfg func() *config.Config, store *vault.Store, mutate config.M
 			return n
 		},
 		"accountStatus": func(account vault.ProviderSecret) string {
+			if account.APIKey != "" {
+				return "Ready"
+			}
 			if account.AccessToken == "" && account.RefreshToken == "" {
 				return "Reconnect required"
 			}
@@ -199,6 +202,9 @@ func newServer(getCfg func() *config.Config, store *vault.Store, mutate config.M
 			return "Ready"
 		},
 		"accountStatusClass": func(account vault.ProviderSecret) string {
+			if account.APIKey != "" {
+				return "status-pill-neutral"
+			}
 			if account.AccessToken == "" && account.RefreshToken == "" {
 				return "status-pill-error"
 			}
