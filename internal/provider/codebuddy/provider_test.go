@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -370,6 +371,82 @@ func TestCodebuddyProviderRateLimitErrorMapping(t *testing.T) {
 	}
 	if statusErr.HTTPStatus() != http.StatusTooManyRequests {
 		t.Errorf("expected status 429, got %d", statusErr.HTTPStatus())
+	}
+}
+
+func TestCodebuddyIntlDNSFallbackDialer(t *testing.T) {
+	dialedAddr := ""
+	customDial := func(ctx context.Context, network, addr string) (net.Conn, error) {
+		dialedAddr = addr
+		return &mockConn{}, nil
+	}
+
+	dialer := newCodebuddyFallbackDialer(customDial)
+
+	// Case 1: host is not www.codebuddy.ai -> pass through untouched
+	dialedAddr = ""
+	conn, err := dialer(context.Background(), "tcp", "api.openai.com:443")
+	if err != nil {
+		t.Fatalf("dial failed: %v", err)
+	}
+	conn.Close()
+	if dialedAddr != "api.openai.com:443" {
+		t.Errorf("expected dialedAddr api.openai.com:443, got %s", dialedAddr)
+	}
+
+	// Case 2: host is www.codebuddy.ai:443, DNS resolves to 0.0.0.1 or fails -> should dial 43.170.214.92:443
+	dialedAddr = ""
+	conn, err = dialer(context.Background(), "tcp", "www.codebuddy.ai:443")
+	if err != nil {
+		t.Fatalf("dial failed: %v", err)
+	}
+	conn.Close()
+	if dialedAddr != "43.170.214.92:443" {
+		t.Errorf("expected dialedAddr 43.170.214.92:443, got %s", dialedAddr)
+	}
+}
+
+type mockConn struct {
+	net.Conn
+}
+
+func (m *mockConn) Close() error { return nil }
+
+func TestCodebuddyProviderModelsFallbackOn404(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		w.Write([]byte(`{"error":{"code":"not_found","message":"Not Found"}}`))
+	}))
+	defer ts.Close()
+
+	store := &memoryCredStore{creds: provider.Credentials{APIKey: "cb-token"}}
+	p := New(provider.Config{Name: "codebuddy-intl", BaseURL: ts.URL}, store, true)
+
+	models, err := p.Models(context.Background())
+	if err != nil {
+		t.Fatalf("expected Models() fallback on 404 without error, got %v", err)
+	}
+	if len(models) != len(DefaultIntlModels) {
+		t.Fatalf("expected %d fallback models, got %d", len(DefaultIntlModels), len(models))
+	}
+	if models[0].ID != "glm-5.2" || models[1].ID != "glm-5.1" || models[2].ID != "deepseek-v3" {
+		t.Errorf("expected glm-5.2, glm-5.1, deepseek-v3, got %+v", models)
+	}
+
+	testRes := p.Test(context.Background())
+	if !testRes.OK {
+		t.Errorf("expected Test() to pass with fallback models, got error: %s", testRes.Error)
+	}
+}
+
+func TestCodebuddyProviderTestResilienceWithoutAPIKey(t *testing.T) {
+	p := New(provider.Config{Name: "codebuddy-intl"}, nil, true)
+	res := p.Test(context.Background())
+	if res.OK {
+		t.Errorf("expected Test() to fail when no API key configured")
+	}
+	if res.Error == "" {
+		t.Errorf("expected non-empty error message")
 	}
 }
 
