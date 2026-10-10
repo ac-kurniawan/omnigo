@@ -426,11 +426,11 @@ func TestCodebuddyProviderModelsFallbackOn404(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected Models() fallback on 404 without error, got %v", err)
 	}
-	if len(models) != 2 {
-		t.Fatalf("expected 2 fallback models, got %d", len(models))
+	if len(models) != len(DefaultIntlModels) {
+		t.Fatalf("expected %d fallback models, got %d", len(DefaultIntlModels), len(models))
 	}
-	if models[0].ID != "glm-5.2" || models[1].ID != "deepseek-v3" {
-		t.Errorf("expected glm-5.2 and deepseek-v3, got %+v", models)
+	if models[0].ID != "glm-5.2" || models[1].ID != "glm-5.1" || models[2].ID != "deepseek-v3" {
+		t.Errorf("expected glm-5.2, glm-5.1, deepseek-v3, got %+v", models)
 	}
 
 	testRes := p.Test(context.Background())
