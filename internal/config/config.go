@@ -278,7 +278,7 @@ func Load(path string) (*Config, error) {
 	return &cfg, nil
 }
 
-var validTypes = map[string]bool{"openai": true, "antigravity": true, "codex": true}
+var validTypes = map[string]bool{"openai": true, "antigravity": true, "codex": true, "muse": true, "codebuddy": true}
 var validStrategies = map[string]bool{"priority": true, "fill-first": true, "reliable": true, "round-robin": true}
 
 func (c *Config) Validate() error {
