@@ -60,7 +60,13 @@ func (s ProviderSecret) Identity() string {
 	if s.AccountID != "" {
 		return s.AccountID
 	}
-	return s.Email
+	if s.Email != "" {
+		return s.Email
+	}
+	if s.APIKey != "" {
+		return "api-key"
+	}
+	return ""
 }
 
 func (s ProviderSecret) Empty() bool {
