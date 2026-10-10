@@ -131,6 +131,62 @@ func TestDeleteProviderRemovesComboTargets(t *testing.T) {
 	}
 }
 
+func TestSetProviderBulkKeys(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(path, []byte("providers:\n  - name: codebuddy-intl\n    type: codebuddy-intl\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &config.Config{
+		Providers: []config.Provider{{Name: "codebuddy-intl", Type: "codebuddy-intl"}},
+	}
+	store := vault.NewMemoryStore(&vault.Vault{})
+	s := newServer(func() *config.Config { return cfg }, store, nil)
+
+	bulkPayload := "bulk_keys=" + strings.ReplaceAll(`acc-1|cb-key-1
+cb-key-2
+acc-3|cb-key-3`, "\n", "%0A")
+	req := httptest.NewRequest("POST", "/providers/codebuddy-intl/key", strings.NewReader(bulkPayload))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("HX-Request", "true")
+	rr := httptest.NewRecorder()
+	s.routes().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rr.Code, rr.Body.String())
+	}
+
+	accounts := store.Get().Accounts("codebuddy-intl")
+	if len(accounts) != 3 {
+		t.Fatalf("expected 3 accounts, got %d: %+v", len(accounts), accounts)
+	}
+	if accounts[0].AccountID != "acc-1" || accounts[0].APIKey != "cb-key-1" {
+		t.Errorf("account[0] mismatch: %+v", accounts[0])
+	}
+	if accounts[1].AccountID != "key-2" || accounts[1].APIKey != "cb-key-2" {
+		t.Errorf("account[1] mismatch: %+v", accounts[1])
+	}
+	if accounts[2].AccountID != "acc-3" || accounts[2].APIKey != "cb-key-3" {
+		t.Errorf("account[2] mismatch: %+v", accounts[2])
+	}
+
+	// Test append=true
+	appendPayload := "bulk_keys=cb-key-4&append=true"
+	reqAppend := httptest.NewRequest("POST", "/providers/codebuddy-intl/key", strings.NewReader(appendPayload))
+	reqAppend.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	reqAppend.Header.Set("HX-Request", "true")
+	rrAppend := httptest.NewRecorder()
+	s.routes().ServeHTTP(rrAppend, reqAppend)
+
+	accountsAfter := store.Get().Accounts("codebuddy-intl")
+	if len(accountsAfter) != 4 {
+		t.Fatalf("expected 4 accounts after append, got %d: %+v", len(accountsAfter), accountsAfter)
+	}
+	if accountsAfter[3].APIKey != "cb-key-4" {
+		t.Errorf("account[3] mismatch: %+v", accountsAfter[3])
+	}
+}
+
 func TestSetProviderKey(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")

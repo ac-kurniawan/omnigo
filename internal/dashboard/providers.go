@@ -72,17 +72,59 @@ func (s *Server) createProvider(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) setProviderKey(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
-	apiKey := r.FormValue("api_key")
+	singleKey := strings.TrimSpace(r.FormValue("api_key"))
+	bulkKeys := strings.TrimSpace(r.FormValue("bulk_keys"))
+	appendMode := r.FormValue("append") == "true" || r.FormValue("append") == "1"
 
 	if err := s.store.Update(func(v *vault.Vault) error {
+		if v.ProviderAccounts == nil {
+			v.ProviderAccounts = make(map[string][]vault.ProviderSecret)
+		}
+
+		if bulkKeys != "" {
+			var newAccounts []vault.ProviderSecret
+			if appendMode {
+				newAccounts = append(newAccounts, v.Accounts(name)...)
+			}
+
+			lines := strings.Split(bulkKeys, "\n")
+			idx := 1
+			for _, line := range lines {
+				line = strings.TrimSpace(line)
+				if line == "" || strings.HasPrefix(line, "#") {
+					continue
+				}
+				parts := strings.SplitN(line, "|", 2)
+				var accID, key string
+				if len(parts) == 2 {
+					accID = strings.TrimSpace(parts[0])
+					key = strings.TrimSpace(parts[1])
+				} else {
+					accID = fmt.Sprintf("key-%d", len(newAccounts)+1)
+					key = strings.TrimSpace(parts[0])
+				}
+				if key != "" {
+					newAccounts = append(newAccounts, vault.ProviderSecret{
+						AccountID: accID,
+						APIKey:    key,
+					})
+					idx++
+				}
+			}
+
+			if len(newAccounts) > 0 {
+				v.ProviderAccounts[name] = newAccounts
+				delete(v.ProviderSecrets, name)
+				return nil
+			}
+		}
+
+		// Single key fallback / update
 		accounts := v.Accounts(name)
 		if len(accounts) == 0 {
-			v.UpsertAccount(name, vault.ProviderSecret{APIKey: apiKey})
+			v.UpsertAccount(name, vault.ProviderSecret{APIKey: singleKey})
 		} else {
-			accounts[0].APIKey = apiKey
-			if v.ProviderAccounts == nil {
-				v.ProviderAccounts = make(map[string][]vault.ProviderSecret)
-			}
+			accounts[0].APIKey = singleKey
 			v.ProviderAccounts[name] = accounts
 			delete(v.ProviderSecrets, name)
 		}

@@ -26,6 +26,93 @@ func (m *memoryCredStore) Put(c provider.Credentials) error {
 	return nil
 }
 
+type poolCredStore struct {
+	accounts []provider.Credentials
+}
+
+func (s *poolCredStore) Get() provider.Credentials {
+	if len(s.accounts) == 0 {
+		return provider.Credentials{}
+	}
+	return s.accounts[0]
+}
+
+func (s *poolCredStore) Put(c provider.Credentials) error {
+	s.accounts = []provider.Credentials{c}
+	return nil
+}
+
+func (s *poolCredStore) Accounts() []provider.Credentials {
+	return append([]provider.Credentials(nil), s.accounts...)
+}
+
+func (s *poolCredStore) PutAccount(identity string, credentials provider.Credentials) error {
+	for i := range s.accounts {
+		if s.accounts[i].Identity() == identity {
+			s.accounts[i] = credentials
+			return nil
+		}
+	}
+	s.accounts = append(s.accounts, credentials)
+	return nil
+}
+
+func TestCodebuddyProviderMultiAccountFailover(t *testing.T) {
+	callCount := 0
+	var usedTokens []string
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		auth := r.Header.Get("Authorization")
+		token := strings.TrimPrefix(auth, "Bearer ")
+		usedTokens = append(usedTokens, token)
+
+		if token == "key-bad" {
+			// First key returns 429 rate limit (6004)
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte(`{"code":6004,"msg":"超出频率限制"}`))
+			return
+		}
+
+		// Second key succeeds
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"ok from good key\"}}]}\n\n"))
+		w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer ts.Close()
+
+	store := &poolCredStore{
+		accounts: []provider.Credentials{
+			{AccountID: "acc-1", APIKey: "key-bad"},
+			{AccountID: "acc-2", APIKey: "key-good"},
+		},
+	}
+
+	p := New(provider.Config{
+		Name:    "codebuddy-intl",
+		BaseURL: ts.URL,
+	}, store, true)
+
+	rec := httptest.NewRecorder()
+	req := provider.ChatRequest{
+		Model: "glm-5.2",
+		Raw:   []byte(`{"model":"glm-5.2","messages":[{"role":"user","content":"hi"}]}`),
+	}
+
+	err := p.ChatCompletion(context.Background(), req, rec)
+	if err != nil {
+		t.Fatalf("ChatCompletion failed: %v", err)
+	}
+
+	if callCount != 2 {
+		t.Fatalf("expected 2 calls (failover), got %d", callCount)
+	}
+	if len(usedTokens) != 2 || usedTokens[0] != "key-bad" || usedTokens[1] != "key-good" {
+		t.Errorf("expected failover from key-bad to key-good, got tokens: %v", usedTokens)
+	}
+}
+
 func TestCodebuddyProviderChatCompletionHeadersAndStream(t *testing.T) {
 	var capturedHeader http.Header
 	var capturedBody map[string]any
