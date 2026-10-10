@@ -46,6 +46,9 @@ type viewData struct {
 // token must exist, and if the access token has expired a refresh token must
 // be available. It backs both the per-account status dot and healthyCount.
 func accountHealthy(account vault.ProviderSecret) bool {
+	if account.APIKey != "" {
+		return true
+	}
 	if account.AccessToken == "" && account.RefreshToken == "" {
 		return false
 	}

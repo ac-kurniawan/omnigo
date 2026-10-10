@@ -202,7 +202,13 @@ func (c Credentials) Identity() string {
 	if c.AccountID != "" {
 		return c.AccountID
 	}
-	return c.Email
+	if c.Email != "" {
+		return c.Email
+	}
+	if c.APIKey != "" {
+		return "api-key"
+	}
+	return ""
 }
 
 type CredStore interface {
