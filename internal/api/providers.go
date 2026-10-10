@@ -7,6 +7,7 @@ import (
 	"github.com/ac-kurniawan/omnigo/internal/config"
 	"github.com/ac-kurniawan/omnigo/internal/provider"
 	_ "github.com/ac-kurniawan/omnigo/internal/provider/antigravity"
+	_ "github.com/ac-kurniawan/omnigo/internal/provider/codebuddy"
 	_ "github.com/ac-kurniawan/omnigo/internal/provider/codex"
 	"github.com/ac-kurniawan/omnigo/internal/vault"
 )
