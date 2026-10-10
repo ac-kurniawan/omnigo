@@ -2009,7 +2009,7 @@
                   <div class="flex flex-wrap items-center justify-between gap-2 border-b border-base-content/5 pb-2">
                     <div class="flex flex-wrap items-center gap-2">
                       <span class="size-2 rounded-full {{if accountHealthy .}}bg-success{{else}}bg-error{{end}}"></span>
-                      <span class="font-medium">{{if .Email}}{{.Email}}{{else}}{{.AccountID}}{{end}}</span>
+                      <span class="font-medium">{{if .Email}}{{.Email}}{{else if .AccountID}}{{.AccountID}}{{else}}API Key{{end}}</span>
                       <span class="status-pill {{accountStatusClass .}}">{{accountStatus .}}</span>
                       {{if and .Email .AccountID}}<span class="font-mono text-base-content/50">{{.AccountID}}</span>{{end}}
                       {{if $q}}
