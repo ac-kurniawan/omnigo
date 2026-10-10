@@ -123,6 +123,10 @@ go test ./...                                    # full suite
 6. Keep database-free: all state is in-memory + YAML files. No SQL, no ORM.
 7. All state mutations go through the config/vault packages — never write
    `auth.yaml` from a handler.
+8. **No False Assumptions / Honest Verification Before Claiming Done**:
+   - Never assume an issue is merely caused by user deployment/environment before verifying the complete, real data-flow pipeline (input -> storage/vault -> cache -> rendering).
+   - Mock unit tests with synthetic happy-path fields (e.g. artificial email/account IDs) DO NOT prove real-world behavior: always test with the exact minimal payload shape produced by actual user inputs.
+   - Never claim a UI feature or visual element is working without inspecting the real rendered DOM/HTML or screenshot produced from the actual data state.
 
 ## Common Modification Scenarios
 
