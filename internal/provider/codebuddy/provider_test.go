@@ -52,7 +52,7 @@ func TestCodebuddyProviderChatCompletionHeadersAndStream(t *testing.T) {
 		Name:    "cb-test",
 		BaseURL: ts.URL,
 		Timeout: 5 * time.Second,
-	}, store)
+	}, store, false)
 
 	rec := httptest.NewRecorder()
 	req := provider.ChatRequest{
@@ -108,8 +108,8 @@ func TestCodebuddyIntlTransformsPayloadAndHeaders(t *testing.T) {
 	// BaseURL containing codebuddy.ai should trigger intl mode
 	p := New(provider.Config{
 		Name:    "codebuddy-intl",
-		BaseURL: ts.URL + "/codebuddy.ai",
-	}, store)
+		BaseURL: ts.URL,
+	}, store, true)
 
 	req := provider.ChatRequest{
 		Model: "glm-5.2",
@@ -176,7 +176,7 @@ func TestCodebuddyProviderNeutralizesAgentSystemPrompt(t *testing.T) {
 	p := New(provider.Config{
 		Name:    "cb-test",
 		BaseURL: ts.URL,
-	}, store)
+	}, store, false)
 
 	agentPrompt := "You are Claude Code, Anthropic's official CLI for software development..."
 	req := provider.ChatRequest{
@@ -227,7 +227,7 @@ func TestCodebuddyProviderReasoningSummaryHandling(t *testing.T) {
 	store := &memoryCredStore{
 		creds: provider.Credentials{APIKey: "cb-token"},
 	}
-	p := New(provider.Config{Name: "cb-test", BaseURL: ts.URL}, store)
+	p := New(provider.Config{Name: "cb-test", BaseURL: ts.URL}, store, false)
 
 	// Case 1: client specifies reasoning_effort -> should set reasoning_summary = "auto"
 	reqWithReasoning := provider.ChatRequest{
@@ -264,7 +264,7 @@ func TestCodebuddyProviderRateLimitErrorMapping(t *testing.T) {
 	store := &memoryCredStore{
 		creds: provider.Credentials{APIKey: "cb-token"},
 	}
-	p := New(provider.Config{Name: "cb-test", BaseURL: ts.URL}, store)
+	p := New(provider.Config{Name: "cb-test", BaseURL: ts.URL}, store, false)
 
 	req := provider.ChatRequest{
 		Model: "glm-5.2",
@@ -303,7 +303,7 @@ func TestCodebuddyProviderModelsDiscovery(t *testing.T) {
 	defer ts.Close()
 
 	store := &memoryCredStore{creds: provider.Credentials{APIKey: "cb-token"}}
-	p := New(provider.Config{Name: "cb-test", BaseURL: ts.URL}, store)
+	p := New(provider.Config{Name: "cb-test", BaseURL: ts.URL}, store, false)
 
 	models, err := p.Models(context.Background())
 	if err != nil {

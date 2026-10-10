@@ -48,24 +48,40 @@ type codebuddyProvider struct {
 	stream        *http.Client
 	idle          time.Duration
 	streamTimeout time.Duration
+	intl          bool
 }
+
+const DefaultCNBaseURL = "https://copilot.tencent.com/v2"
+const DefaultIntlBaseURL = "https://www.codebuddy.ai/v2"
 
 func init() {
 	provider.Register("codebuddy", func(cfg provider.Config, store provider.CredStore) provider.Provider {
-		return New(cfg, store)
+		return New(cfg, store, false)
+	})
+	provider.Register("codebuddy-cn", func(cfg provider.Config, store provider.CredStore) provider.Provider {
+		return New(cfg, store, false)
+	})
+	provider.Register("codebuddy-intl", func(cfg provider.Config, store provider.CredStore) provider.Provider {
+		return New(cfg, store, true)
 	})
 }
 
-// New returns a CodeBuddy provider. CodeBuddy is an OpenAI-compatible
-// SSE-only gateway: non-stream requests are rejected with 11101, so
-// every forwarded request is forced to stream.
-func New(cfg provider.Config, store provider.CredStore) provider.Provider {
+// New returns a CodeBuddy provider for CN or Intl.
+func New(cfg provider.Config, store provider.CredStore, forceIntl bool) provider.Provider {
 	timeout := cfg.Timeout
 	if timeout <= 0 {
 		timeout = 60 * time.Second
 	}
 	client := &http.Client{Timeout: timeout, Transport: cfg.Transport}
 	base := strings.TrimRight(cfg.BaseURL, "/")
+	if base == "" {
+		if forceIntl || strings.Contains(cfg.Name, "intl") {
+			base = DefaultIntlBaseURL
+		} else {
+			base = DefaultCNBaseURL
+		}
+	}
+	isIntl := forceIntl || strings.Contains(base, "codebuddy.ai") || strings.Contains(cfg.Name, "intl")
 	return &codebuddyProvider{
 		name:          cfg.Name,
 		baseURL:       base,
@@ -74,13 +90,14 @@ func New(cfg provider.Config, store provider.CredStore) provider.Provider {
 		stream:        provider.StreamClient(client),
 		idle:          timeout,
 		streamTimeout: cfg.StreamTimeout,
+		intl:          isIntl,
 	}
 }
 
 func (p *codebuddyProvider) Name() string { return p.name }
 
 func (p *codebuddyProvider) isIntl() bool {
-	return strings.Contains(p.baseURL, "codebuddy.ai") || strings.Contains(p.name, "intl")
+	return p.intl || strings.Contains(p.baseURL, "codebuddy.ai") || strings.Contains(p.name, "intl")
 }
 
 // transformRequest applies CodeBuddy's quirks to an outgoing request:
