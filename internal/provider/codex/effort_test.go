@@ -100,3 +100,18 @@ func TestChatCompletionLeavesAPlainModelAlone(t *testing.T) {
 		t.Fatalf("upstream model = %#v, want gpt-5.5", got)
 	}
 }
+
+// A model whose real id merely ends in a level token (gpt-oss-120b-medium is a
+// real Ollama-style id) is not an effort clone, so its suffix must not be
+// stripped: only families with a known reasoning profile are rewritten.
+func TestChatCompletionLeavesANonEffortFamilySuffixAlone(t *testing.T) {
+	body := captureBody(t, "gpt-oss-120b-medium", `{"messages":[{"role":"user","content":"hi"}]}`)
+	if got := body["model"]; got != "gpt-oss-120b-medium" {
+		t.Fatalf("upstream model = %#v, want gpt-oss-120b-medium (not an effort family)", got)
+	}
+	if reasoning, ok := body["reasoning"].(map[string]any); ok {
+		if effort, exists := reasoning["effort"]; exists && effort != "" {
+			t.Fatalf("reasoning.effort = %#v, want none for a non-effort family", effort)
+		}
+	}
+}

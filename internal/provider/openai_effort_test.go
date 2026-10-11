@@ -94,3 +94,32 @@ func TestOpenAIChatForwardsAPlainBodyByteForByte(t *testing.T) {
 		t.Fatalf("upstream body = %s, want it forwarded unchanged: %s", got, raw)
 	}
 }
+
+// The effort rewrite must keep the developer->system normalisation the plain
+// Body() path performs; otherwise the same logical request forwards a role the
+// upstream does not recognise and the request hangs.
+func TestOpenAIChatNormalisesDeveloperRoleOnTheEffortPath(t *testing.T) {
+	raw := captureOpenAIBody(t, ChatRequest{
+		Model:  "o3-mini-high",
+		Stream: false,
+		Raw:    []byte(`{"model":"o3-mini-high","messages":[{"role":"developer","content":"be nice"}]}`),
+	})
+	var body map[string]any
+	if err := json.Unmarshal(raw, &body); err != nil {
+		t.Fatalf("upstream body is not JSON: %v", err)
+	}
+	messages, ok := body["messages"].([]any)
+	if !ok || len(messages) == 0 {
+		t.Fatalf("messages = %#v, want one message", body["messages"])
+	}
+	first, _ := messages[0].(map[string]any)
+	if got := first["role"]; got != "system" {
+		t.Fatalf("role = %#v, want system (developer must be normalised on the effort path too)", got)
+	}
+	if got := body["model"]; got != "o3-mini" {
+		t.Fatalf("model = %#v, want o3-mini", got)
+	}
+	if got := body["reasoning_effort"]; got != "high" {
+		t.Fatalf("reasoning_effort = %#v, want high", got)
+	}
+}

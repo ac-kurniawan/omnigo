@@ -175,6 +175,10 @@ func effortLevel(model string) string {
 // body: the model id loses its suffix and reasoning_effort carries the level.
 // The suffix wins over any client-supplied reasoning_effort. The parsed map is
 // shared across targets and must not be mutated, so a fresh payload is built.
+//
+// It reuses openAIPayload so the developer->system role normalisation the plain
+// Body() path performs also happens here; skipping it would forward a role the
+// upstream does not recognise and stall the request.
 func effortBody(req ChatRequest, level string) ([]byte, error) {
 	base, _, _ := effort.Split(req.Model)
 	parsed := req.Parsed
@@ -183,14 +187,7 @@ func effortBody(req ChatRequest, level string) ([]byte, error) {
 			parsed = map[string]any{}
 		}
 	}
-	out := make(map[string]any, len(parsed))
-	for key, value := range parsed {
-		if key == openAIBodyCacheKey {
-			continue
-		}
-		out[key] = value
-	}
-	out["model"] = base
+	out := openAIPayload(parsed, base)
 	out["reasoning_effort"] = level
 	return json.Marshal(out)
 }

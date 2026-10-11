@@ -1,6 +1,9 @@
 package effort
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestSplitStripsConcreteEffortLevels(t *testing.T) {
 	cases := []struct{ in, base, suffix string }{
@@ -103,5 +106,34 @@ func TestBaseAndApplyRoundTrip(t *testing.T) {
 	}
 	if got := Apply("gpt-5.5", "xhigh"); got != "gpt-5.5-xhigh" {
 		t.Fatalf("Apply = %q, want gpt-5.5-xhigh", got)
+	}
+}
+
+// An id that is itself an effort level has no base to strip to: "extra-low"
+// must not split into base "extra".
+func TestSplitTreatsABareLevelAsAnId(t *testing.T) {
+	for _, in := range []string{"low", "medium", "high", "extra-low", "xhigh", "max", "ultra"} {
+		base, suffix, found := Split(in)
+		if found || base != in || suffix != "" {
+			t.Fatalf("Split(%q) = (%q, %q, %v), want (%q, \"\", false)", in, base, suffix, found, in)
+		}
+		if got := Base(in); got != in {
+			t.Fatalf("Base(%q) = %q, want %q", in, got, in)
+		}
+	}
+}
+
+// The "-extra-low" / "-low" overlap relies on the levels being ordered longest
+// first; guard the invariant the doc comment promises.
+func TestLevelsAreOrderedLongestFirst(t *testing.T) {
+	for i := 0; i < len(levels); i++ {
+		for j := 0; j < len(levels); j++ {
+			if i == j || !strings.HasSuffix(levels[i], levels[j]) || len(levels[i]) == len(levels[j]) {
+				continue
+			}
+			if i > j {
+				t.Fatalf("levels[%d]=%q must precede levels[%d]=%q (longest first)", i, levels[i], j, levels[j])
+			}
+		}
 	}
 }

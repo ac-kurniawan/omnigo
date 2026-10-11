@@ -5,8 +5,6 @@ import (
 	"os"
 
 	"gopkg.in/yaml.v3"
-
-	"github.com/ac-kurniawan/omnigo/internal/effort"
 )
 
 // Mutate reads config.yaml, applies fn, validates the result, and writes it
@@ -42,10 +40,9 @@ type MutateFunc func(fn func(*Config) error) error
 
 // PruneComboTargets drops combo targets whose provider is gone or whose model
 // is no longer in that provider's active catalog. A provider with an empty
-// catalog has not been fetched yet, so its targets stay. A reasoning-effort
-// variant or capability marker of a listed model is kept, because the picker
-// synthesises those ids from the catalog. A combo left with no targets is
-// removed; a combo is never left invalid.
+// catalog has not been fetched yet, so its targets stay. The membership rule is
+// shared with Validate (see listedTarget), so a target Validate accepts is
+// never silently dropped here. A combo left with no targets is removed.
 func PruneComboTargets(c *Config) {
 	known := make(map[string]Provider, len(c.Providers))
 	for _, p := range c.Providers {
@@ -59,7 +56,9 @@ func PruneComboTargets(c *Config) {
 			if !ok {
 				continue
 			}
-			if len(p.Models) == 0 || p.HasModel(t.Model) || p.hasModelFamily(effort.Base(t.Model)) {
+			// Prune against the active catalog: a disabled model is intentionally
+			// withdrawn and must leave the combo.
+			if len(p.Models) == 0 || listedTarget(p.Type, p.Models, t.Model) {
 				targets = append(targets, t)
 			}
 		}

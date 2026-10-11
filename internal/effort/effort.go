@@ -17,6 +17,17 @@ var levels = []string{"extra-low", "medium", "xhigh", "ultra", "high", "low", "m
 // efforts: the upstream model already decides its own reasoning budget.
 var markers = []string{"thinking", "tiered"}
 
+// suffixMarkers is every recognised suffix with its leading dash, longest level
+// first so "-extra-low" is matched before the "-low" it ends with. Built once so
+// Split neither allocates nor re-orders per call.
+var suffixMarkers = func() []string {
+	out := make([]string, 0, len(levels)+len(markers))
+	for _, candidate := range append(append([]string{}, levels...), markers...) {
+		out = append(out, "-"+candidate)
+	}
+	return out
+}()
+
 // Level reports whether s names a concrete reasoning effort.
 func Level(s string) bool {
 	for _, level := range levels {
@@ -32,8 +43,12 @@ func Level(s string) bool {
 // An id that is entirely a suffix, or carries no recognised suffix, is returned
 // unchanged with found=false so a caller never derives an empty base model.
 func Split(model string) (base, suffix string, found bool) {
-	for _, candidate := range append(append([]string{}, levels...), markers...) {
-		marker := "-" + candidate
+	// An id that is itself a level ("extra-low") has no base to strip to;
+	// without this guard it would split into the bogus base "extra".
+	if Level(model) {
+		return model, "", false
+	}
+	for _, marker := range suffixMarkers {
 		if !strings.HasSuffix(model, marker) {
 			continue
 		}
@@ -41,7 +56,7 @@ func Split(model string) (base, suffix string, found bool) {
 		if trimmed == "" {
 			continue
 		}
-		return trimmed, candidate, true
+		return trimmed, marker[1:], true
 	}
 	return model, "", false
 }
