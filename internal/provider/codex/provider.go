@@ -15,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/ac-kurniawan/omnigo/internal/effort"
 	"github.com/ac-kurniawan/omnigo/internal/provider"
 	"github.com/ac-kurniawan/omnigo/internal/quota"
 )
@@ -260,11 +261,30 @@ func (p *Provider) ChatCompletion(ctx context.Context, req provider.ChatRequest,
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	request, err := ToResponsesRequest(req)
+	// A combo target may carry an effort suffix (gpt-5.5-high). Codex sends the
+	// model as a literal slug and its reasoning effort in the body, so the base
+	// model drives the wire request, the profile lookup, and the account pool
+	// while the suffix drives the effort. req.Model keeps the suffixed id so
+	// logs and response chunks name the target the caller selected.
+	wire := req
+	level := ""
+	if base, suffix, found := effort.Split(req.Model); found && effort.Level(suffix) {
+		wire.Model = base
+		level = suffix
+	}
+	request, err := ToResponsesRequest(wire)
 	if err != nil {
 		return err
 	}
-	profile, ok := p.profile(req.Model)
+	if level != "" {
+		reasoning, _ := request["reasoning"].(map[string]any)
+		if reasoning == nil {
+			reasoning = map[string]any{}
+		}
+		reasoning["effort"] = level
+		request["reasoning"] = reasoning
+	}
+	profile, ok := p.profile(wire.Model)
 	if ok {
 		applyModelProfile(request, profile)
 	}
@@ -272,7 +292,7 @@ func (p *Provider) ChatCompletion(ctx context.Context, req provider.ChatRequest,
 	if err != nil {
 		return fmt.Errorf("codex: encode upstream request: %w", err)
 	}
-	accounts, _ := p.pool.AvailableForModel(p.store, req.Model)
+	accounts, _ := p.pool.AvailableForModel(p.store, wire.Model)
 	if len(accounts) == 0 {
 		return fmt.Errorf("codex: not authenticated")
 	}

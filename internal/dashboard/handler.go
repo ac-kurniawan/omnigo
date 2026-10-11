@@ -15,6 +15,7 @@ import (
 	"github.com/ac-kurniawan/omnigo/internal/auth"
 	"github.com/ac-kurniawan/omnigo/internal/combo"
 	"github.com/ac-kurniawan/omnigo/internal/config"
+	"github.com/ac-kurniawan/omnigo/internal/provider"
 	"github.com/ac-kurniawan/omnigo/internal/provider/antigravity"
 	"github.com/ac-kurniawan/omnigo/internal/provider/codex"
 	"github.com/ac-kurniawan/omnigo/internal/quota"
@@ -129,6 +130,12 @@ func newServer(getCfg func() *config.Config, store *vault.Store, mutate config.M
 	}
 	tmpl := template.Must(template.New("root").Funcs(template.FuncMap{
 		"sub": func(a, b int) int { return a - b },
+		// modelsWithEffort expands a provider's cached catalog with an effort
+		// clone per reasoning level, so the combo picker offers e.g.
+		// gemini-3.7-flash-high next to the model itself.
+		"modelsWithEffort": func(providerType string, models []string) []provider.EffortCatalogModel {
+			return provider.ModelsWithEffort(providerType, models)
+		},
 		"isDrained": func(tr *combo.Tracker, provider, model string) bool {
 			if tr == nil {
 				return false

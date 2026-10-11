@@ -12,6 +12,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/ac-kurniawan/omnigo/internal/effort"
 )
 
 // sseProxyState carries the reusable buffers for one proxied SSE stream: the
@@ -143,12 +145,54 @@ func (p *openAIProvider) Test(ctx context.Context) TestResult {
 // upstreamBody posts the original raw JSON when it is already a valid OpenAI
 // body for this request: the model id matches and no message role is
 // "developer". A model override or a developer role still goes through Body,
-// which rewrites those fields. Codex and Antigravity do not use this path.
+// which rewrites those fields. A suffixed effort model whose base is a known
+// reasoning model (o3-mini-high) is rewritten too, so the upstream receives the
+// base slug plus reasoning_effort — even when the raw body would otherwise
+// forward verbatim. Codex and Antigravity do not use this path.
 func upstreamBody(req ChatRequest) ([]byte, error) {
+	if level := effortLevel(req.Model); level != "" && openAIReasoningCapabilities(effort.Base(req.Model)) != nil {
+		return effortBody(req, level)
+	}
 	if canForwardRaw(req) {
 		return req.Raw, nil
 	}
 	return req.Body()
+}
+
+// effortLevel returns the reasoning effort encoded in a model id's suffix, or
+// "" when the id carries no effort level. A capability marker such as
+// "-thinking" selects a reasoning variant without naming an effort, so it is
+// not returned here.
+func effortLevel(model string) string {
+	_, suffix, found := effort.Split(model)
+	if !found || !effort.Level(suffix) {
+		return ""
+	}
+	return suffix
+}
+
+// effortBody rewrites the request for an upstream that takes the effort in the
+// body: the model id loses its suffix and reasoning_effort carries the level.
+// The suffix wins over any client-supplied reasoning_effort. The parsed map is
+// shared across targets and must not be mutated, so a fresh payload is built.
+func effortBody(req ChatRequest, level string) ([]byte, error) {
+	base, _, _ := effort.Split(req.Model)
+	parsed := req.Parsed
+	if parsed == nil {
+		if parsed = ParseBody(req.Raw); parsed == nil {
+			parsed = map[string]any{}
+		}
+	}
+	out := make(map[string]any, len(parsed))
+	for key, value := range parsed {
+		if key == openAIBodyCacheKey {
+			continue
+		}
+		out[key] = value
+	}
+	out["model"] = base
+	out["reasoning_effort"] = level
+	return json.Marshal(out)
 }
 
 func canForwardRaw(req ChatRequest) bool {

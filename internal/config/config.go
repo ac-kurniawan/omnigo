@@ -6,6 +6,8 @@ import (
 	"time"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/ac-kurniawan/omnigo/internal/effort"
 )
 
 type Server struct {
@@ -94,6 +96,41 @@ func (p Provider) IsModelDisabled(model string) bool {
 func (p Provider) HasModel(model string) bool {
 	for _, m := range p.Models {
 		if m == model {
+			return true
+		}
+	}
+	return false
+}
+
+// hasModelFamily reports whether any listed model is base itself or an effort
+// variant or capability marker of base (base "gemini-3.7-flash" matches the
+// listed "gemini-3.7-flash-low"). It backs combo validation and pruning so a
+// synthesised variant survives a catalog refresh.
+func (p Provider) hasModelFamily(base string) bool {
+	if base == "" {
+		return false
+	}
+	for _, m := range p.Models {
+		if m == base || effort.Base(m) == base {
+			return true
+		}
+	}
+	return false
+}
+
+// listedTarget reports whether model is a listed catalog entry, or an effort
+// variant or capability marker of one. A plain model is only accepted when it
+// is itself listed, so an unrelated id stays a validation error.
+func listedTarget(listed map[string]bool, model string) bool {
+	if listed[model] {
+		return true
+	}
+	base := effort.Base(model)
+	if base == model {
+		return false
+	}
+	for id := range listed {
+		if id == base || effort.Base(id) == base {
 			return true
 		}
 	}
@@ -388,8 +425,11 @@ func (c *Config) Validate() error {
 			}
 			// An empty catalog has not been fetched yet, so it cannot reject a
 			// reference. Once it has entries, the target must be one of them:
-			// listed, or listed and then disabled.
-			if len(listed) > 0 && !listed[t.Model] {
+			// listed, or listed and then disabled. An effort variant
+			// (gemini-3.7-flash-high) or capability marker (claude-opus-4-6-
+			// thinking) is also accepted when its base family is listed, because
+			// the picker synthesises those ids from the catalog.
+			if len(listed) > 0 && !listedTarget(listed, t.Model) {
 				return fmt.Errorf("combo %q: provider %q has no model %q", cb.Name, t.Provider, t.Model)
 			}
 		}
