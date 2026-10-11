@@ -23,17 +23,17 @@ func TestValidateAcceptsEffortVariantOfAListedModel(t *testing.T) {
 	}
 }
 
-// A capability variant (-thinking, -tiered) is a real upstream id that need not
-// be in the cached catalog, so it must validate against its base too.
+// A capability marker (-thinking, -tiered) is a real upstream id, not a
+// synthesised clone: it validates when the catalog actually lists it.
 func TestValidateAcceptsCapabilityVariantOfAListedModel(t *testing.T) {
 	cfg := &Config{
 		Providers: []Provider{
-			{Name: "agy", Type: "antigravity", Models: []string{"gemini-3.1-pro-low"}},
+			{Name: "agy", Type: "antigravity", Models: []string{"claude-opus-4-6-thinking", "gemini-3.8-flash-tiered"}},
 		},
 		Combos: []Combo{
 			{Name: "a", Strategy: "priority", Targets: []ComboTarget{
-				{Provider: "agy", Model: "gemini-3.1-pro-thinking"},
-				{Provider: "agy", Model: "gemini-3.1-pro-tiered"},
+				{Provider: "agy", Model: "claude-opus-4-6-thinking"},
+				{Provider: "agy", Model: "gemini-3.8-flash-tiered"},
 			}},
 		},
 	}

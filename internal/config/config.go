@@ -8,6 +8,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/ac-kurniawan/omnigo/internal/effort"
+	"github.com/ac-kurniawan/omnigo/internal/provider"
 )
 
 type Server struct {
@@ -102,35 +103,61 @@ func (p Provider) HasModel(model string) bool {
 	return false
 }
 
-// hasModelFamily reports whether any listed model is base itself or an effort
-// variant or capability marker of base (base "gemini-3.7-flash" matches the
-// listed "gemini-3.7-flash-low"). It backs combo validation and pruning so a
-// synthesised variant survives a catalog refresh.
-func (p Provider) hasModelFamily(base string) bool {
+// catalogFor returns a provider's full id set: active plus disabled models. A
+// target naming a model that was listed and then disabled is still valid.
+func (p Provider) catalogFor() []string {
+	out := make([]string, 0, len(p.Models)+len(p.DisabledModels))
+	for _, m := range p.Models {
+		if m != "" {
+			out = append(out, m)
+		}
+	}
+	for _, m := range p.DisabledModels {
+		if m != "" {
+			out = append(out, m)
+		}
+	}
+	return out
+}
+
+// hasModelFamily reports whether any id in ids is base or an effort variant of
+// base (base "gemini-3.7-flash" matches "gemini-3.7-flash-low").
+func hasModelFamily(ids []string, base string) bool {
 	if base == "" {
 		return false
 	}
-	for _, m := range p.Models {
-		if m == base || effort.Base(m) == base {
+	for _, id := range ids {
+		if effort.Base(id) == base {
 			return true
 		}
 	}
 	return false
 }
 
-// listedTarget reports whether model is a listed catalog entry, or an effort
-// variant or capability marker of one. A plain model is only accepted when it
-// is itself listed, so an unrelated id stays a validation error.
-func listedTarget(listed map[string]bool, model string) bool {
-	if listed[model] {
-		return true
+// listedTarget reports whether model is acceptable as a combo target given a
+// provider's type and a catalog of its ids. It is the membership rule shared by
+// Validate and PruneComboTargets so the two never disagree on effort clones: a
+// clone one accepts is never silently dropped by the other. The callers differ
+// only in scope — Validate passes active plus disabled ids, Prune passes the
+// active catalog alone (a disabled model is intentionally withdrawn).
+//
+// A model is accepted when the catalog lists it. Otherwise it may be an effort
+// clone of a listed family — the picker synthesises ids such as gpt-5.5-xhigh —
+// which requires the base family to be present and the suffix to be a level
+// that family actually supports. A capability marker (-thinking, -tiered) is a
+// real upstream id, not a clone, so it must be listed exactly.
+func listedTarget(providerType string, catalog []string, model string) bool {
+	for _, id := range catalog {
+		if id == model {
+			return true
+		}
 	}
-	base := effort.Base(model)
-	if base == model {
+	base, suffix, found := effort.Split(model)
+	if !found || !effort.Level(suffix) || !hasModelFamily(catalog, base) {
 		return false
 	}
-	for id := range listed {
-		if id == base || effort.Base(id) == base {
+	for _, level := range provider.EffortVariants(providerType, base, catalog) {
+		if level == suffix {
 			return true
 		}
 	}
@@ -342,7 +369,7 @@ func (c *Config) Validate() error {
 		}
 	}
 	seenProvider := map[string]bool{}
-	models := map[string]map[string]bool{}
+	providers := map[string]Provider{}
 	for _, p := range c.Providers {
 		if p.Name == "" {
 			return fmt.Errorf("provider: name is required")
@@ -354,19 +381,12 @@ func (c *Config) Validate() error {
 		if !validTypes[p.Type] {
 			return fmt.Errorf("provider %q: unknown type %q", p.Name, p.Type)
 		}
-		listed := map[string]bool{}
 		for _, m := range p.Models {
 			if m == "" {
 				return fmt.Errorf("provider %q: model name is required", p.Name)
 			}
-			listed[m] = true
 		}
-		for _, m := range p.DisabledModels {
-			if m != "" {
-				listed[m] = true
-			}
-		}
-		models[p.Name] = listed
+		providers[p.Name] = p
 		if p.Timeout != "" {
 			d, err := time.ParseDuration(p.Timeout)
 			if err != nil || d <= 0 {
@@ -419,17 +439,17 @@ func (c *Config) Validate() error {
 			if t.Provider == "" || t.Model == "" {
 				return fmt.Errorf("combo %q: target provider and model are required", cb.Name)
 			}
-			listed, ok := models[t.Provider]
+			p, ok := providers[t.Provider]
 			if !ok {
 				return fmt.Errorf("combo %q: unknown provider %q", cb.Name, t.Provider)
 			}
+			catalog := p.catalogFor()
 			// An empty catalog has not been fetched yet, so it cannot reject a
-			// reference. Once it has entries, the target must be one of them:
-			// listed, or listed and then disabled. An effort variant
-			// (gemini-3.7-flash-high) or capability marker (claude-opus-4-6-
-			// thinking) is also accepted when its base family is listed, because
-			// the picker synthesises those ids from the catalog.
-			if len(listed) > 0 && !listedTarget(listed, t.Model) {
+			// reference. Once it has entries, the target must be listed, or an
+			// effort clone of a listed family (gemini-3.7-flash-high). This is
+			// the same rule PruneComboTargets applies, so a stored target is
+			// never silently dropped on the next catalog refresh.
+			if len(catalog) > 0 && !listedTarget(p.Type, catalog, t.Model) {
 				return fmt.Errorf("combo %q: provider %q has no model %q", cb.Name, t.Provider, t.Model)
 			}
 		}

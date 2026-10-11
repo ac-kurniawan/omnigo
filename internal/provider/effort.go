@@ -2,6 +2,11 @@ package provider
 
 import "github.com/ac-kurniawan/omnigo/internal/effort"
 
+// antigravityLevels is the fixed effort set Antigravity models accept. It is
+// shared with the capability table so the picker and the capability report
+// cannot drift apart.
+var antigravityLevels = []string{"low", "medium", "high"}
+
 // EffortVariants reports the reasoning-effort levels that can be appended to
 // base to form selectable model ids on this provider. It returns nil when the
 // base is not effort-capable, so a caller can treat nil as "offer no clones".
@@ -11,24 +16,39 @@ import "github.com/ac-kurniawan/omnigo/internal/effort"
 // id itself, so its base is only cloneable when the catalog already contains at
 // least one level variant of it — that is the signal the upstream recognises
 // the family, and it keeps a plain non-reasoning model from growing clones.
+// Every other provider derives its levels from the same capability table the
+// API reports, so the picker and /v1/models stay in sync.
+//
+// A caller that resolves variants for many models of one catalog should build
+// the family index once (see ModelsWithEffort) and call effortVariants.
 func EffortVariants(providerType, base string, catalog []string) []string {
-	base = effort.Base(base)
-	switch providerType {
-	case "codex":
-		if levels, _, ok := codexBuiltinProfile(base); ok {
-			return dedupeLevels(levels)
-		}
-		return levelsOf(openAIReasoningCapabilities(base))
-	case "openai":
-		return levelsOf(openAIReasoningCapabilities(base))
-	case "antigravity":
-		if !antigravityFamilySupportsLevels(base, catalog) {
+	return effortVariants(providerType, effort.Base(base), effortFamilies(catalog))
+}
+
+func effortVariants(providerType, base string, families map[string]bool) []string {
+	if providerType == "antigravity" {
+		if !families[base] {
 			return nil
 		}
-		return []string{"low", "medium", "high"}
-	default:
-		return nil
+		return append([]string(nil), antigravityLevels...)
 	}
+	return levelsOf(CapabilitiesFor(providerType, base))
+}
+
+// effortFamilies indexes which model families have at least one level variant in
+// catalog (base "gemini-3.7-flash" is present when "gemini-3.7-flash-high" is).
+// It is built once per catalog so resolving variants for every model is linear
+// rather than rescanning the catalog per model. A capability marker such as
+// "-thinking" is not a level and does not mark a family cloneable.
+func effortFamilies(catalog []string) map[string]bool {
+	families := make(map[string]bool, len(catalog))
+	for _, id := range catalog {
+		base, suffix, found := effort.Split(id)
+		if found && effort.Level(suffix) {
+			families[base] = true
+		}
+	}
+	return families
 }
 
 func levelsOf(caps *ModelCapabilities) []string {
@@ -57,20 +77,6 @@ func dedupeLevels(levels []string) []string {
 	return out
 }
 
-// antigravityFamilySupportsLevels reports whether any catalog entry is a level
-// variant of base (for example base "gemini-3.7-flash" and entry
-// "gemini-3.7-flash-high"). A capability marker such as "-thinking" does not
-// count, because it does not select an effort.
-func antigravityFamilySupportsLevels(base string, catalog []string) bool {
-	for _, id := range catalog {
-		entryBase, suffix, found := effort.Split(id)
-		if found && entryBase == base && effort.Level(suffix) {
-			return true
-		}
-	}
-	return false
-}
-
 // EffortCatalogModel is one selectable picker entry: the id written into the
 // combo target, the label shown, and whether the id is a synthesised effort
 // variant of a listed model rather than a catalog entry itself.
@@ -93,6 +99,9 @@ func ModelsWithEffort(providerType string, models []string) []EffortCatalogModel
 	for _, model := range models {
 		listed[model] = true
 	}
+	// Index the families once so resolving variants is linear in the catalog,
+	// not a rescan per model.
+	families := effortFamilies(models)
 	seen := make(map[string]bool, len(models))
 	out := make([]EffortCatalogModel, 0, len(models))
 	for _, model := range models {
@@ -101,7 +110,7 @@ func ModelsWithEffort(providerType string, models []string) []EffortCatalogModel
 		}
 		seen[model] = true
 		out = append(out, EffortCatalogModel{ID: model, Label: model})
-		levels := EffortVariants(providerType, model, models)
+		levels := effortVariants(providerType, effort.Base(model), families)
 		if len(levels) == 0 {
 			continue
 		}
