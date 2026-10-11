@@ -539,14 +539,15 @@
                 <div class="text-[11px] text-base-content/40 italic py-1">No active cached models for this provider.</div>
               {{else}}
                 <div class="grid grid-cols-1 gap-2">
-                  {{range .Models}}
-                    <label class="picker-model-item flex flex-col gap-1.5 p-2.5 rounded-lg bg-base-100 hover:bg-base-200/80 cursor-pointer font-mono text-xs border border-base-content/5 transition-colors" data-search="{{$provName}} {{.}}">
+                  {{range modelsWithEffort $provType .Models}}
+                    <label class="picker-model-item flex flex-col gap-1.5 p-2.5 rounded-lg bg-base-100 hover:bg-base-200/80 cursor-pointer font-mono text-xs border border-base-content/5 transition-colors{{if .Effort}} picker-effort-item border-primary/20{{end}}" data-search="{{$provName}} {{.ID}}">
                       <div class="flex items-start gap-2.5 min-w-0">
-                        <input type="checkbox" class="checkbox checkbox-xs checkbox-primary picker-model-checkbox shrink-0 mt-0.5" data-target="{{$provName}}/{{.}}" data-provider="{{$provName}}" data-model="{{.}}" onchange="updatePickerCounter()">
-                        <span class="font-medium text-base-content break-all leading-snug">{{.}}</span>
+                        <input type="checkbox" class="checkbox checkbox-xs checkbox-primary picker-model-checkbox shrink-0 mt-0.5" data-target="{{$provName}}/{{.ID}}" data-provider="{{$provName}}" data-model="{{.ID}}" onchange="updatePickerCounter()">
+                        <span class="font-medium text-base-content break-all leading-snug">{{.Label}}</span>
+                        {{if .Effort}}<span class="badge badge-primary badge-outline badge-xs shrink-0">effort</span>{{end}}
                       </div>
                       <div class="pl-6 flex items-center justify-between text-[10px] text-base-content/40 font-mono">
-                        <span class="break-all">{{$provName}}/{{.}}</span>
+                        <span class="break-all">{{$provName}}/{{.ID}}</span>
                       </div>
                     </label>
                   {{end}}
