@@ -69,7 +69,7 @@ func antigravityCapabilities(id string) *ModelCapabilities {
 		return nil
 	}
 	if strings.Contains(id, "-thinking") || antigravityEffortSuffix(id) {
-		return capabilitiesFromLevels([]string{"low", "medium", "high"}, "medium")
+		return capabilitiesFromLevels(antigravityLevels, "medium")
 	}
 	return nil
 }

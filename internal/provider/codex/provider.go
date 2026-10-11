@@ -15,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/ac-kurniawan/omnigo/internal/effort"
 	"github.com/ac-kurniawan/omnigo/internal/provider"
 	"github.com/ac-kurniawan/omnigo/internal/quota"
 )
@@ -256,15 +257,47 @@ func (p *Provider) probeQuota(ctx context.Context, creds provider.Credentials) (
 	return resp.StatusCode, nil
 }
 
+// effortFamily reports whether model is a known reasoning family, i.e. a base
+// that the provider has a profile for (live catalog or builtin). It gates the
+// effort-suffix strip so a real id that merely ends in a level token is not
+// mistaken for a clone.
+func (p *Provider) effortFamily(model string) bool {
+	profile, ok := p.profile(model)
+	return ok && len(profile.Levels) > 0
+}
+
 func (p *Provider) ChatCompletion(ctx context.Context, req provider.ChatRequest, w http.ResponseWriter) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	request, err := ToResponsesRequest(req)
+	// A combo target may carry an effort suffix (gpt-5.5-high). Codex sends the
+	// model as a literal slug and its reasoning effort in the body, so the base
+	// model drives the wire request, the profile lookup, and the account pool
+	// while the suffix drives the effort. req.Model keeps the suffixed id so
+	// logs and response chunks name the target the caller selected.
+	//
+	// The suffix is only stripped when the base is a known effort family: a
+	// model whose real id merely ends in a level token (gpt-oss-120b-medium) is
+	// not a clone and must reach the upstream unchanged.
+	wire := req
+	level := ""
+	if base, suffix, found := effort.Split(req.Model); found && effort.Level(suffix) && p.effortFamily(base) {
+		wire.Model = base
+		level = suffix
+	}
+	request, err := ToResponsesRequest(wire)
 	if err != nil {
 		return err
 	}
-	profile, ok := p.profile(req.Model)
+	if level != "" {
+		reasoning, _ := request["reasoning"].(map[string]any)
+		if reasoning == nil {
+			reasoning = map[string]any{}
+		}
+		reasoning["effort"] = level
+		request["reasoning"] = reasoning
+	}
+	profile, ok := p.profile(wire.Model)
 	if ok {
 		applyModelProfile(request, profile)
 	}
@@ -272,7 +305,7 @@ func (p *Provider) ChatCompletion(ctx context.Context, req provider.ChatRequest,
 	if err != nil {
 		return fmt.Errorf("codex: encode upstream request: %w", err)
 	}
-	accounts, _ := p.pool.AvailableForModel(p.store, req.Model)
+	accounts, _ := p.pool.AvailableForModel(p.store, wire.Model)
 	if len(accounts) == 0 {
 		return fmt.Errorf("codex: not authenticated")
 	}
@@ -289,7 +322,10 @@ func (p *Provider) ChatCompletion(ctx context.Context, req provider.ChatRequest,
 		if errors.Is(lastErr, context.Canceled) || errors.Is(lastErr, context.DeadlineExceeded) {
 			return lastErr
 		}
-		p.pool.MarkFailed(account, req.Model, lastErr)
+		// Drain under the base model: availability is looked up with
+		// wire.Model, and every effort clone shares that upstream quota, so the
+		// key recorded here must match the key read there.
+		p.pool.MarkFailed(account, wire.Model, lastErr)
 	}
 	return lastErr
 }
