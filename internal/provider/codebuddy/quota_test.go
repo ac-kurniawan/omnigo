@@ -80,3 +80,29 @@ func TestCodebuddyFetchQuota(t *testing.T) {
 		t.Errorf("expected total remaining 85.7%%, got %.1f%%", got)
 	}
 }
+
+func TestCodebuddyIntlQuotaSendsNoConversationHeaders(t *testing.T) {
+	var capturedHeader http.Header
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedHeader = r.Header.Clone()
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"code":0,"msg":"OK","data":{"Response":{"Data":{"Accounts":[]}}}}`))
+	}))
+	defer ts.Close()
+
+	store := &memoryCredStore{creds: provider.Credentials{APIKey: "test-jwt"}}
+	p := New(provider.Config{Name: "codebuddy-intl", BaseURL: ts.URL}, store, true)
+	fetcher, ok := p.(provider.QuotaFetcher)
+	if !ok {
+		t.Fatalf("expected provider to implement provider.QuotaFetcher")
+	}
+	if _, err := fetcher.FetchQuota(context.Background(), provider.Credentials{APIKey: "test-jwt"}); err != nil {
+		t.Fatalf("FetchQuota: %v", err)
+	}
+	for _, name := range []string{"X-Conversation-ID", "X-Conversation-Request-ID", "X-Conversation-Message-ID"} {
+		if capturedHeader.Get(name) != "" {
+			t.Errorf("expected %s to be absent on the quota request, got %q", name, capturedHeader.Get(name))
+		}
+	}
+}

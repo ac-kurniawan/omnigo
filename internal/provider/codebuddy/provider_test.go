@@ -7,11 +7,14 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/ac-kurniawan/omnigo/internal/auth"
 	"github.com/ac-kurniawan/omnigo/internal/provider"
+	"github.com/ac-kurniawan/omnigo/internal/vault"
 )
 
 type memoryCredStore struct {
@@ -481,4 +484,336 @@ func TestCodebuddyProviderModelsDiscovery(t *testing.T) {
 	if !testRes.OK {
 		t.Errorf("Test failed: %s", testRes.Error)
 	}
+}
+
+func TestCodebuddyIntlSendsConversationHeaders(t *testing.T) {
+	var capturedHeader http.Header
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedHeader = r.Header.Clone()
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer ts.Close()
+
+	store := &memoryCredStore{creds: provider.Credentials{APIKey: "cb-intl-token"}}
+	p := New(provider.Config{Name: "codebuddy-intl", BaseURL: ts.URL}, store, true)
+
+	req := provider.ChatRequest{
+		Model: "glm-5.2",
+		Raw:   []byte(`{"model":"glm-5.2","messages":[{"role":"user","content":"hi"}]}`),
+	}
+	if err := p.ChatCompletion(context.Background(), req, httptest.NewRecorder()); err != nil {
+		t.Fatalf("ChatCompletion failed: %v", err)
+	}
+
+	// The intl gateway rejects requests without the X-Conversation-* family
+	// with HTTP 400 code 11128 ("channel verification").
+	for _, name := range []string{"X-Conversation-ID", "X-Conversation-Request-ID", "X-Conversation-Message-ID"} {
+		if capturedHeader.Get(name) == "" {
+			t.Errorf("expected %s to be set for codebuddy-intl", name)
+		}
+	}
+}
+
+func TestCodebuddyCNSendsNoConversationHeaders(t *testing.T) {
+	var capturedHeader http.Header
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedHeader = r.Header.Clone()
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer ts.Close()
+
+	store := &memoryCredStore{creds: provider.Credentials{APIKey: "cb-cn-token"}}
+	p := New(provider.Config{Name: "codebuddy-cn", BaseURL: ts.URL}, store, false)
+
+	req := provider.ChatRequest{
+		Model: "glm-5.2",
+		Raw:   []byte(`{"model":"glm-5.2","messages":[{"role":"user","content":"hi"}]}`),
+	}
+	if err := p.ChatCompletion(context.Background(), req, httptest.NewRecorder()); err != nil {
+		t.Fatalf("ChatCompletion failed: %v", err)
+	}
+
+	// The CN endpoint is not gated upstream and must not carry the intl headers.
+	for _, name := range []string{"X-Conversation-ID", "X-Conversation-Request-ID", "X-Conversation-Message-ID"} {
+		if capturedHeader.Get(name) != "" {
+			t.Errorf("expected %s to be absent for codebuddy-cn, got %q", name, capturedHeader.Get(name))
+		}
+	}
+}
+
+func TestCodebuddyIntlConversationIDIsStablePerSession(t *testing.T) {
+	store := &memoryCredStore{creds: provider.Credentials{APIKey: "cb-intl-token"}}
+	p := New(provider.Config{Name: "codebuddy-intl", BaseURL: "https://example.invalid"}, store, true).(*codebuddyProvider)
+
+	raw := []byte(`{"model":"glm-5.2","messages":[{"role":"user","content":"same opening message"}]}`)
+	req := provider.ChatRequest{Model: "glm-5.2", Raw: raw, Parsed: provider.ParseBody(raw)}
+
+	first, err := p.conversationIDs(context.Background(), req)
+	if err != nil {
+		t.Fatalf("conversationIDs: %v", err)
+	}
+	second, err := p.conversationIDs(context.Background(), req)
+	if err != nil {
+		t.Fatalf("conversationIDs: %v", err)
+	}
+	if first.conversationID != second.conversationID {
+		t.Errorf("conversation id changed between identical requests: %q vs %q", first.conversationID, second.conversationID)
+	}
+	if first.requestID == second.requestID {
+		t.Errorf("request id must be fresh per request, got %q twice", first.requestID)
+	}
+	if first.messageID == second.messageID {
+		t.Errorf("message id must be fresh per request, got %q twice", first.messageID)
+	}
+	if first.conversationID == first.requestID || first.conversationID == first.messageID {
+		t.Errorf("conversation id must differ from the per-request ids")
+	}
+
+	uuidRE := regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
+	for name, value := range map[string]string{
+		"conversation": first.conversationID,
+		"request":      first.requestID,
+		"message":      first.messageID,
+	} {
+		if !uuidRE.MatchString(value) {
+			t.Errorf("expected %s id to be a uuid, got %q", name, value)
+		}
+	}
+}
+
+func TestCodebuddyIntlConversationIDPrefersExplicitSessionKey(t *testing.T) {
+	store := &memoryCredStore{creds: provider.Credentials{APIKey: "cb-intl-token"}}
+	p := New(provider.Config{Name: "codebuddy-intl", BaseURL: "https://example.invalid"}, store, true).(*codebuddyProvider)
+
+	raw := []byte(`{"model":"glm-5.2","session_id":"sess-123","messages":[{"role":"user","content":"hi"}]}`)
+	req := provider.ChatRequest{Model: "glm-5.2", Raw: raw, Parsed: provider.ParseBody(raw)}
+	withSession, err := p.conversationIDs(context.Background(), req)
+	if err != nil {
+		t.Fatalf("conversationIDs: %v", err)
+	}
+
+	otherRaw := []byte(`{"model":"glm-5.2","session_id":"sess-456","messages":[{"role":"user","content":"hi"}]}`)
+	otherReq := provider.ChatRequest{Model: "glm-5.2", Raw: otherRaw, Parsed: provider.ParseBody(otherRaw)}
+	other, err := p.conversationIDs(context.Background(), otherReq)
+	if err != nil {
+		t.Fatalf("conversationIDs: %v", err)
+	}
+	if withSession.conversationID == other.conversationID {
+		t.Errorf("distinct session ids must yield distinct conversation ids")
+	}
+
+	// The session id must win over the opening message text: two requests
+	// that differ only in text but share a session id keep one conversation.
+	sameSessionOtherText := []byte(`{"model":"glm-5.2","session_id":"sess-123","messages":[{"role":"user","content":"a different first message"}]}`)
+	sameSessionReq := provider.ChatRequest{Model: "glm-5.2", Raw: sameSessionOtherText, Parsed: provider.ParseBody(sameSessionOtherText)}
+	sameSession, err := p.conversationIDs(context.Background(), sameSessionReq)
+	if err != nil {
+		t.Fatalf("conversationIDs: %v", err)
+	}
+	if sameSession.conversationID != withSession.conversationID {
+		t.Errorf("session id must take precedence over the opening message: %q vs %q", sameSession.conversationID, withSession.conversationID)
+	}
+}
+
+func TestCodebuddyIntlConversationIDIsStableAcrossGrowingConversation(t *testing.T) {
+	store := &memoryCredStore{creds: provider.Credentials{APIKey: "cb-intl-token"}}
+	p := New(provider.Config{Name: "codebuddy-intl", BaseURL: "https://example.invalid"}, store, true).(*codebuddyProvider)
+
+	firstRaw := []byte(`{"model":"glm-5.2","messages":[{"role":"user","content":"opening message"}]}`)
+	firstReq := provider.ChatRequest{Model: "glm-5.2", Raw: firstRaw, Parsed: provider.ParseBody(firstRaw)}
+	first, err := p.conversationIDs(context.Background(), firstReq)
+	if err != nil {
+		t.Fatalf("conversationIDs: %v", err)
+	}
+
+	// The same conversation with more turns must keep the same id, otherwise
+	// upstream cannot reuse its prompt cache across the turns.
+	grownRaw := []byte(`{"model":"glm-5.2","messages":[{"role":"user","content":"opening message"},{"role":"assistant","content":"hi"},{"role":"user","content":"second turn"}]}`)
+	grownReq := provider.ChatRequest{Model: "glm-5.2", Raw: grownRaw, Parsed: provider.ParseBody(grownRaw)}
+	grown, err := p.conversationIDs(context.Background(), grownReq)
+	if err != nil {
+		t.Fatalf("conversationIDs: %v", err)
+	}
+	if grown.conversationID != first.conversationID {
+		t.Errorf("conversation id changed when the conversation grew: %q vs %q", grown.conversationID, first.conversationID)
+	}
+}
+
+func TestCodebuddyIntlConversationIDReadsTypedBlockContent(t *testing.T) {
+	store := &memoryCredStore{creds: provider.Credentials{APIKey: "cb-intl-token"}}
+	p := New(provider.Config{Name: "codebuddy-intl", BaseURL: "https://example.invalid"}, store, true).(*codebuddyProvider)
+
+	raw := []byte(`{"model":"glm-5.2","messages":[{"role":"user","content":[{"type":"text","text":"typed opening message"}]}]}`)
+	req := provider.ChatRequest{Model: "glm-5.2", Raw: raw, Parsed: provider.ParseBody(raw)}
+	ids, err := p.conversationIDs(context.Background(), req)
+	if err != nil {
+		t.Fatalf("conversationIDs: %v", err)
+	}
+	if ids.conversationID == "" {
+		t.Fatal("expected a conversation id derived from typed block content")
+	}
+
+	otherRaw := []byte(`{"model":"glm-5.2","messages":[{"role":"user","content":[{"type":"text","text":"a different typed message"}]}]}`)
+	otherReq := provider.ChatRequest{Model: "glm-5.2", Raw: otherRaw, Parsed: provider.ParseBody(otherRaw)}
+	other, err := p.conversationIDs(context.Background(), otherReq)
+	if err != nil {
+		t.Fatalf("conversationIDs: %v", err)
+	}
+	if other.conversationID == ids.conversationID {
+		t.Error("different typed block messages must yield different conversation ids")
+	}
+}
+
+func TestCodebuddyIntlConversationIDFallbackIsFresh(t *testing.T) {
+	store := &memoryCredStore{creds: provider.Credentials{APIKey: "cb-intl-token"}}
+	p := New(provider.Config{Name: "codebuddy-intl", BaseURL: "https://example.invalid"}, store, true).(*codebuddyProvider)
+
+	raw := []byte(`{"model":"glm-5.2","messages":[]}`)
+	req := provider.ChatRequest{Model: "glm-5.2", Raw: raw, Parsed: provider.ParseBody(raw)}
+	first, err := p.conversationIDs(context.Background(), req)
+	if err != nil {
+		t.Fatalf("conversationIDs: %v", err)
+	}
+	second, err := p.conversationIDs(context.Background(), req)
+	if err != nil {
+		t.Fatalf("conversationIDs: %v", err)
+	}
+	if first.conversationID == second.conversationID {
+		t.Errorf("fallback conversation id must be fresh per request, got %q twice", first.conversationID)
+	}
+}
+
+func TestCodebuddyIntlConversationIDDoesNotMutateParsedBody(t *testing.T) {
+	store := &memoryCredStore{creds: provider.Credentials{APIKey: "cb-intl-token"}}
+	p := New(provider.Config{Name: "codebuddy-intl", BaseURL: "https://example.invalid"}, store, true).(*codebuddyProvider)
+
+	raw := []byte(`{"model":"glm-5.2","messages":[{"role":"user","content":"hi"}]}`)
+	parsed := provider.ParseBody(raw)
+	req := provider.ChatRequest{Model: "glm-5.2", Raw: raw, Parsed: parsed}
+	if _, err := p.conversationIDs(context.Background(), req); err != nil {
+		t.Fatalf("conversationIDs: %v", err)
+	}
+	if _, ok := parsed[provider.OpenAIBodyCacheKey()]; !ok {
+		t.Error("the internal body cache slot must survive")
+	}
+	for key := range parsed {
+		if key == provider.OpenAIBodyCacheKey() || key == "model" || key == "messages" {
+			continue
+		}
+		t.Errorf("parsed body gained an unexpected field %q", key)
+	}
+}
+
+func TestCodebuddyIntlConversationIDFallsBackOnUndecodableRawBody(t *testing.T) {
+	store := &memoryCredStore{creds: provider.Credentials{APIKey: "cb-intl-token"}}
+	p := New(provider.Config{Name: "codebuddy-intl", BaseURL: "https://example.invalid"}, store, true).(*codebuddyProvider)
+
+	req := provider.ChatRequest{Model: "glm-5.2", Raw: []byte(`not json`)}
+	ids, err := p.conversationIDs(context.Background(), req)
+	if err != nil {
+		t.Fatalf("conversationIDs must not fail on an undecodable body: %v", err)
+	}
+	if ids.conversationID == "" {
+		t.Error("expected a conversation id even when the body cannot be decoded")
+	}
+}
+
+func TestCodebuddyIntlConversationIDFallsBackWhenNothingDerivable(t *testing.T) {
+	store := &memoryCredStore{creds: provider.Credentials{APIKey: "cb-intl-token"}}
+	p := New(provider.Config{Name: "codebuddy-intl", BaseURL: "https://example.invalid"}, store, true).(*codebuddyProvider)
+
+	raw := []byte(`{"model":"glm-5.2","messages":[]}`)
+	req := provider.ChatRequest{Model: "glm-5.2", Raw: raw, Parsed: provider.ParseBody(raw)}
+	ids, err := p.conversationIDs(context.Background(), req)
+	if err != nil {
+		t.Fatalf("conversationIDs: %v", err)
+	}
+	for name, value := range map[string]string{
+		"conversation": ids.conversationID,
+		"request":      ids.requestID,
+		"message":      ids.messageID,
+	} {
+		if value == "" {
+			t.Errorf("expected a %s id even with nothing derivable", name)
+		}
+	}
+}
+
+func TestCodebuddyIntlConversationIDIsScopedPerTenant(t *testing.T) {
+	store := &memoryCredStore{creds: provider.Credentials{APIKey: "cb-intl-token"}}
+	p := New(provider.Config{Name: "codebuddy-intl", BaseURL: "https://example.invalid"}, store, true).(*codebuddyProvider)
+
+	raw := []byte(`{"model":"glm-5.2","session_id":"shared-session","messages":[{"role":"user","content":"hi"}]}`)
+	req := provider.ChatRequest{Model: "glm-5.2", Raw: raw, Parsed: provider.ParseBody(raw)}
+
+	tenantA := callerContext(t, "tenant-a")
+	tenantB := callerContext(t, "tenant-b")
+
+	a, err := p.conversationIDs(tenantA, req)
+	if err != nil {
+		t.Fatalf("conversationIDs: %v", err)
+	}
+	b, err := p.conversationIDs(tenantB, req)
+	if err != nil {
+		t.Fatalf("conversationIDs: %v", err)
+	}
+	if a.conversationID == b.conversationID {
+		t.Errorf("tenants must not share a conversation id: %q", a.conversationID)
+	}
+
+	// The same tenant keeps a stable id across turns.
+	aAgain, err := p.conversationIDs(tenantA, req)
+	if err != nil {
+		t.Fatalf("conversationIDs: %v", err)
+	}
+	if aAgain.conversationID != a.conversationID {
+		t.Errorf("conversation id changed for the same tenant: %q vs %q", aAgain.conversationID, a.conversationID)
+	}
+}
+
+func TestCodebuddyIntlConversationIDIsSaltedPerProcess(t *testing.T) {
+	store := &memoryCredStore{creds: provider.Credentials{APIKey: "cb-intl-token"}}
+	raw := []byte(`{"model":"glm-5.2","messages":[{"role":"user","content":"hi"}]}`)
+	req := provider.ChatRequest{Model: "glm-5.2", Raw: raw, Parsed: provider.ParseBody(raw)}
+
+	first := New(provider.Config{Name: "codebuddy-intl", BaseURL: "https://example.invalid"}, store, true).(*codebuddyProvider)
+	second := New(provider.Config{Name: "codebuddy-intl", BaseURL: "https://example.invalid"}, store, true).(*codebuddyProvider)
+
+	a, err := first.conversationIDs(context.Background(), req)
+	if err != nil {
+		t.Fatalf("conversationIDs: %v", err)
+	}
+	b, err := second.conversationIDs(context.Background(), req)
+	if err != nil {
+		t.Fatalf("conversationIDs: %v", err)
+	}
+	if a.conversationID == b.conversationID {
+		t.Errorf("conversation id must not be reversible to the opening message: %q", a.conversationID)
+	}
+}
+
+func TestCodebuddyIntlRequestPayloadHandlesNullBody(t *testing.T) {
+
+	payload, err := requestPayload(provider.ChatRequest{Model: "glm-5.2", Raw: []byte(`null`)})
+	if err != nil {
+		t.Fatalf("requestPayload: %v", err)
+	}
+	if payload == nil {
+		t.Fatal("requestPayload must not return a nil map for a null body")
+	}
+	payload["model"] = "glm-5.2"
+}
+
+// callerContext builds a context carrying the given gateway client key id.
+func callerContext(t *testing.T, id string) context.Context {
+	t.Helper()
+	caller := &auth.Caller{}
+	caller.Set(vault.ClientKey{ID: id})
+	return auth.WithCaller(context.Background(), caller)
 }
