@@ -56,6 +56,9 @@ type codebuddyProvider struct {
 	idle          time.Duration
 	streamTimeout time.Duration
 	intl          bool
+	// salt mixes into the derived conversation id so the id cannot be
+	// reversed to the opening user message.
+	salt string
 }
 
 const DefaultCNBaseURL = "https://copilot.tencent.com/v2"
@@ -169,6 +172,10 @@ func New(cfg provider.Config, store provider.CredStore, forceIntl bool) provider
 	}
 
 	client := &http.Client{Timeout: timeout, Transport: transport}
+	salt, err := randomSalt()
+	if err != nil {
+		salt = fmt.Sprintf("%d", time.Now().UnixNano())
+	}
 	return &codebuddyProvider{
 		name:          cfg.Name,
 		baseURL:       base,
@@ -178,6 +185,7 @@ func New(cfg provider.Config, store provider.CredStore, forceIntl bool) provider
 		idle:          timeout,
 		streamTimeout: cfg.StreamTimeout,
 		intl:          isIntl,
+		salt:          salt,
 	}
 }
 
@@ -197,22 +205,9 @@ func (p *codebuddyProvider) isIntl() bool {
 func (p *codebuddyProvider) transformRequest(req provider.ChatRequest) ([]byte, error) {
 	// Re-encode from Parsed if available so we can edit fields; fall back
 	// to decoding Raw.
-	var payload map[string]any
-	if req.Parsed != nil {
-		// Copy without the internal cache slot.
-		payload = make(map[string]any, len(req.Parsed))
-		for k, v := range req.Parsed {
-			if k == provider.OpenAIBodyCacheKey() {
-				continue
-			}
-			payload[k] = v
-		}
-	} else if len(req.Raw) > 0 {
-		if err := json.Unmarshal(req.Raw, &payload); err != nil {
-			return nil, fmt.Errorf("decode request body: %w", err)
-		}
-	} else {
-		payload = map[string]any{}
+	payload, err := requestPayload(req)
+	if err != nil {
+		return nil, err
 	}
 
 	payload["model"] = req.Model
@@ -351,6 +346,23 @@ func (p *codebuddyProvider) buildHeaders(req *http.Request, apiKey string, strea
 	}
 }
 
+// buildChatHeaders adds the headers the CodeBuddy intl gateway requires for
+// its channel verification (HTTP 400 code 11128 without them).
+func (p *codebuddyProvider) buildChatHeaders(ctx context.Context, req *http.Request, chatReq provider.ChatRequest, apiKey string) error {
+	p.buildHeaders(req, apiKey, true) // upstream always streams
+	if !p.isIntl() {
+		return nil
+	}
+	ids, err := p.conversationIDs(ctx, chatReq)
+	if err != nil {
+		return fmt.Errorf("build codebuddy conversation headers: %w", err)
+	}
+	req.Header.Set("X-Conversation-ID", ids.conversationID)
+	req.Header.Set("X-Conversation-Request-ID", ids.requestID)
+	req.Header.Set("X-Conversation-Message-ID", ids.messageID)
+	return nil
+}
+
 func (p *codebuddyProvider) ChatCompletion(ctx context.Context, req provider.ChatRequest, w http.ResponseWriter) error {
 	accounts, _ := p.pool.AvailableForModel(p.store, req.Model)
 	if len(accounts) == 0 {
@@ -400,7 +412,9 @@ func (p *codebuddyProvider) chatWithKey(ctx context.Context, req provider.ChatRe
 	if err != nil {
 		return fmt.Errorf("create request: %w", err)
 	}
-	p.buildHeaders(httpReq, apiKey, true) // upstream always streams
+	if err := p.buildChatHeaders(ctx, httpReq, req, apiKey); err != nil {
+		return err
+	}
 
 	client := provider.ClientFor(p.stream, p.client, true)
 	resp, err := client.Do(httpReq)
