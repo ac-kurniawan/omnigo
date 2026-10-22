@@ -28,8 +28,8 @@ Performance and simplicity are the point.
     Codex retains a conservative static fallback when its catalog is unavailable.
 - **API key management** — issue client keys (`ak-…`) to access the gateway.
 - **Combo management** — route one model name across a fallback chain with
-  `priority` or `fill-first` strategy, or let Jev pick the destination per
-  request with the `smart` strategy.
+  `priority` or `fill-first` strategy, or let a System One model pick the
+  destination per request with the `smart` strategy.
 - **Model connection test** — ping any provider and report status/latency.
 - **HTMX dashboard** — manage providers, combos, keys, and OAuth logins.
 - **Observability** — optional OpenTelemetry metrics (HTTP duration,
@@ -150,12 +150,14 @@ combos:
 With a 120s budget and three targets, each gets about 40s. A target that fails
 fast returns its unused time to the targets behind it.
 
-### Smart routing (Jev)
+### Smart routing (System One)
 
-A combo with `strategy: smart` asks TypeSafe's [Jev](https://typesafe.ai)
-which route fits the request, then dispatches to that route's destination.
-Jev is a decision model: it answers one `choice` question per request and
-never generates the reply itself.
+A combo with `strategy: smart` asks a TypeSafe **System One** model which
+route fits the request, then dispatches to that route's destination. System One
+models are decision models: they answer typed questions and never generate the
+reply themselves. [Jev](https://typesafe.ai) is TypeSafe's flagship System One
+model and the first one, but every System One model is served by the same
+endpoint, so any model the account can use may be named here.
 
 A smart combo declares no target chain of its own. Each route names a
 destination, which is either another combo or a `provider/model` pair, and the
@@ -166,7 +168,7 @@ place and the fallback behaviour where it already lives.
 combos:
   - name: combo/smart
     strategy: smart
-    default_route: flash   # used when Jev cannot decide
+    default_route: flash   # used when the model cannot decide
     routes:
       - name: flash
         criteria: A short factual question
@@ -174,29 +176,47 @@ combos:
       - name: pro
         criteria: A hard engineering task
         destination: combo/pro
-    jev:
-      model: jev-latest      # blank = jev-latest
+    decision:
+      model: jev-latest      # any System One model id or alias; blank = jev-latest
+      mode: choice           # choice, or fanout
       question: Which route should handle this request?
       min_confidence: "0.5"  # below this, the default route is used
       timeout: 4s            # blank = 4s
+      # base_url: https://api.typesafe.ai   # blank = the public API
+      # weights:                # fanout only; blank = 1.0 for every route
+      #   flash: 1.0
+      #   pro: 1.2
 ```
 
-The route `criteria` is the text Jev judges the request against, and it is
-also the option label Jev answers with, so it should describe when that route
-is the right one. The destination is never sent to Jev.
+The route `criteria` is the text the model judges the request against, and it
+is also the option label the model answers with, so it should describe when
+that route is the right one. The destination is never sent to the model.
+
+Two decision modes are available:
+
+- `choice` asks one question whose options are the routes, and the model
+  names the winner. One call, one answer.
+- `fanout` asks one question per route in a single call, and OmniGo combines
+  the answers: each route's probability is scaled by its `weights` entry and
+  the highest weighted score wins. Use it when a route's importance should be
+  tunable without rewording the criteria.
 
 The gateway reads the API key from `TYPESAFE_API_KEY` in its environment. The
-decision is **fail-open**: if the key is missing, Jev is unreachable, the
+decision is **fail-open**: if the key is missing, the model is unreachable, the
 answer is not one of the routes, or the confidence is below
-`jev.min_confidence`, the `default_route` is used instead and the request
+`decision.min_confidence`, the `default_route` is used instead and the request
 still succeeds. Nothing about the smart router can fail a request on its own.
 
-Only the last user message is sent to Jev, which keeps the input small: Jev
-bills input tokens only, and output tokens are free. The decision is made per
-request, with no caching.
+Only the last user message is sent to the model, which keeps the input small:
+System One models bill input tokens only, and output tokens are free. The
+decision is made per request, with no caching.
 
 A route may only target a plain combo: a smart combo cannot point at another
 smart combo, so the routing is one level deep.
+
+The dashboard's **List** button next to the decision model reads the models
+the account can use from the gateway (`GET /system-one/models`), so a model can
+be picked without leaving the dashboard.
 
 ### Dashboard (optional)
 

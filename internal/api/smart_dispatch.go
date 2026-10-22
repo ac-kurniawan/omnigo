@@ -11,28 +11,29 @@ import (
 
 	"github.com/ac-kurniawan/omnigo/internal/combo"
 	"github.com/ac-kurniawan/omnigo/internal/config"
-	"github.com/ac-kurniawan/omnigo/internal/jev"
 	"github.com/ac-kurniawan/omnigo/internal/provider"
+	"github.com/ac-kurniawan/omnigo/internal/systemone"
 )
 
-// jevClientFactory builds a Jev client for one smart combo. The API key comes
-// from the environment (TYPESAFE_API_KEY), so a client is only usable when that
-// variable is set; a combo without it always takes its default route.
-type jevClientFactory func(cfg config.SmartJev) jevDecider
+// systemOneClientFactory builds a System One client for one smart combo. The
+// API key comes from the environment (TYPESAFE_API_KEY), so a client is only
+// usable when that variable is set; a combo without it always takes its
+// default route.
+type systemOneClientFactory func(cfg config.SmartDecision) smartDecider
 
-// jevClientFactoryOverride replaces the environment-backed factory. Tests set
-// it to point the client at a local stand-in server.
-var jevClientFactoryOverride jevClientFactory
+// systemOneClientFactoryOverride replaces the environment-backed factory.
+// Tests set it to point the client at a local stand-in server.
+var systemOneClientFactoryOverride systemOneClientFactory
 
-// jevClientFactoryEnv reads the key from the environment.
-func jevClientFactoryEnv(cfg config.SmartJev) jevDecider {
-	return jev.New(jev.Config{
-		Model:         cfg.ModelOrDefault(),
-		APIKey:        os.Getenv("TYPESAFE_API_KEY"),
-		Timeout:       cfg.ParsedTimeout(),
-		MinConfidence: cfg.ParsedMinConfidence(),
-		Question:      cfg.QuestionOrDefault(),
+// systemOneClientFactoryEnv reads the key from the environment.
+func systemOneClientFactoryEnv(cfg config.SmartDecision) smartDecider {
+	client := systemone.New(systemone.Config{
+		Model:   cfg.ModelOrDefault(),
+		BaseURL: cfg.BaseURL,
+		APIKey:  os.Getenv("TYPESAFE_API_KEY"),
+		Timeout: cfg.ParsedTimeout(),
 	})
+	return newSystemOneDecider(client, cfg)
 }
 
 // smartDispatch runs the request against the targets a smart route resolved.
@@ -151,27 +152,29 @@ func destinationNameFor(cb config.Combo, routeName string) string {
 	return ""
 }
 
-// smartDeciderFor returns the Jev decider for a smart combo. The client is
-// cached per combo configuration so a burst of requests reuses one HTTP
-// client, and it is rebuilt when the combo's Jev settings change.
-var smartJevClients sync.Map
+// smartDeciderFor returns the decider for a smart combo. The client is cached
+// per combo configuration so a burst of requests reuses one HTTP client, and it
+// is rebuilt when the combo's decision settings change.
+var smartSystemOneClients sync.Map
 
-func smartDeciderFor(cfg *config.Config, cb config.Combo) jevDecider {
-	if jevClientFactoryOverride != nil {
-		return jevClientFactoryOverride(cb.Jev)
+func smartDeciderFor(cfg *config.Config, cb config.Combo) smartDecider {
+	if systemOneClientFactoryOverride != nil {
+		return systemOneClientFactoryOverride(cb.Decision)
 	}
 	key := smartClientKey(cb)
-	if cached, ok := smartJevClients.Load(key); ok {
-		if client, ok := cached.(jevDecider); ok {
+	if cached, ok := smartSystemOneClients.Load(key); ok {
+		if client, ok := cached.(smartDecider); ok {
 			return client
 		}
 	}
-	client := jevClientFactoryEnv(cb.Jev)
-	smartJevClients.Store(key, client)
+	client := systemOneClientFactoryEnv(cb.Decision)
+	smartSystemOneClients.Store(key, client)
 	return client
 }
 
-// smartClientKey identifies a Jev client by the settings that shape it.
+// smartClientKey identifies a System One client by the settings that shape it.
 func smartClientKey(cb config.Combo) string {
-	return cb.Name + "\x00" + cb.Jev.ModelOrDefault() + "\x00" + cb.Jev.ParsedTimeout().String() + "\x00" + fmt.Sprintf("%g", cb.Jev.ParsedMinConfidence()) + "\x00" + cb.Jev.QuestionOrDefault()
+	return cb.Name + "\x00" + cb.Decision.ModelOrDefault() + "\x00" + cb.Decision.BaseURL + "\x00" +
+		cb.Decision.ParsedTimeout().String() + "\x00" + fmt.Sprintf("%g", cb.Decision.ParsedMinConfidence()) + "\x00" +
+		cb.Decision.QuestionOrDefault() + "\x00" + cb.Decision.ModeOrDefault()
 }

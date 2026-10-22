@@ -74,7 +74,7 @@ func TestSetSmartCombo(t *testing.T) {
 		{Name: "flash", Criteria: "simple", Destination: "combo/flash"},
 		{Name: "pro", Criteria: "hard", Destination: "openai/gpt-4o"},
 	}
-	err := SetSmartCombo(c, "combo/smart", routes, "flash", SmartJev{Model: "jev-latest", MinConfidence: "0.6", Timeout: "5s"})
+	err := SetSmartCombo(c, "combo/smart", routes, "flash", SmartDecision{Model: "jev-latest", MinConfidence: "0.6", Timeout: "5s"})
 	if err != nil {
 		t.Fatalf("SetSmartCombo: %v", err)
 	}
@@ -88,11 +88,11 @@ func TestSetSmartCombo(t *testing.T) {
 	if combo.DefaultRoute != "flash" {
 		t.Errorf("default route = %q", combo.DefaultRoute)
 	}
-	if combo.Jev.MinConfidence != "0.6" {
-		t.Errorf("min confidence = %q", combo.Jev.MinConfidence)
+	if combo.Decision.MinConfidence != "0.6" {
+		t.Errorf("min confidence = %q", combo.Decision.MinConfidence)
 	}
-	if combo.Jev.ParsedMinConfidence() != 0.6 {
-		t.Errorf("parsed min confidence = %v", combo.Jev.ParsedMinConfidence())
+	if combo.Decision.ParsedMinConfidence() != 0.6 {
+		t.Errorf("parsed min confidence = %v", combo.Decision.ParsedMinConfidence())
 	}
 }
 
@@ -105,7 +105,7 @@ func TestSetSmartComboRejectsUnknownDefaultRoute(t *testing.T) {
 			{Name: "combo/flash", Strategy: "priority", Targets: []ComboTarget{{Provider: "openai", Model: "gpt-4o"}}},
 		},
 	}
-	err := SetSmartCombo(c, "combo/smart", []SmartRoute{{Name: "flash", Criteria: "s", Destination: "combo/flash"}}, "nope", SmartJev{})
+	err := SetSmartCombo(c, "combo/smart", []SmartRoute{{Name: "flash", Criteria: "s", Destination: "combo/flash"}}, "nope", SmartDecision{})
 	if err == nil {
 		t.Fatal("expected an error for an unknown default route")
 	}
@@ -120,7 +120,7 @@ func TestUpdateSmartComboPersists(t *testing.T) {
 		t.Fatal(err)
 	}
 	routes := []SmartRoute{{Name: "flash", Criteria: "simple", Destination: "openai/gpt-4o"}}
-	if err := UpdateSmartCombo(path, "combo/smart", routes, "flash", SmartJev{Model: "jev-latest"}); err != nil {
+	if err := UpdateSmartCombo(path, "combo/smart", routes, "flash", SmartDecision{Model: "jev-latest"}); err != nil {
 		t.Fatalf("UpdateSmartCombo: %v", err)
 	}
 	loaded, err := Load(path)
@@ -134,7 +134,7 @@ func TestUpdateSmartComboPersists(t *testing.T) {
 	if len(combo.Routes) != 1 || combo.Routes[0].Destination != "openai/gpt-4o" {
 		t.Fatalf("routes = %+v", combo.Routes)
 	}
-	if combo.Jev.Model != "jev-latest" {
-		t.Errorf("jev model = %q", combo.Jev.Model)
+	if combo.Decision.Model != "jev-latest" {
+		t.Errorf("jev model = %q", combo.Decision.Model)
 	}
 }

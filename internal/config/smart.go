@@ -2,73 +2,139 @@ package config
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 )
 
-// SmartJev configures the Jev (TypeSafe System One) decision call a smart combo
-// makes before it dispatches. Every field is optional; the zero value is a
-// working configuration that matches the jev package's defaults.
-type SmartJev struct {
-	// Model is the Jev model or alias to ask. Default: jev-latest.
+// Decision modes. A smart combo asks a System One model which route fits; the
+// mode decides how the question is put.
+const (
+	// DecisionModeChoice asks one choice question whose options are the
+	// routes. One call, one answer, cheapest.
+	DecisionModeChoice = "choice"
+	// DecisionModeFanout asks one noul question per route and picks the
+	// highest weighted probability. More calls' worth of judgment in one
+	// request, and it lets a route's importance be tuned without rewording
+	// the question.
+	DecisionModeFanout = "fanout"
+)
+
+// SmartDecision configures the System One call a smart combo makes before it
+// dispatches. Every field is optional; the zero value is a working
+// configuration that matches the systemone package's defaults.
+type SmartDecision struct {
+	// Model is the System One model id or alias to ask, e.g. jev-latest.
+	// System One is a class of models, not a single one, so this is a plain
+	// string: any model the account can call works.
 	Model string `yaml:"model,omitempty"`
+	// BaseURL overrides the API endpoint. Empty means the public TypeSafe API.
+	BaseURL string `yaml:"base_url,omitempty"`
 	// Timeout bounds the decision call. Default: 4s. A decision that overruns
 	// is abandoned and the combo falls back to its default route.
 	Timeout string `yaml:"timeout,omitempty"`
-	// MinConfidence is the floor below which Jev's answer is not trusted and
+	// MinConfidence is the floor below which the answer is not trusted and
 	// the default route is used instead. Default: 0.5.
 	MinConfidence string `yaml:"min_confidence,omitempty"`
-	// Question is the instruction Jev answers. Default: a generic
-	// "which model should handle this request?" prompt.
+	// Question is the instruction for a choice-mode decision. Default: a
+	// generic "which model should handle this request?" prompt.
 	Question string `yaml:"question,omitempty"`
+	// Mode is choice or fanout. Default: choice.
+	Mode string `yaml:"mode,omitempty"`
+	// Weights scales each route's fanout probability. A missing route weighs
+	// 1.0. Ignored in choice mode.
+	Weights map[string]float64 `yaml:"weights,omitempty"`
 }
 
 // ParsedTimeout returns the decision budget, falling back to 4s.
-func (j SmartJev) ParsedTimeout() time.Duration {
-	if j.Timeout == "" {
+func (d SmartDecision) ParsedTimeout() time.Duration {
+	if d.Timeout == "" {
 		return 4 * time.Second
 	}
-	d, err := time.ParseDuration(j.Timeout)
-	if err != nil || d <= 0 {
+	parsed, err := time.ParseDuration(d.Timeout)
+	if err != nil || parsed <= 0 {
 		return 4 * time.Second
 	}
-	return d
+	return parsed
 }
 
 // ParsedMinConfidence returns the confidence floor, falling back to 0.5.
-func (j SmartJev) ParsedMinConfidence() float64 {
-	if j.MinConfidence == "" {
+func (d SmartDecision) ParsedMinConfidence() float64 {
+	if d.MinConfidence == "" {
 		return 0.5
 	}
-	var f float64
-	if _, err := fmt.Sscanf(strings.TrimSpace(j.MinConfidence), "%g", &f); err != nil {
+	var parsed float64
+	if _, err := fmt.Sscanf(strings.TrimSpace(d.MinConfidence), "%g", &parsed); err != nil {
 		return 0.5
 	}
-	if f < 0 || f > 1 {
+	if parsed < 0 || parsed > 1 {
 		return 0.5
 	}
-	return f
+	return parsed
 }
 
-// ModelOrDefault returns the Jev model to call.
-func (j SmartJev) ModelOrDefault() string {
-	if strings.TrimSpace(j.Model) == "" {
+// ModelOrDefault returns the System One model to call.
+func (d SmartDecision) ModelOrDefault() string {
+	if strings.TrimSpace(d.Model) == "" {
 		return "jev-latest"
 	}
-	return strings.TrimSpace(j.Model)
+	return strings.TrimSpace(d.Model)
 }
 
-// QuestionOrDefault returns the instruction Jev answers.
-func (j SmartJev) QuestionOrDefault() string {
-	if strings.TrimSpace(j.Question) == "" {
+// BaseURLOrDefault returns the API endpoint to call. Empty means the public
+// TypeSafe API, which serves every System One model.
+func (d SmartDecision) BaseURLOrDefault() string {
+	return strings.TrimSpace(d.BaseURL)
+}
+
+// WeightsString renders the weights as "route=weight, route=weight" in a
+// stable order, which is what the dashboard's text field round-trips.
+func (d SmartDecision) WeightsString() string {
+	if len(d.Weights) == 0 {
+		return ""
+	}
+	names := make([]string, 0, len(d.Weights))
+	for name := range d.Weights {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	parts := make([]string, 0, len(names))
+	for _, name := range names {
+		parts = append(parts, fmt.Sprintf("%s=%g", name, d.Weights[name]))
+	}
+	return strings.Join(parts, ", ")
+}
+
+// QuestionOrDefault returns the instruction a choice-mode decision answers.
+func (d SmartDecision) QuestionOrDefault() string {
+	if strings.TrimSpace(d.Question) == "" {
 		return "Which model should handle this request?"
 	}
-	return strings.TrimSpace(j.Question)
+	return strings.TrimSpace(d.Question)
 }
 
-// SmartRoute is one option in a smart combo. Jev chooses between routes by
-// reading Criteria; Destination is where OmniGo sends the request once the
-// route wins. It is not sent to Jev.
+// ModeOrDefault returns the decision mode, falling back to choice.
+func (d SmartDecision) ModeOrDefault() string {
+	switch strings.TrimSpace(d.Mode) {
+	case DecisionModeFanout:
+		return DecisionModeFanout
+	default:
+		return DecisionModeChoice
+	}
+}
+
+// WeightFor returns the configured weight for a route, or 1.0.
+func (d SmartDecision) WeightFor(routeName string) float64 {
+	weight, ok := d.Weights[routeName]
+	if !ok || weight <= 0 {
+		return 1
+	}
+	return weight
+}
+
+// SmartRoute is one option in a smart combo. The decision model chooses
+// between routes by reading Criteria; Destination is where OmniGo sends the
+// request once the route wins. It is never sent to the model.
 type SmartRoute struct {
 	Name     string `yaml:"name" json:"name"`
 	Criteria string `yaml:"criteria" json:"criteria"`
@@ -104,10 +170,10 @@ func FindCombo(cfg *Config, name string) (Combo, bool) {
 	return Combo{}, false
 }
 
-// IsSmart reports whether this combo routes through Jev.
+// IsSmart reports whether this combo routes through a System One model.
 func (c Combo) IsSmart() bool { return c.Strategy == StrategySmart }
 
-// StrategySmart is the Jev-backed routing strategy.
+// StrategySmart is the System One-backed routing strategy.
 const StrategySmart = "smart"
 
 // validateSmart checks the smart-combo invariants: a non-empty route set with
@@ -120,17 +186,8 @@ func (c Combo) validateSmart(cfg *Config, providers map[string]Provider) error {
 	if len(c.Routes) == 0 {
 		return fmt.Errorf("combo %q: at least one route is required for the smart strategy", c.Name)
 	}
-	if c.Jev.Timeout != "" {
-		d, err := time.ParseDuration(c.Jev.Timeout)
-		if err != nil || d <= 0 {
-			return fmt.Errorf("combo %q: invalid jev timeout %q", c.Name, c.Jev.Timeout)
-		}
-	}
-	if c.Jev.MinConfidence != "" {
-		var f float64
-		if _, err := fmt.Sscanf(strings.TrimSpace(c.Jev.MinConfidence), "%g", &f); err != nil || f < 0 || f > 1 {
-			return fmt.Errorf("combo %q: invalid jev min_confidence %q (want 0..1)", c.Name, c.Jev.MinConfidence)
-		}
+	if err := validateSmartDecisionFields(c.Name, c.Decision); err != nil {
+		return err
 	}
 
 	seen := map[string]bool{}

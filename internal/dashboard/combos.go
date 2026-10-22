@@ -19,8 +19,9 @@ func (s *Server) createCombo(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// A smart combo routes through Jev and owns no target chain: it carries
-	// routes instead, each with its own criteria and destination.
+	// A smart combo routes through a System One model and owns no target
+	// chain: it carries routes instead, each with its own criteria and
+	// destination.
 	if strategy == config.StrategySmart {
 		s.createSmartCombo(w, r, name)
 		return
@@ -58,17 +59,20 @@ func (s *Server) createCombo(w http.ResponseWriter, r *http.Request) {
 }
 
 // createSmartCombo stores a smart combo with its routes, default route, and
-// Jev settings. The combo is validated as a whole, so a default route that
-// names no route, or a destination that resolves to nothing, is rejected
+// decision settings. The combo is validated as a whole, so a default route
+// that names no route, or a destination that resolves to nothing, is rejected
 // before anything is written.
 func (s *Server) createSmartCombo(w http.ResponseWriter, r *http.Request, name string) {
 	routes := config.ParseSmartRoutes(r.FormValue("routes"))
 	defaultRoute := strings.TrimSpace(r.FormValue("default_route"))
-	jevCfg := config.SmartJev{
-		Model:         strings.TrimSpace(r.FormValue("jev_model")),
-		Question:      strings.TrimSpace(r.FormValue("jev_question")),
-		MinConfidence: strings.TrimSpace(r.FormValue("jev_min_confidence")),
-		Timeout:       strings.TrimSpace(r.FormValue("jev_timeout")),
+	decision := config.SmartDecision{
+		Model:         strings.TrimSpace(r.FormValue("decision_model")),
+		Mode:          strings.TrimSpace(r.FormValue("decision_mode")),
+		Question:      strings.TrimSpace(r.FormValue("decision_question")),
+		MinConfidence: strings.TrimSpace(r.FormValue("decision_min_confidence")),
+		Timeout:       strings.TrimSpace(r.FormValue("decision_timeout")),
+		BaseURL:       strings.TrimSpace(r.FormValue("decision_base_url")),
+		Weights:       config.ParseSmartWeights(r.FormValue("decision_weights")),
 	}
 
 	if s.mutate != nil {
@@ -83,7 +87,7 @@ func (s *Server) createSmartCombo(w http.ResponseWriter, r *http.Request, name s
 				Strategy:     config.StrategySmart,
 				Routes:       routes,
 				DefaultRoute: defaultRoute,
-				Jev:          jevCfg,
+				Decision:     decision,
 			}
 			// Validate the candidate against the live config before it is
 			// stored, so an unresolvable destination never lands on disk.
@@ -199,17 +203,20 @@ func (s *Server) updateCombo(w http.ResponseWriter, r *http.Request) {
 	s.renderCombos(w)
 }
 
-// updateSmartCombo replaces the routes, default route, and Jev settings of an
-// existing smart combo. A combo that is not a smart one is rejected: its chain
-// belongs to the plain editor.
+// updateSmartCombo replaces the routes, default route, and decision settings
+// of an existing smart combo. A combo that is not a smart one is rejected: its
+// chain belongs to the plain editor.
 func (s *Server) updateSmartCombo(w http.ResponseWriter, r *http.Request, name string) {
 	routes := config.ParseSmartRoutes(r.FormValue("routes"))
 	defaultRoute := strings.TrimSpace(r.FormValue("default_route"))
-	jevCfg := config.SmartJev{
-		Model:         strings.TrimSpace(r.FormValue("jev_model")),
-		Question:      strings.TrimSpace(r.FormValue("jev_question")),
-		MinConfidence: strings.TrimSpace(r.FormValue("jev_min_confidence")),
-		Timeout:       strings.TrimSpace(r.FormValue("jev_timeout")),
+	decision := config.SmartDecision{
+		Model:         strings.TrimSpace(r.FormValue("decision_model")),
+		Mode:          strings.TrimSpace(r.FormValue("decision_mode")),
+		Question:      strings.TrimSpace(r.FormValue("decision_question")),
+		MinConfidence: strings.TrimSpace(r.FormValue("decision_min_confidence")),
+		Timeout:       strings.TrimSpace(r.FormValue("decision_timeout")),
+		BaseURL:       strings.TrimSpace(r.FormValue("decision_base_url")),
+		Weights:       config.ParseSmartWeights(r.FormValue("decision_weights")),
 	}
 
 	if s.mutate != nil {
@@ -221,7 +228,7 @@ func (s *Server) updateSmartCombo(w http.ResponseWriter, r *http.Request, name s
 			if !existing.IsSmart() {
 				return fmt.Errorf("combo %q is not a smart combo", name)
 			}
-			if err := config.SetSmartCombo(c, name, routes, defaultRoute, jevCfg); err != nil {
+			if err := config.SetSmartCombo(c, name, routes, defaultRoute, decision); err != nil {
 				return err
 			}
 			return c.Validate()

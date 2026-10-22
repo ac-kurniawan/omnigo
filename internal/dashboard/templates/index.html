@@ -409,7 +409,7 @@
                       <option value="fill-first">fill-first (Exhaust primary quota first)</option>
                       <option value="reliable">reliable (Buffer failures and use the first healthy target)</option>
                       <option value="round-robin">round-robin (Rotate across healthy targets)</option>
-                      <option value="smart">smart (Jev picks the destination per request)</option>
+                      <option value="smart">smart (a System One model picks the destination)</option>
                     </select>
                   </div>
                 </div>
@@ -429,7 +429,7 @@
                   <input type="hidden" name="routes" id="smart-routes-hidden">
                   <div id="smart-routes-items" class="space-y-2"></div>
                   <div id="smart-routes-empty" class="text-center py-4 text-xs text-base-content/40 italic rounded-xl bg-base-100 border border-dashed border-base-content/15">
-                    No routes yet. Add a route: a name, the criteria Jev judges it by, and where it sends the request.
+                    No routes yet. Add a route: a name, the criteria the model judges it by, and where it sends the request.
                   </div>
                   <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
                     <div>
@@ -437,25 +437,46 @@
                       <select name="default_route" id="smart-default-route" class="select select-bordered select-xs font-mono text-xs rounded-lg w-full">
                         <option value="">(first route)</option>
                       </select>
-                      <span class="text-[11px] text-base-content/40">used when Jev is unavailable or not confident</span>
+                      <span class="text-[11px] text-base-content/40">used when the model is unavailable or not confident</span>
                     </div>
                     <div>
-                      <label class="label pb-1.5 pt-0 text-xs font-semibold text-base-content/70" for="smart-jev-model">Jev model</label>
-                      <input type="text" name="jev_model" id="smart-jev-model" placeholder="jev-latest" class="input input-bordered input-xs font-mono text-xs rounded-lg w-full">
-                      <span class="text-[11px] text-base-content/40">blank = jev-latest</span>
+                      <label class="label pb-1.5 pt-0 text-xs font-semibold text-base-content/70" for="smart-decision-model">Decision model</label>
+                      <div class="flex gap-1">
+                        <input type="text" name="decision_model" id="smart-decision-model" placeholder="jev-latest" class="input input-bordered input-xs font-mono text-xs rounded-lg w-full" list="system-one-model-options">
+                        <button type="button" class="btn btn-xs btn-ghost font-mono text-xs rounded-lg" onclick="loadSystemOneModels('smart-decision-model', 'system-one-model-status')" title="List the System One models this account can use">List</button>
+                      </div>
+                      <datalist id="system-one-model-options"></datalist>
+                      <span class="text-[11px] text-base-content/40" id="system-one-model-status">any System One model id or alias; blank = jev-latest</span>
                     </div>
                     <div>
-                      <label class="label pb-1.5 pt-0 text-xs font-semibold text-base-content/70" for="smart-jev-question">Jev question</label>
-                      <input type="text" name="jev_question" id="smart-jev-question" placeholder="Which model should handle this request?" class="input input-bordered input-xs font-mono text-xs rounded-lg w-full">
+                      <label class="label pb-1.5 pt-0 text-xs font-semibold text-base-content/70" for="smart-decision-mode">Decision mode</label>
+                      <select name="decision_mode" id="smart-decision-mode" class="select select-bordered select-xs font-mono text-xs rounded-lg w-full">
+                        <option value="choice">choice — one question, pick a route</option>
+                        <option value="fanout">fanout — one question per route, weighted</option>
+                      </select>
+                      <span class="text-[11px] text-base-content/40">fanout asks every route independently and combines the answers</span>
                     </div>
                     <div>
-                      <label class="label pb-1.5 pt-0 text-xs font-semibold text-base-content/70" for="smart-jev-min-confidence">Min confidence</label>
-                      <input type="text" name="jev_min_confidence" id="smart-jev-min-confidence" placeholder="0.5" class="input input-bordered input-xs font-mono text-xs rounded-lg w-full">
+                      <label class="label pb-1.5 pt-0 text-xs font-semibold text-base-content/70" for="smart-decision-question">Decision question</label>
+                      <input type="text" name="decision_question" id="smart-decision-question" placeholder="Which model should handle this request?" class="input input-bordered input-xs font-mono text-xs rounded-lg w-full">
+                    </div>
+                    <div>
+                      <label class="label pb-1.5 pt-0 text-xs font-semibold text-base-content/70" for="smart-decision-min-confidence">Min confidence</label>
+                      <input type="text" name="decision_min_confidence" id="smart-decision-min-confidence" placeholder="0.5" class="input input-bordered input-xs font-mono text-xs rounded-lg w-full">
                       <span class="text-[11px] text-base-content/40">below this, the default route is used</span>
                     </div>
                     <div>
-                      <label class="label pb-1.5 pt-0 text-xs font-semibold text-base-content/70" for="smart-jev-timeout">Jev timeout</label>
-                      <input type="text" name="jev_timeout" id="smart-jev-timeout" placeholder="e.g. 4s, blank = 4s" class="input input-bordered input-xs font-mono text-xs rounded-lg w-full">
+                      <label class="label pb-1.5 pt-0 text-xs font-semibold text-base-content/70" for="smart-decision-timeout">Decision timeout</label>
+                      <input type="text" name="decision_timeout" id="smart-decision-timeout" placeholder="e.g. 4s, blank = 4s" class="input input-bordered input-xs font-mono text-xs rounded-lg w-full">
+                    </div>
+                    <div>
+                      <label class="label pb-1.5 pt-0 text-xs font-semibold text-base-content/70" for="smart-decision-base-url">Decision base URL</label>
+                      <input type="text" name="decision_base_url" id="smart-decision-base-url" placeholder="blank = https://api.typesafe.ai" class="input input-bordered input-xs font-mono text-xs rounded-lg w-full">
+                    </div>
+                    <div>
+                      <label class="label pb-1.5 pt-0 text-xs font-semibold text-base-content/70" for="smart-decision-weights">Route weights (fanout)</label>
+                      <input type="text" name="decision_weights" id="smart-decision-weights" placeholder="flash=1.0, pro=1.2" class="input input-bordered input-xs font-mono text-xs rounded-lg w-full">
+                      <span class="text-[11px] text-base-content/40">scales each route's probability; blank = 1.0</span>
                     </div>
                   </div>
                 </div>
@@ -628,7 +649,7 @@
                     <option value="fill-first">fill-first (Exhaust primary quota first)</option>
                     <option value="reliable">reliable (Buffer failures and use the first healthy target)</option>
                     <option value="round-robin">round-robin (Rotate across healthy targets)</option>
-                    <option value="smart">smart (Jev picks the destination per request)</option>
+                    <option value="smart">smart (a System One model picks the destination)</option>
                   </select>
                 </div>
 
@@ -647,7 +668,7 @@
                   <input type="hidden" name="routes" id="smart-edit-routes-hidden">
                   <div id="smart-edit-routes-items" class="space-y-2"></div>
                   <div id="smart-edit-routes-empty" class="text-center py-4 text-xs text-base-content/40 italic rounded-xl bg-base-100 border border-dashed border-base-content/15">
-                    No routes yet. Add a route: a name, the criteria Jev judges it by, and where it sends the request.
+                    No routes yet. Add a route: a name, the criteria the model judges it by, and where it sends the request.
                   </div>
                   <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
                     <div>
@@ -657,20 +678,39 @@
                       </select>
                     </div>
                     <div>
-                      <label class="label pb-1.5 pt-0 text-xs font-semibold text-base-content/70" for="smart-edit-jev-model">Jev model</label>
-                      <input type="text" name="jev_model" id="smart-edit-jev-model" placeholder="jev-latest" class="input input-bordered input-xs font-mono text-xs rounded-lg w-full">
+                      <label class="label pb-1.5 pt-0 text-xs font-semibold text-base-content/70" for="smart-edit-decision-model">Decision model</label>
+                      <div class="flex gap-1">
+                        <input type="text" name="decision_model" id="smart-edit-decision-model" placeholder="jev-latest" class="input input-bordered input-xs font-mono text-xs rounded-lg w-full" list="system-one-model-options">
+                        <button type="button" class="btn btn-xs btn-ghost font-mono text-xs rounded-lg" onclick="loadSystemOneModels('smart-edit-decision-model', 'system-one-model-edit-status')" title="List the System One models this account can use">List</button>
+                      </div>
+                      <span class="text-[11px] text-base-content/40" id="system-one-model-edit-status"></span>
                     </div>
                     <div>
-                      <label class="label pb-1.5 pt-0 text-xs font-semibold text-base-content/70" for="smart-edit-jev-question">Jev question</label>
-                      <input type="text" name="jev_question" id="smart-edit-jev-question" placeholder="Which model should handle this request?" class="input input-bordered input-xs font-mono text-xs rounded-lg w-full">
+                      <label class="label pb-1.5 pt-0 text-xs font-semibold text-base-content/70" for="smart-edit-decision-mode">Decision mode</label>
+                      <select name="decision_mode" id="smart-edit-decision-mode" class="select select-bordered select-xs font-mono text-xs rounded-lg w-full">
+                        <option value="choice">choice — one question, pick a route</option>
+                        <option value="fanout">fanout — one question per route, weighted</option>
+                      </select>
                     </div>
                     <div>
-                      <label class="label pb-1.5 pt-0 text-xs font-semibold text-base-content/70" for="smart-edit-jev-min-confidence">Min confidence</label>
-                      <input type="text" name="jev_min_confidence" id="smart-edit-jev-min-confidence" placeholder="0.5" class="input input-bordered input-xs font-mono text-xs rounded-lg w-full">
+                      <label class="label pb-1.5 pt-0 text-xs font-semibold text-base-content/70" for="smart-edit-decision-question">Decision question</label>
+                      <input type="text" name="decision_question" id="smart-edit-decision-question" placeholder="Which model should handle this request?" class="input input-bordered input-xs font-mono text-xs rounded-lg w-full">
                     </div>
                     <div>
-                      <label class="label pb-1.5 pt-0 text-xs font-semibold text-base-content/70" for="smart-edit-jev-timeout">Jev timeout</label>
-                      <input type="text" name="jev_timeout" id="smart-edit-jev-timeout" placeholder="e.g. 4s, blank = 4s" class="input input-bordered input-xs font-mono text-xs rounded-lg w-full">
+                      <label class="label pb-1.5 pt-0 text-xs font-semibold text-base-content/70" for="smart-edit-decision-min-confidence">Min confidence</label>
+                      <input type="text" name="decision_min_confidence" id="smart-edit-decision-min-confidence" placeholder="0.5" class="input input-bordered input-xs font-mono text-xs rounded-lg w-full">
+                    </div>
+                    <div>
+                      <label class="label pb-1.5 pt-0 text-xs font-semibold text-base-content/70" for="smart-edit-decision-timeout">Decision timeout</label>
+                      <input type="text" name="decision_timeout" id="smart-edit-decision-timeout" placeholder="e.g. 4s, blank = 4s" class="input input-bordered input-xs font-mono text-xs rounded-lg w-full">
+                    </div>
+                    <div>
+                      <label class="label pb-1.5 pt-0 text-xs font-semibold text-base-content/70" for="smart-edit-decision-base-url">Decision base URL</label>
+                      <input type="text" name="decision_base_url" id="smart-edit-decision-base-url" placeholder="blank = https://api.typesafe.ai" class="input input-bordered input-xs font-mono text-xs rounded-lg w-full">
+                    </div>
+                    <div>
+                      <label class="label pb-1.5 pt-0 text-xs font-semibold text-base-content/70" for="smart-edit-decision-weights">Route weights (fanout)</label>
+                      <input type="text" name="decision_weights" id="smart-edit-decision-weights" placeholder="flash=1.0, pro=1.2" class="input input-bordered input-xs font-mono text-xs rounded-lg w-full">
                     </div>
                   </div>
                 </div>
@@ -1279,7 +1319,7 @@
 
     // --- Smart Router Routes Manager ---
     // A smart combo has no target chain: it has routes. Each route carries a
-    // name, the criteria Jev reads, and the destination the request goes to.
+    // name, the criteria the model reads, and the destination the request goes to.
     // The form posts them as one "name|criteria|destination" string per line.
     let smartRoutes = [];      // routes being built in the create form
     let editSmartRoutes = [];  // routes being edited in the edit modal
@@ -1366,7 +1406,7 @@
               <input type="text" placeholder="destination" list="smart-destinations-${context}" value="${escapeAttr(route.destination)}" oninput="updateSmartRouteField('${context}', ${idx}, 'destination', this.value)" class="input input-bordered input-xs font-mono text-xs rounded-lg w-1/3">
               <button type="button" class="btn btn-ghost btn-xs size-7 min-h-0 p-0 rounded-lg text-error hover:bg-error/15" onclick="removeSmartRoute('${context}', ${idx})" title="Remove route">✕</button>
             </div>
-            <input type="text" placeholder="criteria Jev judges by (e.g. a short factual question)" value="${escapeAttr(route.criteria)}" oninput="updateSmartRouteField('${context}', ${idx}, 'criteria', this.value)" class="input input-bordered input-xs font-mono text-xs rounded-lg w-full">
+            <input type="text" placeholder="criteria the model judges by (e.g. a short factual question)" value="${escapeAttr(route.criteria)}" oninput="updateSmartRouteField('${context}', ${idx}, 'criteria', this.value)" class="input input-bordered input-xs font-mono text-xs rounded-lg w-full">
             <datalist id="smart-destinations-${context}">
               ${options.map(o => `<option value="${escapeAttr(o.value)}">${escapeHtml(o.label)}</option>`).join('')}
             </datalist>
@@ -1442,6 +1482,46 @@
       return true;
     }
 
+    // loadSystemOneModels asks the gateway which System One models the
+    // account can use and offers them as suggestions for the model field.
+    // Every System One model shares one endpoint, so this list is the set of
+    // models a smart combo may name.
+    async function loadSystemOneModels(inputId, statusId) {
+      const input = document.getElementById(inputId);
+      const status = document.getElementById(statusId);
+      if (status) status.textContent = 'loading…';
+      try {
+        const response = await fetch('/system-one/models', { headers: { 'Accept': 'application/json' } });
+        const text = await response.text();
+        let payload = {};
+        try { payload = JSON.parse(text); } catch (err) { payload = {}; }
+        if (!response.ok) {
+          const message = (payload && payload.error) || text.trim() || ('request failed with status ' + response.status);
+          if (status) status.textContent = message;
+          return;
+        }
+        const models = (payload && payload.models) || [];
+        const list = document.getElementById('system-one-model-options');
+        if (list) {
+          list.innerHTML = '';
+          models.forEach((model) => {
+            const option = document.createElement('option');
+            option.value = model.name;
+            if (model.description) option.label = model.description;
+            list.appendChild(option);
+          });
+        }
+        if (status) {
+          status.textContent = models.length
+            ? (models.length + ' model' + (models.length === 1 ? '' : 's') + ' available')
+            : 'no models returned';
+        }
+        if (input && models.length === 1) input.value = models[0].name;
+      } catch (err) {
+        if (status) status.textContent = 'could not load models: ' + err;
+      }
+    }
+
     // openEditComboModal fills the edit modal. The button carries the combo
     // as data attributes, so the routes JSON arrives already decoded by the
     // browser and needs no inline-JS escaping.
@@ -1477,14 +1557,20 @@
       if (timeoutInput) timeoutInput.value = timeout;
       const drainInput = document.getElementById('combo-edit-drain-ttl');
       if (drainInput) drainInput.value = drainTTL;
-      const jevModelInput = document.getElementById('smart-edit-jev-model');
-      if (jevModelInput) jevModelInput.value = button.dataset.jevModel || '';
-      const jevQuestionInput = document.getElementById('smart-edit-jev-question');
-      if (jevQuestionInput) jevQuestionInput.value = button.dataset.jevQuestion || '';
-      const jevConfidenceInput = document.getElementById('smart-edit-jev-min-confidence');
-      if (jevConfidenceInput) jevConfidenceInput.value = button.dataset.jevMinConfidence || '';
-      const jevTimeoutInput = document.getElementById('smart-edit-jev-timeout');
-      if (jevTimeoutInput) jevTimeoutInput.value = button.dataset.jevTimeout || '';
+      const decisionModelInput = document.getElementById('smart-edit-decision-model');
+      if (decisionModelInput) decisionModelInput.value = button.dataset.decisionModel || '';
+      const decisionQuestionInput = document.getElementById('smart-edit-decision-question');
+      if (decisionQuestionInput) decisionQuestionInput.value = button.dataset.decisionQuestion || '';
+      const decisionConfidenceInput = document.getElementById('smart-edit-decision-min-confidence');
+      if (decisionConfidenceInput) decisionConfidenceInput.value = button.dataset.decisionMinConfidence || '';
+      const decisionTimeoutInput = document.getElementById('smart-edit-decision-timeout');
+      if (decisionTimeoutInput) decisionTimeoutInput.value = button.dataset.decisionTimeout || '';
+      const decisionModeInput = document.getElementById('smart-edit-decision-mode');
+      if (decisionModeInput) decisionModeInput.value = button.dataset.decisionMode || 'choice';
+      const decisionBaseURLInput = document.getElementById('smart-edit-decision-base-url');
+      if (decisionBaseURLInput) decisionBaseURLInput.value = button.dataset.decisionBaseUrl || '';
+      const decisionWeightsInput = document.getElementById('smart-edit-decision-weights');
+      if (decisionWeightsInput) decisionWeightsInput.value = button.dataset.decisionWeights || '';
       const form = document.getElementById('combo-edit-form');
       if (form) {
         const action = '/combos/' + encodeURIComponent(name);
@@ -2558,10 +2644,13 @@
             data-drain-ttl="{{.DrainTTL}}"
             data-routes="{{smartRoutesJSON .}}"
             data-default-route="{{.DefaultRoute}}"
-            data-jev-model="{{.Jev.Model}}"
-            data-jev-question="{{.Jev.Question}}"
-            data-jev-min-confidence="{{.Jev.MinConfidence}}"
-            data-jev-timeout="{{.Jev.Timeout}}"
+            data-decision-model="{{.Decision.Model}}"
+            data-decision-question="{{.Decision.Question}}"
+            data-decision-min-confidence="{{.Decision.MinConfidence}}"
+            data-decision-timeout="{{.Decision.Timeout}}"
+            data-decision-mode="{{.Decision.ModeOrDefault}}"
+            data-decision-base-url="{{.Decision.BaseURL}}"
+            data-decision-weights="{{.Decision.WeightsString}}"
             onclick="openEditComboModal(this)">
             <svg xmlns="http://www.w3.org/2000/svg" class="size-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" /></svg>
             Edit
