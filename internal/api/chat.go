@@ -356,6 +356,13 @@ func resolveDirect(cfg *config.Config, registry *providerRegistry, model string)
 }
 
 func runCombo(w http.ResponseWriter, r *http.Request, cfg *config.Config, registry *providerRegistry, cb config.Combo, req provider.ChatRequest, tracker *combo.Tracker, tc *TraceContext, startTime time.Time, metrics Metrics) {
+	// A smart combo decides first, then delegates to the destination combo's
+	// own chain, which owns the failover. The strategy of the destination
+	// combo is what runs; the smart combo contributes only the choice.
+	if cb.IsSmart() {
+		runSmartCombo(w, r, cfg, registry, cb, req, tracker, tc, startTime, metrics)
+		return
+	}
 	c := combo.Combo{
 		Name:     cb.Name,
 		Strategy: cb.Strategy,

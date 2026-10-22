@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"embed"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"html/template"
 	"net/http"
@@ -41,6 +42,11 @@ type viewData struct {
 	Version   string
 	Quota     *quota.Cache
 	Server    config.Server
+	// SmartComboNames and SmartModelTargets feed the smart router's
+	// destination picker: the plain combos a route can point at, and every
+	// provider/model pair a route can name directly.
+	SmartComboNames   []string
+	SmartModelTargets []string
 }
 
 // accountHealthy reports whether an OAuth account has usable credentials: a
@@ -133,6 +139,31 @@ func newServer(getCfg func() *config.Config, store *vault.Store, mutate config.M
 	}
 	tmpl := template.Must(template.New("root").Funcs(template.FuncMap{
 		"sub": func(a, b int) int { return a - b },
+		// smartRoutesJSON renders a combo's routes as a JSON array for the
+		// edit modal. It is placed in a data attribute, so the template
+		// escapes it as HTML and the browser decodes the entities when the
+		// attribute is read.
+		"smartRoutesJSON": func(cb config.Combo) string {
+			if len(cb.Routes) == 0 {
+				return "[]"
+			}
+			raw, err := json.Marshal(cb.Routes)
+			if err != nil {
+				return "[]"
+			}
+			return string(raw)
+		},
+		// smartNamesJSON renders a list of strings as a JavaScript array
+		// literal, so the smart router's destination picker can read it.
+		// The value is returned as template.JS: html/template would escape
+		// the quotes and the browser would then see a string, not an array.
+		"smartNamesJSON": func(values []string) template.JS {
+			raw, err := json.Marshal(values)
+			if err != nil {
+				return template.JS("[]")
+			}
+			return template.JS(raw)
+		},
 		// modelsWithEffort expands a provider's cached catalog with an effort
 		// clone per reasoning level, so the combo picker offers e.g.
 		// gemini-3.7-flash-high next to the model itself.
@@ -414,8 +445,11 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("GET /combos", s.getCombos)
 	mux.HandleFunc("GET /combo-picker/models", s.getComboPickerModels)
 	mux.HandleFunc("POST /combos", s.createCombo)
-	mux.HandleFunc("POST /combos/{name}", s.updateCombo)
-	mux.HandleFunc("POST /combos/{name}/delete", s.deleteCombo)
+	// Combo names may contain slashes (combo/auto), so one wildcard route
+	// carries both the edit and the delete action and dispatches on the
+	// resolved name. The literal /combos/drains/* patterns below are more
+	// specific, so ServeMux keeps routing those to their own handlers.
+	mux.HandleFunc("POST /combos/{name...}", s.comboAction)
 	mux.HandleFunc("POST /combos/drains/reset", s.resetDrain)
 	mux.HandleFunc("POST /combos/drains/reset-all", s.resetAllDrains)
 	mux.HandleFunc("GET /keys", s.getKeys)

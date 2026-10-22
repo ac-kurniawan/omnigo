@@ -38,6 +38,11 @@ const (
 	attrResult   = "result"
 	attrCombo    = "omnigo.combo.name"
 
+	// attrSmartRoute carries the route a smart combo chose. It is a route
+	// name from the combo's own route set, so the value set is bounded by
+	// the configuration rather than by the request.
+	attrSmartRoute = "omnigo.smart.route"
+
 	// attrClientKey carries the id of the gateway client key that authenticated
 	// the request, so traffic and outcomes can be grouped per key. The id is
 	// the same short identifier the dashboard lists, never the key material or
@@ -74,6 +79,7 @@ type Metrics struct {
 
 	providerRequests metric.Int64Counter
 	comboAttempts    metric.Int64Counter
+	smartDecisions   metric.Int64Counter
 	configReloads    metric.Int64Counter
 	tokens           metric.Int64Counter
 	cacheHits        metric.Int64Counter
@@ -161,6 +167,12 @@ func (m *Metrics) init(provider *sdkmetric.MeterProvider) error {
 	if m.comboAttempts, err = meter.Int64Counter(
 		"omnigo.combo.attempts",
 		metric.WithDescription("Combo routing attempts and their outcome"),
+	); err != nil {
+		return err
+	}
+	if m.smartDecisions, err = meter.Int64Counter(
+		"omnigo.smart.decisions",
+		metric.WithDescription("Smart combo routing decisions, the route chosen, and whether the default route was used"),
 	); err != nil {
 		return err
 	}
@@ -374,6 +386,22 @@ func (m *Metrics) RecordCombinationAttempt(ctx context.Context, combo, result st
 	}
 	m.comboAttempts.Add(context.Background(), 1, metric.WithAttributes(
 		attribute.String(attrCombo, combo),
+		attribute.String(attrResult, result),
+		attribute.String(attrClientKey, clientKeyLabel(auth.CallerFrom(ctx).ID())),
+	))
+}
+
+// RecordSmartDecision counts one smart combo routing decision. The route is
+// the name of the chosen route, and result is "success" for a decision Jev
+// made or "fallback" when the default route had to be used. The authenticated
+// client key id is read from ctx.
+func (m *Metrics) RecordSmartDecision(ctx context.Context, combo, route, result string) {
+	if !m.Enabled() {
+		return
+	}
+	m.smartDecisions.Add(context.Background(), 1, metric.WithAttributes(
+		attribute.String(attrCombo, combo),
+		attribute.String(attrSmartRoute, route),
 		attribute.String(attrResult, result),
 		attribute.String(attrClientKey, clientKeyLabel(auth.CallerFrom(ctx).ID())),
 	))

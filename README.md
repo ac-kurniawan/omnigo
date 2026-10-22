@@ -28,7 +28,8 @@ Performance and simplicity are the point.
     Codex retains a conservative static fallback when its catalog is unavailable.
 - **API key management** — issue client keys (`ak-…`) to access the gateway.
 - **Combo management** — route one model name across a fallback chain with
-  `priority` or `fill-first` strategy.
+  `priority` or `fill-first` strategy, or let Jev pick the destination per
+  request with the `smart` strategy.
 - **Model connection test** — ping any provider and report status/latency.
 - **HTMX dashboard** — manage providers, combos, keys, and OAuth logins.
 - **Observability** — optional OpenTelemetry metrics (HTTP duration,
@@ -149,6 +150,54 @@ combos:
 With a 120s budget and three targets, each gets about 40s. A target that fails
 fast returns its unused time to the targets behind it.
 
+### Smart routing (Jev)
+
+A combo with `strategy: smart` asks TypeSafe's [Jev](https://typesafe.ai)
+which route fits the request, then dispatches to that route's destination.
+Jev is a decision model: it answers one `choice` question per request and
+never generates the reply itself.
+
+A smart combo declares no target chain of its own. Each route names a
+destination, which is either another combo or a `provider/model` pair, and the
+destination combo owns the failover. That keeps the routing decision in one
+place and the fallback behaviour where it already lives.
+
+```yaml
+combos:
+  - name: combo/smart
+    strategy: smart
+    default_route: flash   # used when Jev cannot decide
+    routes:
+      - name: flash
+        criteria: A short factual question
+        destination: combo/flash        # a combo name, or provider/model
+      - name: pro
+        criteria: A hard engineering task
+        destination: combo/pro
+    jev:
+      model: jev-latest      # blank = jev-latest
+      question: Which route should handle this request?
+      min_confidence: "0.5"  # below this, the default route is used
+      timeout: 4s            # blank = 4s
+```
+
+The route `criteria` is the text Jev judges the request against, and it is
+also the option label Jev answers with, so it should describe when that route
+is the right one. The destination is never sent to Jev.
+
+The gateway reads the API key from `TYPESAFE_API_KEY` in its environment. The
+decision is **fail-open**: if the key is missing, Jev is unreachable, the
+answer is not one of the routes, or the confidence is below
+`jev.min_confidence`, the `default_route` is used instead and the request
+still succeeds. Nothing about the smart router can fail a request on its own.
+
+Only the last user message is sent to Jev, which keeps the input small: Jev
+bills input tokens only, and output tokens are free. The decision is made per
+request, with no caching.
+
+A route may only target a plain combo: a smart combo cannot point at another
+smart combo, so the routing is one level deep.
+
 ### Dashboard (optional)
 
 The dashboard is served by default. Set `dashboard.enabled: false` in
@@ -225,6 +274,7 @@ Recorded series:
 | `omnigo_provider_requests_total` | counter | `gen_ai_system`, `gen_ai_request_model`, `result`, `api_key_id` |
 | `omnigo_tokens_total` | counter | `gen_ai_system`, `gen_ai_request_model`, `account`, `api_key_id`, `omnigo_combo_name`, `omnigo_token_kind` |
 | `omnigo_combo_attempts_total` | counter | `omnigo_combo_name`, `result`, `api_key_id` |
+| `omnigo_smart_decisions_total` | counter | `omnigo_combo_name`, `omnigo_smart_route`, `result`, `api_key_id` |
 | `omnigo_config_reloads_total` | counter | `result` |
 | `omnigo_provider_quota_remaining_ratio` | gauge | `gen_ai_system`, `account`, `window` |
 | `omnigo_provider_quota_status` | gauge | `gen_ai_system`, `account` |
