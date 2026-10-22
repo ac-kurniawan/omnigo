@@ -79,8 +79,9 @@ func TestActuatorMetricsFollowsConfigReload(t *testing.T) {
 
 // testMetrics records dispatch outcomes for assertions.
 type testMetrics struct {
-	providerCalls [][3]string
-	comboCalls    [][2]string
+	providerCalls  [][3]string
+	comboCalls     [][2]string
+	smartDecisions []string
 }
 
 func (m *testMetrics) RecordProviderRequest(ctx context.Context, provider, model, result string) {
@@ -89,6 +90,9 @@ func (m *testMetrics) RecordProviderRequest(ctx context.Context, provider, model
 
 func (m *testMetrics) RecordCombinationAttempt(ctx context.Context, combo, result string) {
 	m.comboCalls = append(m.comboCalls, [2]string{combo, result})
+}
+func (m *testMetrics) RecordSmartDecision(ctx context.Context, combo, route, result string) {
+	m.smartDecisions = append(m.smartDecisions, combo+":"+route+":"+result)
 }
 
 func (m *testMetrics) RecordTokenUsage(context.Context, string, string, string, string, provider.TokenUsage) {

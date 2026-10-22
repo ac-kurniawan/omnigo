@@ -20,6 +20,9 @@ type Metrics interface {
 	RecordProviderRequest(ctx context.Context, provider, model, result string)
 	// RecordCombinationAttempt counts a combo routing attempt by outcome.
 	RecordCombinationAttempt(ctx context.Context, combo, result string)
+	// RecordSmartDecision counts one smart combo routing decision: the route
+	// chosen, and whether the default route was used instead.
+	RecordSmartDecision(ctx context.Context, combo, route, result string)
 	// RecordTokenUsage adds the token counts one completed upstream response
 	// reported. combo is empty for a direct provider call.
 	RecordTokenUsage(ctx context.Context, providerName, model, account, combo string, usage provider.TokenUsage)
@@ -33,6 +36,7 @@ type noopMetrics struct{}
 
 func (noopMetrics) RecordProviderRequest(context.Context, string, string, string) {}
 func (noopMetrics) RecordCombinationAttempt(context.Context, string, string)      {}
+func (noopMetrics) RecordSmartDecision(context.Context, string, string, string)   {}
 func (noopMetrics) RecordTokenUsage(context.Context, string, string, string, string, provider.TokenUsage) {
 }
 func (noopMetrics) RecordCacheHit(context.Context, string)  {}

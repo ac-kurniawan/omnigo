@@ -172,12 +172,20 @@ type ComboTarget struct {
 type Combo struct {
 	Name     string        `yaml:"name"`
 	Strategy string        `yaml:"strategy"`
-	Targets  []ComboTarget `yaml:"targets"`
+	Targets  []ComboTarget `yaml:"targets,omitempty"`
 	DrainTTL string        `yaml:"drain_ttl,omitempty"`
 	// Timeout is the total wall-clock budget for one request across every
 	// target of this combo. Unset means no combo-level cap: each target keeps
 	// the full per-provider timeout, which multiplies across a long chain.
 	Timeout string `yaml:"timeout,omitempty"`
+	// Routes are the options a smart combo chooses between. They are used
+	// only by the smart strategy, which declares no Targets of its own.
+	Routes []SmartRoute `yaml:"routes,omitempty"`
+	// DefaultRoute names the route a smart combo falls back to when the
+	// decision call fails or is not confident enough.
+	DefaultRoute string `yaml:"default_route,omitempty"`
+	// Decision configures the System One call a smart combo makes.
+	Decision SmartDecision `yaml:"decision,omitempty"`
 }
 
 func (c Combo) ParsedDrainTTL() time.Duration {
@@ -343,7 +351,7 @@ func Load(path string) (*Config, error) {
 }
 
 var validTypes = map[string]bool{"openai": true, "antigravity": true, "codex": true, "muse": true, "codebuddy": true, "codebuddy-cn": true, "codebuddy-intl": true}
-var validStrategies = map[string]bool{"priority": true, "fill-first": true, "reliable": true, "round-robin": true}
+var validStrategies = map[string]bool{"priority": true, "fill-first": true, "reliable": true, "round-robin": true, StrategySmart: true}
 
 func (c *Config) Validate() error {
 	if c.Cache != nil {
@@ -426,8 +434,19 @@ func (c *Config) Validate() error {
 				return fmt.Errorf("combo %q: invalid timeout %q", cb.Name, cb.Timeout)
 			}
 		}
-		if len(cb.Targets) == 0 {
+		if len(cb.Targets) == 0 && !cb.IsSmart() {
 			return fmt.Errorf("combo %q: at least one target is required", cb.Name)
+		}
+		if cb.IsSmart() {
+			// A smart combo owns no chain of its own: it chooses a route, and
+			// the destination combo owns the failover.
+			if err := cb.validateSmart(c, providers); err != nil {
+				return err
+			}
+			continue
+		}
+		if len(cb.Routes) > 0 {
+			return fmt.Errorf("combo %q: a non-smart combo must not declare routes", cb.Name)
 		}
 		seenTarget := map[string]bool{}
 		for _, t := range cb.Targets {

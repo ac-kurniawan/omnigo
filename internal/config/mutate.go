@@ -50,6 +50,12 @@ func PruneComboTargets(c *Config) {
 	}
 	var kept []Combo
 	for _, cb := range c.Combos {
+		// A smart combo owns no target chain: its routes are resolved when a
+		// request arrives, so pruning targets must not remove it.
+		if cb.IsSmart() {
+			kept = append(kept, cb)
+			continue
+		}
 		var targets []ComboTarget
 		for _, t := range cb.Targets {
 			p, ok := known[t.Provider]
