@@ -19,6 +19,13 @@ func (s *Server) createCombo(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// A smart combo routes through Jev and owns no target chain: it carries
+	// routes instead, each with its own criteria and destination.
+	if strategy == config.StrategySmart {
+		s.createSmartCombo(w, r, name)
+		return
+	}
+
 	newCombo := config.Combo{
 		Name:     name,
 		Strategy: strategy,
@@ -35,6 +42,57 @@ func (s *Server) createCombo(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 			c.Combos = append(c.Combos, newCombo)
+			return nil
+		})
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+	}
+
+	if r.Header.Get("HX-Request") != "true" {
+		http.Redirect(w, r, "/", http.StatusSeeOther)
+		return
+	}
+	s.renderCombos(w)
+}
+
+// createSmartCombo stores a smart combo with its routes, default route, and
+// Jev settings. The combo is validated as a whole, so a default route that
+// names no route, or a destination that resolves to nothing, is rejected
+// before anything is written.
+func (s *Server) createSmartCombo(w http.ResponseWriter, r *http.Request, name string) {
+	routes := config.ParseSmartRoutes(r.FormValue("routes"))
+	defaultRoute := strings.TrimSpace(r.FormValue("default_route"))
+	jevCfg := config.SmartJev{
+		Model:         strings.TrimSpace(r.FormValue("jev_model")),
+		Question:      strings.TrimSpace(r.FormValue("jev_question")),
+		MinConfidence: strings.TrimSpace(r.FormValue("jev_min_confidence")),
+		Timeout:       strings.TrimSpace(r.FormValue("jev_timeout")),
+	}
+
+	if s.mutate != nil {
+		err := s.mutate(func(c *config.Config) error {
+			for _, cb := range c.Combos {
+				if cb.Name == name {
+					return fmt.Errorf("combo %q already exists", name)
+				}
+			}
+			combo := config.Combo{
+				Name:         name,
+				Strategy:     config.StrategySmart,
+				Routes:       routes,
+				DefaultRoute: defaultRoute,
+				Jev:          jevCfg,
+			}
+			// Validate the candidate against the live config before it is
+			// stored, so an unresolvable destination never lands on disk.
+			candidate := *c
+			candidate.Combos = append(append([]config.Combo{}, c.Combos...), combo)
+			if err := candidate.Validate(); err != nil {
+				return err
+			}
+			c.Combos = append(c.Combos, combo)
 			return nil
 		})
 		if err != nil {
@@ -80,6 +138,11 @@ func (s *Server) updateCombo(w http.ResponseWriter, r *http.Request) {
 	strategy := r.FormValue("strategy")
 	if strategy == "" {
 		http.Error(w, "strategy is required", http.StatusBadRequest)
+		return
+	}
+	// A smart combo is edited through its routes, not through a target chain.
+	if strategy == config.StrategySmart {
+		s.updateSmartCombo(w, r, name)
 		return
 	}
 	targets := parseComboTargets(r)
@@ -134,6 +197,76 @@ func (s *Server) updateCombo(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.renderCombos(w)
+}
+
+// updateSmartCombo replaces the routes, default route, and Jev settings of an
+// existing smart combo. A combo that is not a smart one is rejected: its chain
+// belongs to the plain editor.
+func (s *Server) updateSmartCombo(w http.ResponseWriter, r *http.Request, name string) {
+	routes := config.ParseSmartRoutes(r.FormValue("routes"))
+	defaultRoute := strings.TrimSpace(r.FormValue("default_route"))
+	jevCfg := config.SmartJev{
+		Model:         strings.TrimSpace(r.FormValue("jev_model")),
+		Question:      strings.TrimSpace(r.FormValue("jev_question")),
+		MinConfidence: strings.TrimSpace(r.FormValue("jev_min_confidence")),
+		Timeout:       strings.TrimSpace(r.FormValue("jev_timeout")),
+	}
+
+	if s.mutate != nil {
+		err := s.mutate(func(c *config.Config) error {
+			existing, ok := config.FindCombo(c, name)
+			if !ok {
+				return fmt.Errorf("combo %q not found", name)
+			}
+			if !existing.IsSmart() {
+				return fmt.Errorf("combo %q is not a smart combo", name)
+			}
+			if err := config.SetSmartCombo(c, name, routes, defaultRoute, jevCfg); err != nil {
+				return err
+			}
+			return c.Validate()
+		})
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+	}
+
+	if r.Header.Get("HX-Request") != "true" {
+		http.Redirect(w, r, "/", http.StatusSeeOther)
+		return
+	}
+	s.renderCombos(w)
+}
+
+// comboAction dispatches a /combos/{name...} request to the edit or the
+// delete handler.
+//
+// The route carries the whole rest of the path because a combo name may
+// contain slashes. The trailing "/delete" is the action only when no combo
+// by that exact name exists: a combo literally named "combo/delete" must
+// still be editable, so the name lookup decides, not the suffix.
+func (s *Server) comboAction(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	if name == "" {
+		http.Error(w, "combo name is required", http.StatusBadRequest)
+		return
+	}
+	if _, ok := config.FindCombo(s.getCfg(), name); ok {
+		s.updateCombo(w, r)
+		return
+	}
+	if trimmed, ok := strings.CutSuffix(name, "/delete"); ok {
+		if _, exists := config.FindCombo(s.getCfg(), trimmed); exists {
+			r.SetPathValue("name", trimmed)
+			s.deleteCombo(w, r)
+			return
+		}
+	}
+	// Not an existing combo and not a delete of one: treat the whole path as
+	// a name so an unknown combo produces the normal validation error.
+	r.SetPathValue("name", name)
+	s.updateCombo(w, r)
 }
 
 func (s *Server) deleteCombo(w http.ResponseWriter, r *http.Request) {
@@ -199,10 +332,30 @@ func (s *Server) resetAllDrains(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) renderCombos(w http.ResponseWriter) {
+	cfg := s.getCfg()
 	data := viewData{
-		Providers: s.getCfg().Providers,
-		Combos:    s.getCfg().Combos,
+		Providers: cfg.Providers,
+		Combos:    cfg.Combos,
 		Tracker:   s.tracker,
+	}
+	// The smart router's destination picker offers the plain combos a route
+	// can point at, plus every provider/model pair it can name directly. A
+	// smart combo is left out: a route may only target a plain combo.
+	for _, cb := range cfg.Combos {
+		if !cb.IsSmart() {
+			data.SmartComboNames = append(data.SmartComboNames, cb.Name)
+		}
+	}
+	for _, p := range cfg.Providers {
+		if p.Disabled {
+			continue
+		}
+		for _, m := range p.Models {
+			if p.IsModelDisabled(m) {
+				continue
+			}
+			data.SmartModelTargets = append(data.SmartModelTargets, p.Name+"/"+m)
+		}
 	}
 	_ = s.tmpl.ExecuteTemplate(w, "combos", data)
 }

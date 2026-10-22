@@ -404,17 +404,64 @@
                   </div>
                   <div>
                     <label class="label pb-1.5 pt-0 text-xs font-semibold text-base-content/70">Routing Strategy</label>
-                    <select name="strategy" class="select select-bordered select-sm w-full font-mono text-xs px-3 h-auto min-h-[2.25rem] rounded-lg" required>
+                    <select name="strategy" id="combo-create-strategy" class="select select-bordered select-sm w-full font-mono text-xs px-3 h-auto min-h-[2.25rem] rounded-lg" required onchange="toggleSmartSections('create')">
                       <option value="priority">priority (Try targets first to last in order)</option>
                       <option value="fill-first">fill-first (Exhaust primary quota first)</option>
                       <option value="reliable">reliable (Buffer failures and use the first healthy target)</option>
                       <option value="round-robin">round-robin (Rotate across healthy targets)</option>
+                      <option value="smart">smart (Jev picks the destination per request)</option>
                     </select>
                   </div>
                 </div>
 
+                <!-- Smart Router Section: routes with criteria and destinations -->
+                <div id="smart-create-section" class="hidden space-y-3 pt-1">
+                  <div class="flex items-center justify-between">
+                    <label class="text-xs font-semibold text-base-content/70 flex items-center gap-1.5">
+                      <span>Routes</span>
+                      <span class="badge badge-xs badge-ghost font-mono" id="smart-route-count">0 routes</span>
+                    </label>
+                    <button type="button" class="btn btn-xs btn-primary btn-outline rounded-lg gap-1.5 font-medium px-3" onclick="addSmartRoute('create')">
+                      <svg xmlns="http://www.w3.org/2000/svg" class="size-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/></svg>
+                      Add Route
+                    </button>
+                  </div>
+                  <input type="hidden" name="routes" id="smart-routes-hidden">
+                  <div id="smart-routes-items" class="space-y-2"></div>
+                  <div id="smart-routes-empty" class="text-center py-4 text-xs text-base-content/40 italic rounded-xl bg-base-100 border border-dashed border-base-content/15">
+                    No routes yet. Add a route: a name, the criteria Jev judges it by, and where it sends the request.
+                  </div>
+                  <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div>
+                      <label class="label pb-1.5 pt-0 text-xs font-semibold text-base-content/70" for="smart-default-route">Default route</label>
+                      <select name="default_route" id="smart-default-route" class="select select-bordered select-xs font-mono text-xs rounded-lg w-full">
+                        <option value="">(first route)</option>
+                      </select>
+                      <span class="text-[11px] text-base-content/40">used when Jev is unavailable or not confident</span>
+                    </div>
+                    <div>
+                      <label class="label pb-1.5 pt-0 text-xs font-semibold text-base-content/70" for="smart-jev-model">Jev model</label>
+                      <input type="text" name="jev_model" id="smart-jev-model" placeholder="jev-latest" class="input input-bordered input-xs font-mono text-xs rounded-lg w-full">
+                      <span class="text-[11px] text-base-content/40">blank = jev-latest</span>
+                    </div>
+                    <div>
+                      <label class="label pb-1.5 pt-0 text-xs font-semibold text-base-content/70" for="smart-jev-question">Jev question</label>
+                      <input type="text" name="jev_question" id="smart-jev-question" placeholder="Which model should handle this request?" class="input input-bordered input-xs font-mono text-xs rounded-lg w-full">
+                    </div>
+                    <div>
+                      <label class="label pb-1.5 pt-0 text-xs font-semibold text-base-content/70" for="smart-jev-min-confidence">Min confidence</label>
+                      <input type="text" name="jev_min_confidence" id="smart-jev-min-confidence" placeholder="0.5" class="input input-bordered input-xs font-mono text-xs rounded-lg w-full">
+                      <span class="text-[11px] text-base-content/40">below this, the default route is used</span>
+                    </div>
+                    <div>
+                      <label class="label pb-1.5 pt-0 text-xs font-semibold text-base-content/70" for="smart-jev-timeout">Jev timeout</label>
+                      <input type="text" name="jev_timeout" id="smart-jev-timeout" placeholder="e.g. 4s, blank = 4s" class="input input-bordered input-xs font-mono text-xs rounded-lg w-full">
+                    </div>
+                  </div>
+                </div>
+
                 <!-- Target Fallback Chain Section -->
-                <div class="space-y-2 pt-1">
+                <div class="space-y-2 pt-1" id="combo-chain-section">
                   <div class="flex items-center justify-between">
                     <label class="text-xs font-semibold text-base-content/70 flex items-center gap-1.5">
                       <span>Target Fallback Chain</span>
@@ -576,16 +623,60 @@
               <form id="combo-edit-form" method="POST" hx-target="#combos" hx-swap="innerHTML" class="space-y-4 pt-4" onsubmit="return validateEditComboForm(this)">
                 <div>
                   <label class="label pb-1.5 pt-0 text-xs font-semibold text-base-content/70">Routing Strategy</label>
-                  <select name="strategy" id="combo-edit-strategy" class="select select-bordered select-sm w-full font-mono text-xs px-3 h-auto min-h-[2.25rem] rounded-lg" required>
+                  <select name="strategy" id="combo-edit-strategy" class="select select-bordered select-sm w-full font-mono text-xs px-3 h-auto min-h-[2.25rem] rounded-lg" required onchange="toggleSmartSections('edit')">
                     <option value="priority">priority (Try targets first to last in order)</option>
                     <option value="fill-first">fill-first (Exhaust primary quota first)</option>
                     <option value="reliable">reliable (Buffer failures and use the first healthy target)</option>
                     <option value="round-robin">round-robin (Rotate across healthy targets)</option>
+                    <option value="smart">smart (Jev picks the destination per request)</option>
                   </select>
                 </div>
 
+                <!-- Smart Router Section: routes with criteria and destinations -->
+                <div id="smart-edit-section" class="hidden space-y-3 pt-1">
+                  <div class="flex items-center justify-between">
+                    <label class="text-xs font-semibold text-base-content/70 flex items-center gap-1.5">
+                      <span>Routes</span>
+                      <span class="badge badge-xs badge-ghost font-mono" id="smart-edit-route-count">0 routes</span>
+                    </label>
+                    <button type="button" class="btn btn-xs btn-primary btn-outline rounded-lg gap-1.5 font-medium px-3" onclick="addSmartRoute('edit')">
+                      <svg xmlns="http://www.w3.org/2000/svg" class="size-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/></svg>
+                      Add Route
+                    </button>
+                  </div>
+                  <input type="hidden" name="routes" id="smart-edit-routes-hidden">
+                  <div id="smart-edit-routes-items" class="space-y-2"></div>
+                  <div id="smart-edit-routes-empty" class="text-center py-4 text-xs text-base-content/40 italic rounded-xl bg-base-100 border border-dashed border-base-content/15">
+                    No routes yet. Add a route: a name, the criteria Jev judges it by, and where it sends the request.
+                  </div>
+                  <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div>
+                      <label class="label pb-1.5 pt-0 text-xs font-semibold text-base-content/70" for="smart-edit-default-route">Default route</label>
+                      <select name="default_route" id="smart-edit-default-route" class="select select-bordered select-xs font-mono text-xs rounded-lg w-full">
+                        <option value="">(first route)</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label class="label pb-1.5 pt-0 text-xs font-semibold text-base-content/70" for="smart-edit-jev-model">Jev model</label>
+                      <input type="text" name="jev_model" id="smart-edit-jev-model" placeholder="jev-latest" class="input input-bordered input-xs font-mono text-xs rounded-lg w-full">
+                    </div>
+                    <div>
+                      <label class="label pb-1.5 pt-0 text-xs font-semibold text-base-content/70" for="smart-edit-jev-question">Jev question</label>
+                      <input type="text" name="jev_question" id="smart-edit-jev-question" placeholder="Which model should handle this request?" class="input input-bordered input-xs font-mono text-xs rounded-lg w-full">
+                    </div>
+                    <div>
+                      <label class="label pb-1.5 pt-0 text-xs font-semibold text-base-content/70" for="smart-edit-jev-min-confidence">Min confidence</label>
+                      <input type="text" name="jev_min_confidence" id="smart-edit-jev-min-confidence" placeholder="0.5" class="input input-bordered input-xs font-mono text-xs rounded-lg w-full">
+                    </div>
+                    <div>
+                      <label class="label pb-1.5 pt-0 text-xs font-semibold text-base-content/70" for="smart-edit-jev-timeout">Jev timeout</label>
+                      <input type="text" name="jev_timeout" id="smart-edit-jev-timeout" placeholder="e.g. 4s, blank = 4s" class="input input-bordered input-xs font-mono text-xs rounded-lg w-full">
+                    </div>
+                  </div>
+                </div>
+
                 <!-- Target Fallback Chain Section -->
-                <div class="space-y-2 pt-1">
+                <div class="space-y-2 pt-1" id="combo-edit-chain-section">
                   <div class="flex items-center justify-between">
                     <label class="text-xs font-semibold text-base-content/70 flex items-center gap-1.5">
                       <span>Target Fallback Chain</span>
@@ -1186,7 +1277,148 @@
       removeTargetFrom('edit', index);
     }
 
+    // --- Smart Router Routes Manager ---
+    // A smart combo has no target chain: it has routes. Each route carries a
+    // name, the criteria Jev reads, and the destination the request goes to.
+    // The form posts them as one "name|criteria|destination" string per line.
+    let smartRoutes = [];      // routes being built in the create form
+    let editSmartRoutes = [];  // routes being edited in the edit modal
+
+    const SMART_ROUTES = {
+      create: {
+        ids: { items: 'smart-routes-items', empty: 'smart-routes-empty', count: 'smart-route-count', hidden: 'smart-routes-hidden', def: 'smart-default-route' },
+        get: () => smartRoutes,
+        set: v => { smartRoutes = v; }
+      },
+      edit: {
+        ids: { items: 'smart-edit-routes-items', empty: 'smart-edit-routes-empty', count: 'smart-edit-route-count', hidden: 'smart-edit-routes-hidden', def: 'smart-edit-default-route' },
+        get: () => editSmartRoutes,
+        set: v => { editSmartRoutes = v; }
+      }
+    };
+
+    // The destination options are the plain combos plus every provider/model
+    // pair. A combo destination keeps its own fallback chain, so the smart
+    // combo itself needs none.
+    function smartDestinationOptions() {
+      const combos = (window.SMART_COMBO_NAMES || []).map(n => ({ value: n, label: n + '  (combo)' }));
+      const models = (window.SMART_MODEL_TARGETS || []).map(t => ({ value: t, label: t }));
+      return combos.concat(models);
+    }
+
+    function addSmartRoute(context) {
+      const routes = SMART_ROUTES[context].get();
+      routes.push({ name: '', criteria: '', destination: '' });
+      renderSmartRoutes(context);
+    }
+
+    function removeSmartRoute(context, index) {
+      const routes = SMART_ROUTES[context].get();
+      routes.splice(index, 1);
+      renderSmartRoutes(context);
+    }
+
+    function updateSmartRouteField(context, index, field, value) {
+      const routes = SMART_ROUTES[context].get();
+      if (!routes[index]) return;
+      routes[index][field] = value;
+      // The name is part of the default-route list, so a rename refreshes it.
+      if (field === 'name') renderSmartRoutes(context);
+      else syncSmartRoutesHidden(context);
+    }
+
+    function syncSmartRoutesHidden(context) {
+      const cfg = SMART_ROUTES[context];
+      const hidden = document.getElementById(cfg.ids.hidden);
+      if (hidden) {
+        hidden.value = cfg.get()
+          .map(r => `${r.name || ''}|${r.criteria || ''}|${r.destination || ''}`)
+          .join('\n');
+      }
+    }
+
+    function renderSmartRoutes(context) {
+      const cfg = SMART_ROUTES[context];
+      const routes = cfg.get();
+      const items = document.getElementById(cfg.ids.items);
+      const empty = document.getElementById(cfg.ids.empty);
+      const countBadge = document.getElementById(cfg.ids.count);
+      const options = smartDestinationOptions();
+
+      if (countBadge) countBadge.innerText = `${routes.length} route${routes.length === 1 ? '' : 's'}`;
+      syncSmartRoutesHidden(context);
+
+      if (empty) empty.classList.toggle('hidden', routes.length > 0);
+      if (!items) return;
+      if (routes.length === 0) { items.innerHTML = ''; return; }
+
+      items.innerHTML = routes.map((route, idx) => {
+        const destOptions = options.map(o =>
+          `<option value="${escapeAttr(o.value)}" ${o.value === route.destination ? 'selected' : ''}>${escapeHtml(o.label)}</option>`
+        ).join('');
+        const destSelect = route.destination && !options.some(o => o.value === route.destination)
+          ? `<option value="${escapeAttr(route.destination)}" selected>${escapeHtml(route.destination)}</option>${destOptions}`
+          : destOptions;
+        return `
+          <div class="p-2.5 rounded-xl bg-base-200/60 border border-base-content/10 space-y-2">
+            <div class="flex items-center gap-2">
+              <input type="text" placeholder="route name (e.g. flash)" value="${escapeAttr(route.name)}" oninput="updateSmartRouteField('${context}', ${idx}, 'name', this.value)" class="input input-bordered input-xs font-mono text-xs rounded-lg w-1/3">
+              <input type="text" placeholder="destination" list="smart-destinations-${context}" value="${escapeAttr(route.destination)}" oninput="updateSmartRouteField('${context}', ${idx}, 'destination', this.value)" class="input input-bordered input-xs font-mono text-xs rounded-lg w-1/3">
+              <button type="button" class="btn btn-ghost btn-xs size-7 min-h-0 p-0 rounded-lg text-error hover:bg-error/15" onclick="removeSmartRoute('${context}', ${idx})" title="Remove route">✕</button>
+            </div>
+            <input type="text" placeholder="criteria Jev judges by (e.g. a short factual question)" value="${escapeAttr(route.criteria)}" oninput="updateSmartRouteField('${context}', ${idx}, 'criteria', this.value)" class="input input-bordered input-xs font-mono text-xs rounded-lg w-full">
+            <datalist id="smart-destinations-${context}">
+              ${options.map(o => `<option value="${escapeAttr(o.value)}">${escapeHtml(o.label)}</option>`).join('')}
+            </datalist>
+          </div>
+        `;
+      }).join('');
+
+      // The default route is one of the route names.
+      const defSelect = document.getElementById(cfg.ids.def);
+      if (defSelect) {
+        const current = defSelect.value;
+        defSelect.innerHTML = '<option value="">(first route)</option>' + routes
+          .map(r => `<option value="${escapeAttr(r.name)}">${escapeHtml(r.name)}</option>`).join('');
+        if (routes.some(r => r.name === current)) defSelect.value = current;
+      }
+    }
+
+    function escapeAttr(value) {
+      return String(value == null ? '' : value)
+        .replace(/&/g, '&amp;').replace(/"/g, '&quot;')
+        .replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    }
+
+    function escapeHtml(value) {
+      return String(value == null ? '' : value)
+        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    }
+
+    // Switches a combo form between the target chain and the routes editor.
+    function toggleSmartSections(context) {
+      const strategy = document.getElementById(context === 'edit' ? 'combo-edit-strategy' : 'combo-create-strategy');
+      const isSmart = strategy && strategy.value === 'smart';
+      const smartSection = document.getElementById(context === 'edit' ? 'smart-edit-section' : 'smart-create-section');
+      const chainSection = document.getElementById(context === 'edit' ? 'combo-edit-chain-section' : 'combo-chain-section');
+      if (smartSection) smartSection.classList.toggle('hidden', !isSmart);
+      if (chainSection) chainSection.classList.toggle('hidden', isSmart);
+      const targetsInput = document.getElementById(context === 'edit' ? 'combo-edit-targets-hidden' : 'combo-targets-hidden');
+      if (targetsInput) targetsInput.required = !isSmart;
+      const routesInput = document.getElementById(context === 'edit' ? 'smart-edit-routes-hidden' : 'smart-routes-hidden');
+      if (routesInput) routesInput.required = isSmart;
+      if (isSmart) renderSmartRoutes(context);
+    }
+
     function validateComboForm(form) {
+      const strategy = form.querySelector('select[name="strategy"]');
+      if (strategy && strategy.value === 'smart') {
+        if (smartRoutes.length === 0) {
+          addSmartRoute('create');
+          return false;
+        }
+        return true;
+      }
       if (comboTargets.length === 0) {
         openComboModelPicker();
         return false;
@@ -1195,6 +1427,14 @@
     }
 
     function validateEditComboForm(form) {
+      const strategy = form.querySelector('select[name="strategy"]');
+      if (strategy && strategy.value === 'smart') {
+        if (editSmartRoutes.length === 0) {
+          addSmartRoute('edit');
+          return false;
+        }
+        return true;
+      }
       if (editComboTargets.length === 0) {
         openEditComboModelPicker();
         return false;
@@ -1202,16 +1442,49 @@
       return true;
     }
 
-    function openEditComboModal(name, strategy, targetsCsv, timeout, drainTTL) {
-      editComboTargets = (targetsCsv || '').split(',').map(s => s.trim()).filter(Boolean);
+    // openEditComboModal fills the edit modal. The button carries the combo
+    // as data attributes, so the routes JSON arrives already decoded by the
+    // browser and needs no inline-JS escaping.
+    function openEditComboModal(button) {
+      const name = button.dataset.name || '';
+      const strategy = button.dataset.strategy || '';
+      const targetsCsv = button.dataset.targets || '';
+      const timeout = button.dataset.timeout || '';
+      const drainTTL = button.dataset.drainTtl || '';
+      const defaultRoute = button.dataset.defaultRoute || '';
+      editComboTargets = targetsCsv.split(',').map(s => s.trim()).filter(Boolean);
+      editSmartRoutes = [];
+      const routesJson = button.dataset.routes;
+      if (routesJson) {
+        try {
+          const parsed = JSON.parse(routesJson);
+          if (Array.isArray(parsed)) {
+            editSmartRoutes = parsed.map(r => ({
+              name: r.name || '',
+              criteria: r.criteria || '',
+              destination: r.destination || ''
+            }));
+          }
+        } catch (e) {
+          editSmartRoutes = [];
+        }
+      }
       const badge = document.getElementById('combo-edit-name-badge');
       if (badge) badge.innerText = name;
       const strategySelect = document.getElementById('combo-edit-strategy');
       if (strategySelect) strategySelect.value = strategy;
       const timeoutInput = document.getElementById('combo-edit-timeout');
-      if (timeoutInput) timeoutInput.value = timeout || '';
+      if (timeoutInput) timeoutInput.value = timeout;
       const drainInput = document.getElementById('combo-edit-drain-ttl');
-      if (drainInput) drainInput.value = drainTTL || '';
+      if (drainInput) drainInput.value = drainTTL;
+      const jevModelInput = document.getElementById('smart-edit-jev-model');
+      if (jevModelInput) jevModelInput.value = button.dataset.jevModel || '';
+      const jevQuestionInput = document.getElementById('smart-edit-jev-question');
+      if (jevQuestionInput) jevQuestionInput.value = button.dataset.jevQuestion || '';
+      const jevConfidenceInput = document.getElementById('smart-edit-jev-min-confidence');
+      if (jevConfidenceInput) jevConfidenceInput.value = button.dataset.jevMinConfidence || '';
+      const jevTimeoutInput = document.getElementById('smart-edit-jev-timeout');
+      if (jevTimeoutInput) jevTimeoutInput.value = button.dataset.jevTimeout || '';
       const form = document.getElementById('combo-edit-form');
       if (form) {
         const action = '/combos/' + encodeURIComponent(name);
@@ -1220,6 +1493,10 @@
         htmx.process(form);
       }
       renderEditComboChain();
+      renderSmartRoutes('edit');
+      const defSelect = document.getElementById('smart-edit-default-route');
+      if (defSelect && defaultRoute) defSelect.value = defaultRoute;
+      toggleSmartSections('edit');
       document.getElementById('combo-edit-modal')?.showModal();
     }
 
@@ -2159,6 +2436,13 @@
 
 {{define "combos"}}
 {{$drainedCount := drainedCount .Tracker}}
+<script>
+  // The smart router's destination picker needs the plain combo names and
+  // every provider/model pair. The block is re-rendered with the combos
+  // table, so it always matches the current config.
+  window.SMART_COMBO_NAMES = {{smartNamesJSON .SmartComboNames}};
+  window.SMART_MODEL_TARGETS = {{smartNamesJSON .SmartModelTargets}};
+</script>
 <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-4 px-4 py-3 rounded-xl border {{if gt $drainedCount 0}}border-warning/30 bg-warning/10{{else}}border-success/20 bg-success/5{{end}}">
   <div class="flex items-center gap-2 text-xs font-medium">
     {{if gt $drainedCount 0}}
@@ -2201,6 +2485,9 @@
       <tr class="hover:bg-base-200/40 transition-colors">
         <td class="font-bold font-mono text-primary py-3.5 px-4 text-sm" data-label="Combo">{{.Name}}</td>
         <td class="py-3.5 px-4" data-label="Strategy">
+          {{if .IsSmart}}
+            <span class="badge badge-accent font-mono text-xs">smart</span>
+          {{else}}
           <form action="/combos/{{.Name}}" method="POST" hx-post="/combos/{{.Name}}" hx-target="#combos" hx-swap="innerHTML">
             <input type="hidden" name="targets" value="{{range $i, $t := .Targets}}{{if $i}},{{end}}{{$t.Provider}}/{{$t.Model}}{{end}}">
             <input type="hidden" name="timeout" value="{{.Timeout}}">
@@ -2212,8 +2499,23 @@
               <option value="round-robin" {{if eq .Strategy "round-robin"}}selected{{end}}>round-robin</option>
             </select>
           </form>
+          {{end}}
         </td>
         <td class="py-3.5 px-4" data-label="Targets">
+          {{if .IsSmart}}
+            <div class="flex flex-wrap items-center gap-2">
+              {{range $i, $r := .Routes}}
+                {{if gt $i 0}}
+                  <span class="text-base-content/40 text-xs font-bold">or</span>
+                {{end}}
+                <span class="px-2.5 py-1 rounded-lg text-xs font-mono bg-accent/10 border border-accent/30 inline-flex items-center gap-1.5 leading-none shadow-sm">
+                  <span class="font-bold text-accent">{{$r.Name}}</span>
+                  <span class="text-base-content/40">&rarr;</span>
+                  <span>{{$r.Destination}}</span>
+                </span>
+              {{end}}
+            </div>
+          {{else}}
           <div class="flex flex-wrap items-center gap-2">
             {{range $i, $t := .Targets}}
               {{$drained := isDrained $.Tracker $t.Provider $t.Model}}
@@ -2241,13 +2543,26 @@
               </span>
             {{end}}
           </div>
+          {{end}}
         </td>
         <td class="py-3.5 px-4 text-xs font-mono whitespace-nowrap" data-label="Budgets">
           <div>timeout {{if .Timeout}}<span class="text-base-content">{{.Timeout}}</span>{{else}}<span class="text-base-content/40">uncapped</span>{{end}}</div>
           <div class="text-base-content/50">drain {{if .DrainTTL}}{{.DrainTTL}}{{else}}60s{{end}}</div>
         </td>
         <td class="text-right py-3.5 px-4 whitespace-nowrap" data-label="Actions">
-          <button type="button" onclick="openEditComboModal('{{.Name}}', '{{.Strategy}}', '{{range $i, $t := .Targets}}{{if $i}},{{end}}{{$t.Provider}}/{{$t.Model}}{{end}}', '{{.Timeout}}', '{{.DrainTTL}}')" class="btn btn-xs btn-outline btn-primary px-2.5 py-1 h-auto min-h-[1.75rem] rounded-lg gap-1 font-medium mr-1">
+          <button type="button" class="btn btn-xs btn-outline btn-primary px-2.5 py-1 h-auto min-h-[1.75rem] rounded-lg gap-1 font-medium mr-1 combo-edit-btn"
+            data-name="{{.Name}}"
+            data-strategy="{{.Strategy}}"
+            data-targets="{{range $i, $t := .Targets}}{{if $i}},{{end}}{{$t.Provider}}/{{$t.Model}}{{end}}"
+            data-timeout="{{.Timeout}}"
+            data-drain-ttl="{{.DrainTTL}}"
+            data-routes="{{smartRoutesJSON .}}"
+            data-default-route="{{.DefaultRoute}}"
+            data-jev-model="{{.Jev.Model}}"
+            data-jev-question="{{.Jev.Question}}"
+            data-jev-min-confidence="{{.Jev.MinConfidence}}"
+            data-jev-timeout="{{.Jev.Timeout}}"
+            onclick="openEditComboModal(this)">
             <svg xmlns="http://www.w3.org/2000/svg" class="size-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" /></svg>
             Edit
           </button>

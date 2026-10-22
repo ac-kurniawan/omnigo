@@ -69,13 +69,36 @@ providers:
 
 combos:
   - name: auto
-    strategy: priority # priority | fill-first
+    strategy: priority # priority | fill-first | reliable | round-robin | smart
     # timeout: 120s  # total budget for the whole chain; split across the targets still to be tried. Unset = uncapped.
     targets:
       - provider: agy
         model: gemini-3.7-flash-medium
       # - provider: openai-main
       #   model: gpt-4o
+
+  # A smart combo asks TypeSafe's Jev which route fits the request, then
+  # dispatches to that route's destination. It declares no target chain of
+  # its own: the destination combo owns the failover.
+  #
+  # Requires TYPESAFE_API_KEY in the gateway's environment. Every decision
+  # is fail-open: if Jev is unreachable, slow, or unsure, the default route
+  # is used instead.
+  # - name: combo/smart
+  #   strategy: smart
+  #   default_route: flash   # used when Jev cannot decide
+  #   routes:
+  #     - name: flash
+  #       criteria: A short factual question
+  #       destination: combo/flash      # a combo name, or provider/model
+  #     - name: pro
+  #       criteria: A hard engineering task
+  #       destination: combo/pro
+  #   jev:
+  #     model: jev-latest      # blank = jev-latest
+  #     question: Which route should handle this request?
+  #     min_confidence: "0.5"  # below this, the default route is used
+  #     timeout: 4s            # blank = 4s
 
 # Optional exact-match cache layer (disabled by default)
 # cache:
