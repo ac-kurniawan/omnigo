@@ -38,6 +38,7 @@ gofmt -w .                    # format (or goimports)
 | Gateway auth | `internal/auth` | Client API-key generation, hashing, validation middleware  |
 | Providers  | `internal/provider` | `Provider` interface, registry, `openai` + `antigravity` impls |
 | Combos     | `internal/combo`  | Routing engine: `priority`, `fill-first`                   |
+| System One | `internal/systemone` | TypeSafe System One protocol client: typed questions, model selection |
 | API        | `internal/api`    | `/v1/chat/completions`, `/v1/models`, internal endpoints   |
 | Dashboard  | `internal/dashboard` | HTMX UI: providers, combos, keys, OAuth login              |
 | Observability | `internal/observability` | OpenTelemetry meter, Prometheus exposition at `/actuator/metrics` |
@@ -52,6 +53,9 @@ Client → /v1/chat/completions
   → model resolves to a combo name or a `<provider>/<model>`
       combo: combo engine orders targets (priority | fill-first)
              → for each target in order until success
+      smart combo: ask a System One model which route fits the request
+                   → the route's destination combo owns the failover
+                   → on any decision failure, use the default route
       direct: dispatch to that provider
   → provider.ChatCompletion(ctx, req, w)
       openai:      forward request to {base_url}/chat/completions (SSE passthrough)
@@ -151,6 +155,20 @@ go test ./...                                    # full suite
 1. Implement the ordering/fill logic in `internal/combo/`.
 2. Register the strategy string in the combo config validation.
 3. Test that a failing first target falls back to the second (TDD).
+
+The `smart` strategy is different: it decides *which* chain to run rather than
+ordering one. Its decision lives in `internal/api/smart.go` (the router), the
+protocol client in `internal/systemone/`, and the config in
+`internal/config/smart.go`. A smart combo has no targets of its own, so
+`PruneComboTargets` must leave it alone.
+
+`internal/systemone` speaks the System One protocol, not one model. Jev is
+TypeSafe's flagship System One model and the first one, but every System One
+model is served by the same `POST /v1/systemone` endpoint and the request's
+`model` field picks the handler. So the model is configuration, and the
+package must not hard-code Jev's name, id, or behaviour. A smart combo's
+`decision.model` names any model the account can use; `GET /system-one/models`
+lists them.
 
 ## Reference Docs
 

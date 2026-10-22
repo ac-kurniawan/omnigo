@@ -529,9 +529,17 @@ func TestCombosRenderEditButtonAndHiddenTargets(t *testing.T) {
 	if !strings.Contains(body, wantHidden) {
 		t.Fatalf("rendered table missing hidden targets input: %s", body)
 	}
-	wantEditBtn := `openEditComboModal('smart', 'priority', 'agy/gemini-3.7-flash,openai-main/gpt-4o', '', '')`
+	wantEditBtn := `data-name="smart"`
 	if !strings.Contains(body, wantEditBtn) {
-		t.Fatalf("rendered table missing openEditComboModal call: %s", body)
+		t.Fatalf("rendered table missing the edit button data attributes: %s", body)
+	}
+	wantStrategy := `data-strategy="priority"`
+	if !strings.Contains(body, wantStrategy) {
+		t.Fatalf("rendered table missing the edit button strategy: %s", body)
+	}
+	wantTargets := `data-targets="agy/gemini-3.7-flash,openai-main/gpt-4o"`
+	if !strings.Contains(body, wantTargets) {
+		t.Fatalf("rendered table missing the edit button targets: %s", body)
 	}
 }
 
