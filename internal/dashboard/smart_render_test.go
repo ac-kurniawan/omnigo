@@ -22,7 +22,7 @@ func TestCombosRenderSmartRoutes(t *testing.T) {
 					{Name: "flash", Criteria: "A quick question", Destination: "combo/flash"},
 					{Name: "pro", Criteria: "A hard engineering task", Destination: "agy/gemini-3.8-flash"},
 				},
-				Jev: config.SmartJev{Model: "jev-latest"},
+				Decision: config.SmartDecision{Model: "jev-latest"},
 			},
 			{Name: "combo/flash", Strategy: "priority", Targets: []config.ComboTarget{{Provider: "agy", Model: "gemini-3.8-flash"}}},
 		},

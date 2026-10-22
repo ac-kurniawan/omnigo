@@ -181,11 +181,11 @@ type Combo struct {
 	// Routes are the options a smart combo chooses between. They are used
 	// only by the smart strategy, which declares no Targets of its own.
 	Routes []SmartRoute `yaml:"routes,omitempty"`
-	// DefaultRoute names the route a smart combo falls back to when the Jev
-	// decision fails or is not confident enough.
+	// DefaultRoute names the route a smart combo falls back to when the
+	// decision call fails or is not confident enough.
 	DefaultRoute string `yaml:"default_route,omitempty"`
-	// Jev configures the decision call a smart combo makes.
-	Jev SmartJev `yaml:"jev,omitempty"`
+	// Decision configures the System One call a smart combo makes.
+	Decision SmartDecision `yaml:"decision,omitempty"`
 }
 
 func (c Combo) ParsedDrainTTL() time.Duration {

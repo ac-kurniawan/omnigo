@@ -29,7 +29,7 @@ func baseSmartConfig() *Config {
 				Name:         "combo/smart",
 				Strategy:     "smart",
 				DefaultRoute: "flash",
-				Jev:          SmartJev{Model: "jev-latest", Timeout: "4s", MinConfidence: "0.5"},
+				Decision:     SmartDecision{Model: "jev-latest", Timeout: "4s", MinConfidence: "0.5"},
 				Routes: []SmartRoute{
 					{Name: "flash", Criteria: "Simple, well-scoped request.", Destination: "combo/flash"},
 					{Name: "pro", Criteria: "Complex request needing deep reasoning.", Destination: "combo/auto"},
@@ -116,14 +116,14 @@ func TestValidateSmartComboRejects(t *testing.T) {
 			want:   "unknown destination",
 		},
 		{
-			name:   "bad jev timeout",
-			mutate: func(c *Config) { c.Combos[2].Jev.Timeout = "not-a-duration" },
-			want:   "invalid jev timeout",
+			name:   "bad decision timeout",
+			mutate: func(c *Config) { c.Combos[2].Decision.Timeout = "not-a-duration" },
+			want:   "invalid decision timeout",
 		},
 		{
 			name:   "bad min_confidence",
-			mutate: func(c *Config) { c.Combos[2].Jev.MinConfidence = "1.5" },
-			want:   "invalid jev min_confidence",
+			mutate: func(c *Config) { c.Combos[2].Decision.MinConfidence = "1.5" },
+			want:   "invalid decision min_confidence",
 		},
 	}
 	for _, tc := range tests {
@@ -172,7 +172,7 @@ func TestValidateSmartRouteCannotTargetAnotherSmartCombo(t *testing.T) {
 }
 
 func TestSmartJevParsedDefaults(t *testing.T) {
-	var zero SmartJev
+	var zero SmartDecision
 	if got := zero.ParsedTimeout(); got != 4*time.Second {
 		t.Errorf("ParsedTimeout() = %v, want 4s", got)
 	}
@@ -186,7 +186,7 @@ func TestSmartJevParsedDefaults(t *testing.T) {
 		t.Error("QuestionOrDefault() is empty")
 	}
 
-	j := SmartJev{Model: "jev-1.13.0", Timeout: "9s", MinConfidence: "0.8", Question: "Pick."}
+	j := SmartDecision{Model: "jev-1.13.0", Timeout: "9s", MinConfidence: "0.8", Question: "Pick."}
 	if got := j.ParsedTimeout(); got != 9*time.Second {
 		t.Errorf("ParsedTimeout() = %v, want 9s", got)
 	}

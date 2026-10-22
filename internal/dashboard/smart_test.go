@@ -26,7 +26,7 @@ func smartComboConfig() *config.Config {
 					{Name: "flash", Criteria: "A quick factual question", Destination: "combo/flash"},
 					{Name: "pro", Criteria: "A hard multi-step engineering task", Destination: "agy/gemini-3.8-flash"},
 				},
-				Jev: config.SmartJev{Model: "jev-latest", MinConfidence: "0.5"},
+				Decision: config.SmartDecision{Model: "jev-latest", MinConfidence: "0.5"},
 			},
 		},
 	}
@@ -46,12 +46,12 @@ func newSmartDashboard(t *testing.T, cfg *config.Config) http.Handler {
 func TestCreateSmartComboStoresRoutes(t *testing.T) {
 	cfg := smartComboConfig()
 	form := url.Values{
-		"name":               {"combo/new-smart"},
-		"strategy":           {config.StrategySmart},
-		"default_route":      {"flash"},
-		"routes":             {"flash|A quick question|combo/flash\npro|A hard task|agy/gemini-3.8-flash"},
-		"jev_model":          {"jev-latest"},
-		"jev_min_confidence": {"0.5"},
+		"name":                    {"combo/new-smart"},
+		"strategy":                {config.StrategySmart},
+		"default_route":           {"flash"},
+		"routes":                  {"flash|A quick question|combo/flash\npro|A hard task|agy/gemini-3.8-flash"},
+		"decision_model":          {"jev-latest"},
+		"decision_min_confidence": {"0.5"},
 	}
 	req := httptest.NewRequest("POST", "/combos", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
@@ -77,8 +77,8 @@ func TestCreateSmartComboStoresRoutes(t *testing.T) {
 	if found.DefaultRoute != "flash" {
 		t.Errorf("default route = %q", found.DefaultRoute)
 	}
-	if found.Jev.Model != "jev-latest" || found.Jev.MinConfidence != "0.5" {
-		t.Errorf("jev = %+v", found.Jev)
+	if found.Decision.Model != "jev-latest" || found.Decision.MinConfidence != "0.5" {
+		t.Errorf("jev = %+v", found.Decision)
 	}
 }
 
@@ -109,10 +109,10 @@ func TestCreateSmartComboRejectsUnknownDefaultRoute(t *testing.T) {
 func TestUpdateSmartComboReplacesRoutes(t *testing.T) {
 	cfg := smartComboConfig()
 	form := url.Values{
-		"strategy":      {config.StrategySmart},
-		"default_route": {"pro"},
-		"routes":        {"pro|Only route now|combo/flash"},
-		"jev_model":     {"jev-preview"},
+		"strategy":       {config.StrategySmart},
+		"default_route":  {"pro"},
+		"routes":         {"pro|Only route now|combo/flash"},
+		"decision_model": {"jev-preview"},
 	}
 	req := httptest.NewRequest("POST", "/combos/combo/smart", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
@@ -129,8 +129,8 @@ func TestUpdateSmartComboReplacesRoutes(t *testing.T) {
 	if found.DefaultRoute != "pro" {
 		t.Errorf("default route = %q", found.DefaultRoute)
 	}
-	if found.Jev.Model != "jev-preview" {
-		t.Errorf("jev model = %q", found.Jev.Model)
+	if found.Decision.Model != "jev-preview" {
+		t.Errorf("jev model = %q", found.Decision.Model)
 	}
 }
 

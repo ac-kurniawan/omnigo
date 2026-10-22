@@ -392,9 +392,9 @@ func (m *Metrics) RecordCombinationAttempt(ctx context.Context, combo, result st
 }
 
 // RecordSmartDecision counts one smart combo routing decision. The route is
-// the name of the chosen route, and result is "success" for a decision Jev
-// made or "fallback" when the default route had to be used. The authenticated
-// client key id is read from ctx.
+// the name of the chosen route, and result is "success" for a decision the
+// model made or "fallback" when the default route had to be used. The
+// authenticated client key id is read from ctx.
 func (m *Metrics) RecordSmartDecision(ctx context.Context, combo, route, result string) {
 	if !m.Enabled() {
 		return

@@ -11,33 +11,33 @@ import (
 	"testing"
 
 	"github.com/ac-kurniawan/omnigo/internal/config"
-	"github.com/ac-kurniawan/omnigo/internal/jev"
+
 	"github.com/ac-kurniawan/omnigo/internal/provider"
 )
 
-// fakeJev is a TypeSafe stand-in that answers a choice question with a fixed
-// route, or fails in a fixed way.
-type fakeJev struct {
+// fakeDecider is a System One stand-in that answers with a fixed route, or
+// fails in a fixed way.
+type fakeDecider struct {
 	choice     string
 	confidence float64
 	fail       error
 	states     []string
 }
 
-func (f *fakeJev) Decide(ctx context.Context, state string, routes []jev.Route) (jev.Decision, error) {
+func (f *fakeDecider) Decide(ctx context.Context, state string, routes []config.SmartRoute) (smartVerdict, error) {
 	f.states = append(f.states, state)
 	if f.fail != nil {
-		return jev.Decision{}, f.fail
+		return smartVerdict{}, f.fail
 	}
-	return jev.Decision{Route: f.choice, Confidence: f.confidence, Model: "jev-1.13.0"}, nil
+	return smartVerdict{Route: f.choice, Confidence: f.confidence}, nil
 }
 
 // smartResolver turns a smart combo's route into the target it dispatches to.
 // It lives in the api package because resolving a destination to a provider
 // needs the provider registry.
 type smartTestEnv struct {
-	cfg *config.Config
-	jev *fakeJev
+	cfg     *config.Config
+	decider *fakeDecider
 }
 
 func newSmartEnv(t *testing.T, jevChoice string, jevConfidence float64, jevErr error) (*smartTestEnv, *[]string) {
@@ -73,7 +73,7 @@ func newSmartEnv(t *testing.T, jevChoice string, jevConfidence float64, jevErr e
 			},
 		},
 	}
-	return &smartTestEnv{cfg: cfg, jev: &fakeJev{choice: jevChoice, confidence: jevConfidence, fail: jevErr}}, called
+	return &smartTestEnv{cfg: cfg, decider: &fakeDecider{choice: jevChoice, confidence: jevConfidence, fail: jevErr}}, called
 }
 
 // resolveSmartRoute is the unit under test: it turns a route name into the

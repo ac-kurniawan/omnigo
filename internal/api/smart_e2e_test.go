@@ -10,14 +10,14 @@ import (
 
 	"github.com/ac-kurniawan/omnigo/internal/auth"
 	"github.com/ac-kurniawan/omnigo/internal/config"
-	"github.com/ac-kurniawan/omnigo/internal/jev"
 	"github.com/ac-kurniawan/omnigo/internal/provider"
+	"github.com/ac-kurniawan/omnigo/internal/systemone"
 	"github.com/ac-kurniawan/omnigo/internal/vault"
 )
 
 // jevServer is a TypeSafe stand-in that answers the choice question with a
 // configured route, and records what state it was asked about.
-func jevServer(t *testing.T, choice string, confidence float64, gotState *string) *httptest.Server {
+func systemOneServer(t *testing.T, choice string, confidence float64, gotState *string) *httptest.Server {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		raw, _ := io.ReadAll(r.Body)
@@ -68,27 +68,28 @@ func smartConfig() *config.Config {
 	}
 }
 
-// useJevServer points the smart combo's Jev client at a test server.
-func useJevServer(t *testing.T, baseURL string) {
+// useSystemOneServer points the smart combo's System One client at a test
+// server.
+func useSystemOneServer(t *testing.T, baseURL string) {
 	t.Helper()
-	prev := jevClientFactoryOverride
-	jevClientFactoryOverride = func(cfg config.SmartJev) jevDecider {
-		return newJevClientForTest(cfg, baseURL)
+	prev := systemOneClientFactoryOverride
+	systemOneClientFactoryOverride = func(cfg config.SmartDecision) smartDecider {
+		return newSystemOneClientForTest(cfg, baseURL)
 	}
-	t.Cleanup(func() { jevClientFactoryOverride = prev })
+	t.Cleanup(func() { systemOneClientFactoryOverride = prev })
 }
 
-// newJevClientForTest builds a Jev client pointed at a local stand-in server.
-// The API key is a placeholder: the stand-in does not check it.
-func newJevClientForTest(cfg config.SmartJev, baseURL string) jevDecider {
-	return jev.New(jev.Config{
-		BaseURL:       baseURL,
-		Model:         cfg.ModelOrDefault(),
-		APIKey:        "test-key",
-		Timeout:       cfg.ParsedTimeout(),
-		MinConfidence: cfg.ParsedMinConfidence(),
-		Question:      cfg.QuestionOrDefault(),
+// newSystemOneClientForTest builds a System One client pointed at a local
+// stand-in server. The API key is a placeholder: the stand-in does not check
+// it.
+func newSystemOneClientForTest(cfg config.SmartDecision, baseURL string) smartDecider {
+	client := systemone.New(systemone.Config{
+		BaseURL: baseURL,
+		Model:   cfg.ModelOrDefault(),
+		APIKey:  "test-key",
+		Timeout: cfg.ParsedTimeout(),
 	})
+	return newSystemOneDecider(client, cfg)
 }
 
 // A request through a smart combo reaches the provider the chosen route names.
@@ -100,8 +101,8 @@ func TestSmartComboE2ERoutesToChosenDestination(t *testing.T) {
 			return nil
 		}}
 	})
-	srv := jevServer(t, "pro", 0.9, nil)
-	useJevServer(t, srv.URL)
+	srv := systemOneServer(t, "pro", 0.9, nil)
+	useSystemOneServer(t, srv.URL)
 
 	cfg := smartConfig()
 	rawKey, hash, prefix, _ := auth.GenerateKey()
@@ -126,8 +127,8 @@ func TestSmartComboE2ESendsLastUserMessageToJev(t *testing.T) {
 		return &fakeProvider{name: cfg.Name, chat: func(r provider.ChatRequest) error { return nil }}
 	})
 	var gotState string
-	srv := jevServer(t, "flash", 0.9, &gotState)
-	useJevServer(t, srv.URL)
+	srv := systemOneServer(t, "flash", 0.9, &gotState)
+	useSystemOneServer(t, srv.URL)
 
 	cfg := smartConfig()
 	rawKey, hash, prefix, _ := auth.GenerateKey()
@@ -161,7 +162,7 @@ func TestSmartComboE2EFallsBackToDefaultRoute(t *testing.T) {
 		w.WriteHeader(http.StatusInternalServerError)
 	}))
 	t.Cleanup(failing.Close)
-	useJevServer(t, failing.URL)
+	useSystemOneServer(t, failing.URL)
 
 	cfg := smartConfig()
 	rawKey, hash, prefix, _ := auth.GenerateKey()
@@ -189,8 +190,8 @@ func TestSmartComboE2ELowConfidenceUsesDefaultRoute(t *testing.T) {
 			return nil
 		}}
 	})
-	srv := jevServer(t, "pro", 0.1, nil)
-	useJevServer(t, srv.URL)
+	srv := systemOneServer(t, "pro", 0.1, nil)
+	useSystemOneServer(t, srv.URL)
 
 	cfg := smartConfig()
 	rawKey, hash, prefix, _ := auth.GenerateKey()

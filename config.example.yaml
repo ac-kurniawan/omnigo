@@ -77,16 +77,19 @@ combos:
       # - provider: openai-main
       #   model: gpt-4o
 
-  # A smart combo asks TypeSafe's Jev which route fits the request, then
-  # dispatches to that route's destination. It declares no target chain of
-  # its own: the destination combo owns the failover.
+  # A smart combo asks a TypeSafe System One model which route fits the
+  # request, then dispatches to that route's destination. It declares no
+  # target chain of its own: the destination combo owns the failover.
   #
   # Requires TYPESAFE_API_KEY in the gateway's environment. Every decision
-  # is fail-open: if Jev is unreachable, slow, or unsure, the default route
-  # is used instead.
+  # is fail-open: if the model is unreachable, slow, or unsure, the default
+  # route is used instead.
+  #
+  # Jev is TypeSafe's flagship System One model, but every System One model
+  # is served by the same endpoint, so any model id or alias may be named.
   # - name: combo/smart
   #   strategy: smart
-  #   default_route: flash   # used when Jev cannot decide
+  #   default_route: flash   # used when the model cannot decide
   #   routes:
   #     - name: flash
   #       criteria: A short factual question
@@ -94,11 +97,16 @@ combos:
   #     - name: pro
   #       criteria: A hard engineering task
   #       destination: combo/pro
-  #   jev:
-  #     model: jev-latest      # blank = jev-latest
+  #   decision:
+  #     model: jev-latest      # any System One model id or alias; blank = jev-latest
+  #     mode: choice           # choice (one question), or fanout (one per route)
   #     question: Which route should handle this request?
   #     min_confidence: "0.5"  # below this, the default route is used
   #     timeout: 4s            # blank = 4s
+  #     # base_url: https://api.typesafe.ai   # blank = the public API
+  #     # weights:                # fanout only; blank = 1.0 for every route
+  #     #   flash: 1.0
+  #     #   pro: 1.2
 
 # Optional exact-match cache layer (disabled by default)
 # cache:
