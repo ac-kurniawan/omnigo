@@ -837,22 +837,7 @@
                 <span class="label-text-alt text-xs text-base-content/50">Resolved by gateway</span>
               </label>
               <select id="playground-model" class="select select-bordered select-sm w-full font-mono text-xs">
-                {{if .Combos}}
-                <optgroup label="Combos (Fallback &amp; Routing)">
-                  {{range .Combos}}
-                  <option value="{{.Name}}">{{.Name}} (strategy: {{.Strategy}})</option>
-                  {{end}}
-                </optgroup>
-                {{end}}
-                {{if .Providers}}
-                <optgroup label="Direct Provider Models">
-                  {{range $p := .Providers}}
-                    {{range .Models}}
-                    <option value="{{$p.Name}}/{{.}}">{{$p.Name}}/{{.}}</option>
-                    {{end}}
-                  {{end}}
-                </optgroup>
-                {{end}}
+                {{template "playground-model-options" .}}
               </select>
             </div>
           </div>
@@ -1608,6 +1593,16 @@
         if (keyInput) keyInput.value = savedKey;
       }
       updatePromptLimit();
+      // Providers and combos can be changed from other tabs while this page
+      // stays open; re-render the picker from the live config and keep the
+      // current selection when it still exists.
+      const modelSelect = document.getElementById('playground-model');
+      const selected = modelSelect ? modelSelect.value : '';
+      htmx.ajax('GET', '/playground/models', { target: '#playground-model', swap: 'innerHTML' }).then(() => {
+        if (selected && Array.from(modelSelect.options).some(o => o.value === selected)) {
+          modelSelect.value = selected;
+        }
+      });
     }
 
     function savePlaygroundKey(val) {
@@ -2910,4 +2905,25 @@
     Manage
   </button>
 </div>
+{{end}}
+
+{{/* Re-rendered on demand so a provider, model, or combo added from another
+   tab shows up in the playground picker without a full page reload. */}}
+{{define "playground-model-options"}}
+  {{if .Combos}}
+  <optgroup label="Combos (Fallback &amp; Routing)">
+    {{range .Combos}}
+    <option value="{{.Name}}">{{.Name}} (strategy: {{.Strategy}})</option>
+    {{end}}
+  </optgroup>
+  {{end}}
+  {{if .Providers}}
+  <optgroup label="Direct Provider Models">
+    {{range $p := .Providers}}
+      {{range .Models}}
+      <option value="{{$p.Name}}/{{.}}">{{$p.Name}}/{{.}}</option>
+      {{end}}
+    {{end}}
+  </optgroup>
+  {{end}}
 {{end}}
