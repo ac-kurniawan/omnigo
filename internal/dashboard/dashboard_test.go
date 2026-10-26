@@ -358,6 +358,34 @@ func TestIndexRendersPlaygroundInspector(t *testing.T) {
 	}
 }
 
+// The playground's model picker is rendered into the full page once. Adding or
+// removing a provider/combo only swaps the #providers/#combos fragments, so the
+// picker must be able to re-render itself from the live config on demand.
+func TestPlaygroundModelOptionsReflectLiveConfig(t *testing.T) {
+	cfg := &config.Config{
+		Providers: []config.Provider{{Name: "openai", Type: "openai", Models: []string{"gpt-4o"}}},
+		Combos:    []config.Combo{{Name: "auto", Strategy: "priority"}},
+	}
+	h := testHandler(t, cfg, &vault.Vault{})
+
+	// Simulates a provider, a model, and a combo added from the Providers and
+	// Combos tabs after the dashboard page was first rendered.
+	cfg.Providers = append(cfg.Providers, config.Provider{Name: "groq", Type: "openai", Models: []string{"llama-4"}})
+	cfg.Combos = append(cfg.Combos, config.Combo{Name: "fast", Strategy: "fill-first"})
+
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, httptest.NewRequest("GET", "/playground/models", nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rr.Code, rr.Body.String())
+	}
+	body := rr.Body.String()
+	for _, want := range []string{"groq/llama-4", "fast (strategy: fill-first)"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("playground options missing %q: %s", want, body)
+		}
+	}
+}
+
 func TestKeysRendersUseInPlaygroundAction(t *testing.T) {
 	cfg := &config.Config{}
 	v := &vault.Vault{}

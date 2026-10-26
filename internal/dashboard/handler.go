@@ -444,6 +444,7 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("POST /providers/{name}/models/delete", s.deleteModel)
 	mux.HandleFunc("GET /combos", s.getCombos)
 	mux.HandleFunc("GET /combo-picker/models", s.getComboPickerModels)
+	mux.HandleFunc("GET /playground/models", s.getPlaygroundModels)
 	mux.HandleFunc("GET /system-one/models", s.getSystemOneModels)
 	mux.HandleFunc("POST /combos", s.createCombo)
 	// Combo names may contain slashes (combo/auto), so one wildcard route
