@@ -56,7 +56,7 @@ func handleChat(getCfg func() *config.Config, registry *providerRegistry, tracke
 
 		cacheable := responseCache != nil && cfg != nil && cfg.Cache.EnabledOrDefault() && !cacheBypass(r, parsed, stream, comboOK)
 		if comboOK {
-			runCombo(w, r, cfg, registry, cb, req, tracker, tc, startTime, metrics)
+			runCombo(chatResponder{dst: w}, r, cfg, registry, cb, req, tracker, tc, startTime, metrics)
 			return
 		}
 		if !cacheable {
@@ -355,12 +355,53 @@ func resolveDirect(cfg *config.Config, registry *providerRegistry, model string)
 	return nil, "", "", false
 }
 
-func runCombo(w http.ResponseWriter, r *http.Request, cfg *config.Config, registry *providerRegistry, cb config.Combo, req provider.ChatRequest, tracker *combo.Tracker, tc *TraceContext, startTime time.Time, metrics Metrics) {
+// chatResponder is the chat wire: each attempt buffers until it can prove the
+// upstream answered, then streams through, and a committed failure is reported
+// as the SSE error event chat clients already understand.
+type chatResponder struct {
+	dst http.ResponseWriter
+}
+
+func (c chatResponder) attempt(stream bool) http.ResponseWriter {
+	return newBufferedResponseWriter(c.dst, stream)
+}
+
+func (c chatResponder) onCommittedFailure(message string) {
+	writeStreamError(c.dst, message)
+}
+
+func (c chatResponder) writer() http.ResponseWriter {
+	return c.dst
+}
+
+// responder owns how one dispatch attempt reaches the client. The combo loops
+// stay wire-agnostic: chat streams Chat Completions frames, the Responses
+// endpoint synthesizes the Responses event lifecycle instead.
+type responder interface {
+	attempt(stream bool) http.ResponseWriter
+	onCommittedFailure(message string)
+	writer() http.ResponseWriter
+}
+
+// finisher is the attempt writer that can prove whether the upstream answered.
+// Every responder attempt implements it.
+type finisher interface {
+	finish(err error) error
+}
+
+func finishAttempt(attempt http.ResponseWriter, providerErr error) error {
+	if f, ok := attempt.(finisher); ok {
+		return f.finish(providerErr)
+	}
+	return providerErr
+}
+
+func runCombo(responder responder, r *http.Request, cfg *config.Config, registry *providerRegistry, cb config.Combo, req provider.ChatRequest, tracker *combo.Tracker, tc *TraceContext, startTime time.Time, metrics Metrics) {
 	// A smart combo decides first, then delegates to the destination combo's
 	// own chain, which owns the failover. The strategy of the destination
 	// combo is what runs; the smart combo contributes only the choice.
 	if cb.IsSmart() {
-		runSmartCombo(w, r, cfg, registry, cb, req, tracker, tc, startTime, metrics)
+		runSmartCombo(responder, r, cfg, registry, cb, req, tracker, tc, startTime, metrics)
 		return
 	}
 	c := combo.Combo{
@@ -387,11 +428,11 @@ func runCombo(w http.ResponseWriter, r *http.Request, cfg *config.Config, regist
 			}
 		}
 		req.Model = t.Model
-		attempt := newBufferedResponseWriter(w, req.Stream)
+		attempt := responder.attempt(req.Stream)
 		SetTelemetryHeaders(attempt, tc, t.Provider, t.Model, startTime)
 		providerCtx := withTokenUsage(ctx, metrics, t.Provider, t.Model, cb.Name)
 		providerErr := p.ChatCompletion(providerCtx, req, attempt)
-		err := attempt.finish(providerErr)
+		err := finishAttempt(attempt, providerErr)
 		if errors.Is(err, errResponseCommitted) {
 			responseCommitted = true
 			// A client abort mid-stream cancels the request context; that is not an
@@ -408,7 +449,7 @@ func runCombo(w http.ResponseWriter, r *http.Request, cfg *config.Config, regist
 			// possible, so say the generation failed instead of ending the
 			// stream as if it had completed.
 			if req.Stream && !clientGone {
-				writeStreamError(w, sanitizeFailure(err))
+				responder.onCommittedFailure(sanitizeFailure(err))
 			}
 			return nil
 		}
@@ -425,7 +466,7 @@ func runCombo(w http.ResponseWriter, r *http.Request, cfg *config.Config, regist
 	}
 	metrics.RecordCombinationAttempt(r.Context(), cb.Name, attemptResult)
 	if err != nil && !responseCommitted {
-		writeProviderError(w, err)
+		writeProviderError(responder.writer(), err)
 	}
 }
 

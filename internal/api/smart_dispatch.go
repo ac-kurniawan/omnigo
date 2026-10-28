@@ -41,7 +41,7 @@ func systemOneClientFactoryEnv(cfg config.SmartDecision) smartDecider {
 // The destination combo owns the failover: the targets are the destination
 // combo's own chain, run with the destination combo's strategy. A smart combo
 // contributes only the choice of chain.
-func runSmartCombo(w http.ResponseWriter, r *http.Request, cfg *config.Config, registry *providerRegistry, cb config.Combo, req provider.ChatRequest, tracker *combo.Tracker, tc *TraceContext, startTime time.Time, metrics Metrics) {
+func runSmartCombo(responder responder, r *http.Request, cfg *config.Config, registry *providerRegistry, cb config.Combo, req provider.ChatRequest, tracker *combo.Tracker, tc *TraceContext, startTime time.Time, metrics Metrics) {
 	router := newSmartRouter(cfg, cb, smartDeciderFor(cfg, cb))
 	state := smartState(req.Messages)
 	decision := router.decide(r.Context(), state)
@@ -67,7 +67,7 @@ func runSmartCombo(w http.ResponseWriter, r *http.Request, cfg *config.Config, r
 		}
 		if !ok {
 			metrics.RecordCombinationAttempt(r.Context(), cb.Name, resultFailure)
-			writeError(w, http.StatusBadGateway, "smart combo: no usable destination for route "+decision.Route)
+			writeError(responder.writer(), http.StatusBadGateway, "smart combo: no usable destination for route "+decision.Route)
 			return
 		}
 	}
@@ -107,11 +107,11 @@ func runSmartCombo(w http.ResponseWriter, r *http.Request, cfg *config.Config, r
 			}
 		}
 		req.Model = t.Model
-		attempt := newBufferedResponseWriter(w, req.Stream)
+		attempt := responder.attempt(req.Stream)
 		SetTelemetryHeaders(attempt, tc, t.Provider, t.Model, startTime)
 		providerCtx := withTokenUsage(ctx, metrics, t.Provider, t.Model, comboName)
 		providerErr := p.ChatCompletion(providerCtx, req, attempt)
-		err := attempt.finish(providerErr)
+		err := finishAttempt(attempt, providerErr)
 		if errors.Is(err, errResponseCommitted) {
 			responseCommitted = true
 			clientGone := r.Context().Err() != nil
@@ -121,7 +121,7 @@ func runSmartCombo(w http.ResponseWriter, r *http.Request, cfg *config.Config, r
 				tracker.MarkDrained(t, cb.ParsedDrainTTL(), sanitizeFailure(err))
 			}
 			if req.Stream && !clientGone {
-				writeStreamError(w, sanitizeFailure(err))
+				responder.onCommittedFailure(sanitizeFailure(err))
 			}
 			return nil
 		}
@@ -138,7 +138,7 @@ func runSmartCombo(w http.ResponseWriter, r *http.Request, cfg *config.Config, r
 	}
 	metrics.RecordCombinationAttempt(r.Context(), cb.Name, attemptResult)
 	if err != nil && !responseCommitted {
-		writeProviderError(w, err)
+		writeProviderError(responder.writer(), err)
 	}
 }
 
