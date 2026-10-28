@@ -526,6 +526,13 @@ func chatUsageFromSSELine(line []byte) (TokenUsage, bool) {
 	return chunk.Usage.tokenUsage(), true
 }
 
+// ChatUsageFromSSELine reports the Chat Completions usage object on one SSE
+// data line. Translators that re-frame an upstream stream use it so token
+// accounting stays identical to the passthrough.
+func ChatUsageFromSSELine(line []byte) (TokenUsage, bool) {
+	return chatUsageFromSSELine(line)
+}
+
 // usageKey is the exact bytes of the usage field name, so content chunks skip
 // the JSON decode the same way the finish_reason scan does.
 var usageKey = []byte(`"usage"`)
