@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -85,6 +86,45 @@ func TestMiddlewareAllowsValidKey(t *testing.T) {
 	h.ServeHTTP(rr, req)
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rr.Code)
+	}
+}
+
+// Claude Code sends its key as x-api-key, not Authorization: Bearer.
+func TestMiddlewareAllowsXAPIKey(t *testing.T) {
+	raw, hash, prefix, _ := GenerateKey()
+	v := &vault.Vault{ClientKeys: []vault.ClientKey{{ID: "k1", KeyHash: hash, Prefix: prefix, Active: true}}}
+	h := Middleware(func() *vault.Vault { return v })(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest("POST", "/v1/messages", nil)
+	req.Header.Set("x-api-key", raw)
+	h.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rr.Code)
+	}
+}
+
+func TestMiddlewareRejectsWithAnthropicEnvelopeOnMessages(t *testing.T) {
+	h := Middleware(func() *vault.Vault { return &vault.Vault{} })(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, httptest.NewRequest("POST", "/v1/messages", nil))
+	if rr.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401", rr.Code)
+	}
+	var env struct {
+		Type  string `json:"type"`
+		Error struct {
+			Type string `json:"type"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &env); err != nil {
+		t.Fatal(err)
+	}
+	if env.Type != "error" || env.Error.Type != "authentication_error" {
+		t.Fatalf("envelope = %s", rr.Body.String())
 	}
 }
 

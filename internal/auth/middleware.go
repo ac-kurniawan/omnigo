@@ -40,17 +40,21 @@ func Middleware(getVault func() *vault.Vault) func(http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			raw := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
 			if raw == "" || raw == r.Header.Get("Authorization") {
-				unauthorized(w)
+				// Anthropic clients (Claude Code) send the key as x-api-key.
+				raw = r.Header.Get("x-api-key")
+			}
+			if raw == "" {
+				unauthorized(w, r)
 				return
 			}
 			v := getVault()
 			if v == nil {
-				unauthorized(w)
+				unauthorized(w, r)
 				return
 			}
 			key, ok := lookup(v, raw)
 			if !ok {
-				unauthorized(w)
+				unauthorized(w, r)
 				return
 			}
 			CallerFrom(r.Context()).Set(key)
@@ -94,9 +98,16 @@ func dashboardUnauthorized(w http.ResponseWriter) {
 	})
 }
 
-func unauthorized(w http.ResponseWriter) {
+// unauthorized writes the 401 body in the wire format of the route: the
+// Anthropic Messages API nests a top-level type and error.type, while chat and
+// responses keep their existing OpenAI envelope.
+func unauthorized(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusUnauthorized)
+	if r.URL.Path == "/v1/messages" {
+		_, _ = w.Write([]byte(`{"type":"error","error":{"type":"authentication_error","message":"invalid API key"}}`))
+		return
+	}
 	_, _ = w.Write([]byte(`{"error":{"message":"invalid API key","type":"invalid_request_error","code":"invalid_api_key"}}`))
 }
 
