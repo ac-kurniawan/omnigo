@@ -62,6 +62,8 @@ func routerWith(getCfg func() *config.Config, store *vault.Store, mutate config.
 	// bare router still gets one here so auth.Middleware can fill it.
 	mux.Handle("POST /v1/chat/completions", ensureCaller(authed(http.HandlerFunc(handleChat(getCfg, registry, tracker, m, responseCache)))))
 	mux.Handle("POST /v1/responses", ensureCaller(authed(http.HandlerFunc(handleResponses(getCfg, registry, tracker, m)))))
+	// Anthropic wire, for Claude Code via ANTHROPIC_BASE_URL.
+	mux.Handle("POST /v1/messages", ensureCaller(authed(http.HandlerFunc(handleMessages(getCfg, registry, tracker, m)))))
 	mux.Handle("GET /v1/models", authed(http.HandlerFunc(handleModels(getCfg))))
 	mux.Handle("GET /v1/models/{model...}", authed(http.HandlerFunc(handleModel(getCfg))))
 
