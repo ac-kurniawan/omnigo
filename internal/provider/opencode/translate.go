@@ -878,23 +878,23 @@ type toolCall struct {
 }
 
 type responsesState struct {
-	id         string
-	model      string
-	created    int64
-	roleSent   bool
-	text       strings.Builder
-	reasoning  strings.Builder
-	calls      []*toolCall
-	byItem     map[string]*toolCall
-	byOutput   map[int]*toolCall
+	id           string
+	model        string
+	created      int64
+	roleSent     bool
+	text         strings.Builder
+	reasoning    strings.Builder
+	calls        []*toolCall
+	byItem       map[string]*toolCall
+	byOutput     map[int]*toolCall
 	finishReason string
-	events     int
-	completed  bool
-	failed     bool
-	failure    string
-	usage      countedUsage
-	sawText    bool
-	sawReason  bool
+	events       int
+	completed    bool
+	failed       bool
+	failure      string
+	usage        countedUsage
+	sawText      bool
+	sawReason    bool
 }
 
 func newResponsesState(model string) *responsesState {
@@ -1372,4 +1372,3 @@ func randomID() string {
 	}
 	return hex.EncodeToString(value)
 }
-
