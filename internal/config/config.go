@@ -350,7 +350,7 @@ func Load(path string) (*Config, error) {
 	return &cfg, nil
 }
 
-var validTypes = map[string]bool{"openai": true, "antigravity": true, "codex": true, "muse": true, "codebuddy": true, "codebuddy-cn": true, "codebuddy-intl": true}
+var validTypes = map[string]bool{"openai": true, "antigravity": true, "codex": true, "muse": true, "codebuddy": true, "codebuddy-cn": true, "codebuddy-intl": true, "opencode": true}
 var validStrategies = map[string]bool{"priority": true, "fill-first": true, "reliable": true, "round-robin": true, StrategySmart: true}
 
 func (c *Config) Validate() error {

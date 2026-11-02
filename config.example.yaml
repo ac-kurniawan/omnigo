@@ -67,6 +67,18 @@ providers:
   #     - gpt-4o
   #     - gpt-4o-mini
 
+  # OpenCode Go subscription (API key from the OpenCode console).
+  # Models list is the cache of GET {base_url}/v1/models; refresh from the
+  # dashboard to fetch the latest list. Routing picks the per-model contract
+  # (chat-completions, responses, messages) from that endpoint.
+  # - name: opencode-go
+  #   type: opencode
+  #   base_url: https://opencode.ai/inference/go
+  #   models:
+  #     - glm-5.3-flash
+  #     - qwen3.8-max
+  #     - gpt-6-luna
+
 combos:
   - name: auto
     strategy: priority # priority | fill-first | reliable | round-robin | smart
