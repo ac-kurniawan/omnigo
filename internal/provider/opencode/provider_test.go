@@ -133,8 +133,8 @@ func TestChatCompletionsDispatch(t *testing.T) {
 	p := New(provider.Config{Name: "opencode", BaseURL: server.URL}, store).(*Provider)
 
 	req := provider.ChatRequest{
-		Model: "deepseek-v4.1-flash",
-		Stream: false,
+		Model:    "deepseek-v4.1-flash",
+		Stream:   false,
 		Messages: []provider.Message{{Role: "user", Content: "hi"}},
 	}
 	rec := httptest.NewRecorder()
@@ -173,8 +173,8 @@ func TestMessagesDispatch(t *testing.T) {
 	p := New(provider.Config{Name: "opencode", BaseURL: server.URL}, store).(*Provider)
 
 	req := provider.ChatRequest{
-		Model: "claude-haiku-5-5",
-		Stream: false,
+		Model:    "claude-haiku-5-5",
+		Stream:   false,
 		Messages: []provider.Message{{Role: "user", Content: "hi"}},
 	}
 	rec := httptest.NewRecorder()
@@ -212,8 +212,8 @@ func TestResponsesDispatch(t *testing.T) {
 	p := New(provider.Config{Name: "opencode", BaseURL: server.URL}, store).(*Provider)
 
 	req := provider.ChatRequest{
-		Model: "gpt-5.6-luna",
-		Stream: true,
+		Model:    "gpt-5.6-luna",
+		Stream:   true,
 		Messages: []provider.Message{{Role: "user", Content: "hi"}},
 	}
 	rec := httptest.NewRecorder()
