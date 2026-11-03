@@ -3,9 +3,11 @@ package antigravity
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/ac-kurniawan/omnigo/internal/provider"
@@ -13,11 +15,21 @@ import (
 )
 
 // quotaPathSuffix is the Cloud Code endpoint the Antigravity CLI uses for its
-// /usage view. Unlike retrieveUserQuota, which reports a bucket per model, this
-// answers with two model groups (Gemini, Claude+GPT) that each carry a weekly
-// and a five-hour window. Those windows are the ones a 429 actually consumes,
-// so they are what the dashboard must show.
-const quotaPathSuffix = "/v1internal:retrieveUserQuotaSummary"
+// /usage view: groups (Claude+GPT, Gemini) that each carry a weekly and a
+// five-hour window, the limits a 429 actually consumes.
+//
+// It only reports a group whose limit is in force, so an account with Claude
+// drained answers with the Claude group alone even while Gemini has headroom.
+// quotaModelPathSuffix covers that gap: one bucket per model, regardless of
+// which group is binding.
+const (
+	quotaPathSuffix      = "/v1internal:retrieveUserQuotaSummary"
+	quotaModelPathSuffix = "/v1internal:retrieveUserQuota"
+)
+
+// geminiGroupName heads the synthesized group built from per-model buckets, so
+// it reads like the upstream "Claude and GPT models" heading.
+const geminiGroupName = "Gemini Models"
 
 // quotaBucket is one window of a group in the summary response.
 //
@@ -43,23 +55,64 @@ type quotaResponse struct {
 	Description string       `json:"description"`
 }
 
+// quotaModelBucket is one per-model entry of retrieveUserQuota.
+type quotaModelBucket struct {
+	ModelID           string   `json:"modelId"`
+	RemainingFraction *float64 `json:"remainingFraction"`
+	ResetTime         string   `json:"resetTime"`
+}
+
+type quotaModelResponse struct {
+	Buckets []quotaModelBucket `json:"buckets"`
+}
+
+// geminiMalformed reports whether any per-model Gemini bucket omitted its
+// remaining fraction, so the caller can downgrade the read to unavailable
+// instead of rendering a bucket as either drained or fresh.
+func (r quotaModelResponse) geminiMalformed() (string, bool) {
+	for _, b := range r.Buckets {
+		if strings.HasPrefix(b.ModelID, "gemini-") && b.RemainingFraction == nil {
+			return b.ModelID, true
+		}
+	}
+	return "", false
+}
+
+// Window lengths, in minutes, mirroring the labels the summary reports. They
+// also drive the label quota.Window.Label() renders.
+const (
+	fiveHourMinutes = 300
+	weeklyMinutes   = 10080
+)
+
+// fiveHour is the burst window. A per-model reset within it is that window;
+// anything later is the weekly cap.
+const fiveHour = fiveHourMinutes * time.Minute
+
+// timeNow is a var so tests can pin the clock when classifying reset horizons.
+var timeNow = time.Now
+
 // windowMinutes maps an upstream window label to the operator-facing window
 // length. An unrecognized label yields 0, which leaves the raw bucket display
 // name as the label rather than inventing a length.
 func windowMinutes(window string) int {
 	switch window {
 	case "weekly":
-		return 10080
+		return weeklyMinutes
 	case "5h":
-		return 300
+		return fiveHourMinutes
 	default:
 		return 0
 	}
 }
 
-// FetchQuota reports the remaining quota for a single account by calling the
-// Antigravity Cloud Code quota-summary endpoint, the same source as the
-// Antigravity CLI's usage view.
+// FetchQuota reports the remaining quota for a single account from the two
+// Cloud Code endpoints that back the Antigravity CLI's usage view.
+//
+// The summary endpoint names the groups and their shared windows. The per-model
+// endpoint is merged in as an extra Gemini group whenever the summary omits
+// one, because the summary reports only the groups with a limit in force: a
+// drained Claude weekly limit hides Gemini headroom that still exists.
 //
 // Classification follows the tri-state contract in internal/quota: only an
 // explicit upstream signal (a window at exactly 0 remaining *with* a usable
@@ -86,24 +139,16 @@ func (p *Provider) FetchQuota(ctx context.Context, account provider.Credentials)
 	if c.ProjectID != "" {
 		body["project"] = c.ProjectID
 	}
-	resp, err := post(ctx, quotaPathSuffix, c.AccessToken, body)
+
+	raw, err := postQuota(ctx, quotaPathSuffix, c.AccessToken, body)
 	if err != nil {
 		snap.Status = quota.StatusUnavailable
 		snap.Reason = "upstream request failed"
+		var status quotaStatusError
+		if errors.As(err, &status) {
+			snap.Reason = status.Error()
+		}
 		return snap, fmt.Errorf("antigravity: quota request: %w", err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		snap.Status = quota.StatusUnavailable
-		snap.Reason = fmt.Sprintf("upstream status %d", resp.StatusCode)
-		return snap, fmt.Errorf("antigravity: quota: upstream status %d", resp.StatusCode)
-	}
-
-	raw, err := io.ReadAll(resp.Body)
-	if err != nil {
-		snap.Status = quota.StatusUnavailable
-		snap.Reason = "upstream read failed"
-		return snap, fmt.Errorf("antigravity: quota read: %w", err)
 	}
 	var payload quotaResponse
 	if err := json.Unmarshal(raw, &payload); err != nil {
@@ -119,8 +164,6 @@ func (p *Provider) FetchQuota(ctx context.Context, account provider.Credentials)
 		return snap, fmt.Errorf("antigravity: quota: no quota groups")
 	}
 
-	snap.Groups = make([]quota.Group, 0, len(payload.Groups))
-	snap.Windows = make([]quota.Window, 0, 4)
 	for _, group := range payload.Groups {
 		built := quota.Group{Name: group.DisplayName, Description: group.Description}
 		built.Windows = make([]quota.Window, 0, len(group.Buckets))
@@ -157,10 +200,7 @@ func (p *Provider) FetchQuota(ctx context.Context, account provider.Credentials)
 					snap.Reason = fmt.Sprintf("bucket %s exhausted without reset time", bucketLabel(group, b))
 					return snap, nil
 				}
-				if snap.Status != quota.StatusExhausted {
-					snap.Status = quota.StatusExhausted
-					snap.Reason = window.Label()
-				}
+				markExhausted(&snap, window.Label())
 			}
 			built.Windows = append(built.Windows, window)
 			snap.Windows = append(snap.Windows, window)
@@ -168,10 +208,126 @@ func (p *Provider) FetchQuota(ctx context.Context, account provider.Credentials)
 		snap.Groups = append(snap.Groups, built)
 	}
 
-	if snap.Status != quota.StatusExhausted {
+	// The per-model read is additive detail: a failure here leaves the summary
+	// groups intact rather than discarding a good read.
+	if !hasGroupNamed(snap.Groups, geminiGroupName) {
+		if raw, err := postQuota(ctx, quotaModelPathSuffix, c.AccessToken, body); err == nil {
+			var models quotaModelResponse
+			if json.Unmarshal(raw, &models) == nil {
+				if model, bad := models.geminiMalformed(); bad {
+					snap.Status = quota.StatusUnavailable
+					snap.Reason = fmt.Sprintf("bucket %s has no remaining fraction", model)
+					return snap, nil
+				}
+				if gem := geminiGroup(models.Buckets, timeNow()); len(gem.Windows) > 0 {
+					// Gemini leads, matching the CLI's usage view, where the
+					// first-party group is listed before third-party models.
+					snap.Groups = append([]quota.Group{gem}, snap.Groups...)
+					snap.Windows = append(gem.Windows, snap.Windows...)
+					for _, w := range gem.Windows {
+						if w.RemainingPercent() == 0 && !w.ResetAt.IsZero() {
+							markExhausted(&snap, w.Label())
+						}
+					}
+				}
+			}
+		}
+	}
+
+	if snap.Status != quota.StatusExhausted && snap.Status != quota.StatusUnavailable {
 		snap.Status = quota.StatusAvailable
 	}
 	return snap, nil
+}
+
+// quotaStatusError marks a non-200 quota read, keeping the status operator
+// facing without leaking response bodies.
+type quotaStatusError struct{ code int }
+
+func (e quotaStatusError) Error() string { return fmt.Sprintf("upstream status %d", e.code) }
+
+// postQuota performs one quota call and returns the 200 body.
+func postQuota(ctx context.Context, path, accessToken string, body map[string]any) ([]byte, error) {
+	resp, err := post(ctx, path, accessToken, body)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, quotaStatusError{code: resp.StatusCode}
+	}
+	return io.ReadAll(resp.Body)
+}
+
+// markExhausted records the first exhausted window as the account's reason. A
+// later one must not overwrite it: the reason names the constraint the
+// operator should act on, and windows are visited in upstream order.
+func markExhausted(snap *quota.AccountSnapshot, reason string) {
+	if snap.Status == quota.StatusExhausted || snap.Status == quota.StatusUnavailable {
+		return
+	}
+	snap.Status = quota.StatusExhausted
+	snap.Reason = reason
+}
+
+func hasGroupNamed(groups []quota.Group, name string) bool {
+	for _, g := range groups {
+		if g.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
+// geminiGroup collapses the per-model buckets into one Gemini group with a
+// weekly and a five-hour bar, each holding the lowest remaining fraction among
+// the models that report it.
+//
+// The group shares one quota, so the model with the least left is the one that
+// binds first, and it is usually the model actually in use.
+//
+// The per-model endpoint carries no window field, so the reset horizon decides
+// the bar: a reset inside the five-hour burst period is that window, anything
+// later is the weekly cap. A bucket with no reset time cannot be attributed and
+// is skipped rather than guessed at.
+//
+// Only Gemini ids are kept: the endpoint also reports Claude, GPT and internal
+// ids whose quota the summary groups already own.
+func geminiGroup(buckets []quotaModelBucket, now time.Time) quota.Group {
+	group := quota.Group{Name: geminiGroupName}
+	var binding [2]*quota.Window
+	for _, b := range buckets {
+		if !strings.HasPrefix(b.ModelID, "gemini-") || b.RemainingFraction == nil || b.ResetTime == "" {
+			continue
+		}
+		resetAt, err := time.Parse(time.RFC3339, b.ResetTime)
+		if err != nil {
+			continue
+		}
+		window := quota.Window{
+			Name:        geminiGroupName,
+			Display:     geminiGroupName,
+			UsedPercent: (1 - *b.RemainingFraction) * 100,
+			ResetAt:     resetAt,
+		}
+		slot := 0
+		if resetAt.Sub(now) <= fiveHour {
+			slot = 1
+			window.WindowMinutes = fiveHourMinutes
+		} else {
+			window.WindowMinutes = weeklyMinutes
+		}
+		if binding[slot] == nil || window.RemainingPercent() < binding[slot].RemainingPercent() {
+			binding[slot] = &window
+		}
+	}
+	// Weekly first, matching the order the summary lists its own windows in.
+	for _, w := range binding {
+		if w != nil {
+			group.Windows = append(group.Windows, *w)
+		}
+	}
+	return group
 }
 
 // bucketLabel names a bucket for operator-facing reasons, preferring the
