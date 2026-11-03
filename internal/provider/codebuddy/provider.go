@@ -79,6 +79,10 @@ func init() {
 // dialContextFunc is a function type for dialing network connections.
 type dialContextFunc func(ctx context.Context, network, addr string) (net.Conn, error)
 
+// lookupIP resolves a host for the fallback dialer. It is a var so tests can
+// pin the answer instead of depending on the runner's DNS.
+var lookupIP = net.DefaultResolver.LookupIP
+
 // newCodebuddyFallbackDialer wraps dialer function to intercept connections to www.codebuddy.ai.
 // If DNS resolution for www.codebuddy.ai yields 0.0.0.1 or fails, it connects to Tencent EdgeOne Anycast IP.
 func newCodebuddyFallbackDialer(baseDial dialContextFunc) dialContextFunc {
@@ -93,7 +97,7 @@ func newCodebuddyFallbackDialer(baseDial dialContextFunc) dialContextFunc {
 		}
 
 		// Perform DNS lookup for www.codebuddy.ai
-		ips, lookupErr := net.DefaultResolver.LookupIP(ctx, "ip", host)
+		ips, lookupErr := lookupIP(ctx, "ip", host)
 		useFallback := false
 		if lookupErr != nil || len(ips) == 0 {
 			useFallback = true

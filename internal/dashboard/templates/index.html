@@ -2399,7 +2399,7 @@
                             </div>
                             {{range .Windows}}
                               <div class="flex items-center gap-2">
-                                <span class="text-[11px] font-medium text-base-content/80 w-24 shrink-0">{{quotaWindowShortLabel .}}</span>
+                                <span class="font-mono text-[11px] font-medium text-base-content/80 truncate w-24 sm:w-44 shrink-0" title="{{quotaWindowLabel .}}">{{quotaWindowShortLabel .}}</span>
                                 <progress class="progress {{quotaWindowProgressClass .}} flex-1 h-2" value="{{.RemainingPercent}}" max="100" aria-label="{{quotaWindowLabel .}} remaining quota"></progress>
                                 <span class="font-mono text-[11px] font-semibold text-base-content/90 w-12 text-right shrink-0">{{quotaFormatPercent .RemainingPercent}}</span>
                                 {{$rst := quotaResetIn .}}

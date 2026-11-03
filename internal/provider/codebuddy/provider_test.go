@@ -3,6 +3,7 @@ package codebuddy
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net"
 	"net/http"
@@ -377,35 +378,46 @@ func TestCodebuddyProviderRateLimitErrorMapping(t *testing.T) {
 	}
 }
 
+// The dialer's fallback depends on DNS, so the test pins the resolver: a live
+// lookup makes the result depend on the runner's network.
 func TestCodebuddyIntlDNSFallbackDialer(t *testing.T) {
 	dialedAddr := ""
 	customDial := func(ctx context.Context, network, addr string) (net.Conn, error) {
 		dialedAddr = addr
 		return &mockConn{}, nil
 	}
-
 	dialer := newCodebuddyFallbackDialer(customDial)
+	origLookup := lookupIP
+	t.Cleanup(func() { lookupIP = origLookup })
 
-	// Case 1: host is not www.codebuddy.ai -> pass through untouched
-	dialedAddr = ""
-	conn, err := dialer(context.Background(), "tcp", "api.openai.com:443")
-	if err != nil {
-		t.Fatalf("dial failed: %v", err)
+	cases := []struct {
+		name string
+		addr string
+		ips  []net.IP
+		err  error
+		want string
+	}{
+		{"other host passes through", "api.openai.com:443", nil, nil, "api.openai.com:443"},
+		{"sinkholed to 0.0.0.1", "www.codebuddy.ai:443", []net.IP{net.ParseIP("0.0.0.1")}, nil, "43.170.214.92:443"},
+		{"sinkholed to 0.0.0.0", "www.codebuddy.ai:443", []net.IP{net.ParseIP("0.0.0.0")}, nil, "43.170.214.92:443"},
+		{"lookup fails", "www.codebuddy.ai:443", nil, errors.New("no such host"), "43.170.214.92:443"},
+		{"real IP dials the host", "www.codebuddy.ai:443", []net.IP{net.ParseIP("203.0.113.7")}, nil, "www.codebuddy.ai:443"},
 	}
-	conn.Close()
-	if dialedAddr != "api.openai.com:443" {
-		t.Errorf("expected dialedAddr api.openai.com:443, got %s", dialedAddr)
-	}
-
-	// Case 2: host is www.codebuddy.ai:443, DNS resolves to 0.0.0.1 or fails -> should dial 43.170.214.92:443
-	dialedAddr = ""
-	conn, err = dialer(context.Background(), "tcp", "www.codebuddy.ai:443")
-	if err != nil {
-		t.Fatalf("dial failed: %v", err)
-	}
-	conn.Close()
-	if dialedAddr != "43.170.214.92:443" {
-		t.Errorf("expected dialedAddr 43.170.214.92:443, got %s", dialedAddr)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			lookupIP = func(context.Context, string, string) ([]net.IP, error) {
+				return tc.ips, tc.err
+			}
+			dialedAddr = ""
+			conn, err := dialer(context.Background(), "tcp", tc.addr)
+			if err != nil {
+				t.Fatalf("dial failed: %v", err)
+			}
+			conn.Close()
+			if dialedAddr != tc.want {
+				t.Errorf("dialed %s, want %s", dialedAddr, tc.want)
+			}
+		})
 	}
 }
 
