@@ -300,3 +300,171 @@ func TestFetchQuotaMissingRemainingFractionIsUnavailable(t *testing.T) {
 		t.Fatalf("reason = %q, want no remaining fraction", snap.Reason)
 	}
 }
+
+// geminiDetailPayload mirrors the live retrieveUserQuota shape: one bucket per
+// model, with Gemini models carrying a reset time and a remaining fraction.
+// With no window field, the reset horizon is what separates the five-hour
+// burst limit from the weekly cap.
+const geminiDetailPayload = `{"buckets":[
+	{"modelId":"gemini-3-flash","remainingFraction":1,"resetTime":"2026-11-03T07:14:59Z"},
+	{"modelId":"gemini-3.1-flash-lite","remainingFraction":0.5,"resetTime":"2026-11-03T07:14:59Z"},
+	{"modelId":"gemini-2.5-pro","remainingFraction":0.25,"resetTime":"2026-11-09T07:14:59Z"},
+	{"modelId":"chat_20706","remainingFraction":1}
+]}`
+
+// quotaNow pins the clock so reset horizons are deterministic.
+func quotaNow(t *testing.T) {
+	t.Helper()
+	orig := timeNow
+	timeNow = func() time.Time { return time.Date(2026, 11, 3, 3, 0, 0, 0, time.UTC) }
+	t.Cleanup(func() { timeNow = orig })
+}
+
+// serveQuotaBoth serves the summary endpoint with summaryBody and the
+// per-model detail endpoint with detailBody, which is how the fetcher builds
+// its Gemini and Claude groups.
+func serveQuotaBoth(t *testing.T, summaryBody, detailBody string) {
+	t.Helper()
+	serveQuota(t, func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1internal:retrieveUserQuotaSummary":
+			_, _ = w.Write([]byte(summaryBody))
+		case "/v1internal:retrieveUserQuota":
+			_, _ = w.Write([]byte(detailBody))
+		default:
+			t.Errorf("unexpected path %s", r.URL.Path)
+			http.NotFound(w, r)
+		}
+	})
+}
+
+// A drained 3p group must not hide Gemini quota: the live summary reports only
+// the group that has a limit in force, while the per-model endpoint still
+// reports Gemini headroom.
+func TestFetchQuotaAddsGeminiGroupFromModelBuckets(t *testing.T) {
+	quotaNow(t)
+	serveQuotaBoth(t, `{"groups":[{"displayName":"Claude and GPT models","buckets":[
+		{"bucketId":"3p-weekly","displayName":"Weekly Limit Remaining","window":"weekly","resetTime":"2026-11-06T03:41:17Z","remainingFraction":0}
+	]}]}`, geminiDetailPayload)
+
+	p := New(provider.Config{Name: "agy"}, staticStore{antigravityQuotaAccount()})
+	snap, err := p.(*Provider).FetchQuota(context.Background(), antigravityQuotaAccount())
+	if err != nil {
+		t.Fatalf("FetchQuota: %v", err)
+	}
+	if len(snap.Groups) != 2 {
+		t.Fatalf("groups = %d, want Claude + Gemini", len(snap.Groups))
+	}
+	gem := snap.Groups[0]
+	if gem.Name != geminiGroupName {
+		t.Fatalf("group[0] = %+v, want Gemini first", gem)
+	}
+	// Two bars: each window keeps the minimum across the models that report it.
+	if len(gem.Windows) != 2 {
+		t.Fatalf("gemini windows = %+v, want weekly and five-hour", gem.Windows)
+	}
+	if gem.Windows[0].WindowMinutes != 10080 || gem.Windows[0].RemainingPercent() != 25 {
+		t.Fatalf("weekly bar = %+v, want 25%% left", gem.Windows[0])
+	}
+	if gem.Windows[1].WindowMinutes != 300 || gem.Windows[1].RemainingPercent() != 50 {
+		t.Fatalf("five-hour bar = %+v, want 50%% left", gem.Windows[1])
+	}
+	if got := gem.Windows[0].Label(); got != "Gemini Models · Weekly limit" {
+		t.Fatalf("label = %q", got)
+	}
+	if snap.Groups[1].Name != "Claude and GPT models" {
+		t.Fatalf("group[1] = %+v", snap.Groups[1])
+	}
+	// The drained Claude window still drives the account status.
+	if snap.Status != quota.StatusExhausted {
+		t.Fatalf("status = %q, want exhausted", snap.Status)
+	}
+}
+
+// A bucket whose reset falls inside the burst window belongs to the five-hour
+// bar; anything longer is the weekly cap. Attribution matters because the
+// exhausted window names the constraint routing cools on.
+func TestFetchQuotaGeminiBarExhaustionNamesTheWindow(t *testing.T) {
+	quotaNow(t)
+	serveQuotaBoth(t, `{"groups":[{"displayName":"Claude and GPT models","buckets":[
+		{"bucketId":"3p-5h","displayName":"Five Hour Limit Remaining","window":"5h","resetTime":"2026-11-03T08:00:00Z","remainingFraction":1}
+	]}]}`, `{"buckets":[
+		{"modelId":"gemini-3-flash","remainingFraction":1,"resetTime":"2026-11-03T07:14:59Z"},
+		{"modelId":"gemini-2.5-pro","remainingFraction":0,"resetTime":"2026-11-09T07:14:59Z"}
+	]}`)
+
+	p := New(provider.Config{Name: "agy"}, staticStore{antigravityQuotaAccount()})
+	snap, err := p.(*Provider).FetchQuota(context.Background(), antigravityQuotaAccount())
+	if err != nil {
+		t.Fatalf("FetchQuota: %v", err)
+	}
+	if snap.Status != quota.StatusExhausted {
+		t.Fatalf("status = %q, want exhausted", snap.Status)
+	}
+	if !strings.Contains(snap.Reason, "Weekly limit") {
+		t.Fatalf("reason = %q, want the weekly window", snap.Reason)
+	}
+}
+
+// A limit in force on Gemini is the account's binding constraint, and routing
+// must not cool the account for the full Claude reset when Gemini frees up
+// sooner.
+func TestFetchQuotaGeminiExhaustionDrivesStatus(t *testing.T) {
+	serveQuotaBoth(t, `{"groups":[{"displayName":"Claude and GPT models","buckets":[
+		{"bucketId":"3p-5h","displayName":"Five Hour Limit Remaining","window":"5h","resetTime":"2026-11-03T08:00:00Z","remainingFraction":1}
+	]}]}`, `{"buckets":[
+		{"modelId":"gemini-3-flash","remainingFraction":0,"resetTime":"2026-11-03T07:14:59Z"}
+	]}`)
+
+	p := New(provider.Config{Name: "agy"}, staticStore{antigravityQuotaAccount()})
+	snap, err := p.(*Provider).FetchQuota(context.Background(), antigravityQuotaAccount())
+	if err != nil {
+		t.Fatalf("FetchQuota: %v", err)
+	}
+	if snap.Status != quota.StatusExhausted {
+		t.Fatalf("status = %q, want exhausted", snap.Status)
+	}
+	if !strings.Contains(snap.Reason, geminiGroupName) {
+		t.Fatalf("reason = %q, want the Gemini group", snap.Reason)
+	}
+}
+
+// The per-model endpoint is additive detail: when it fails, the summary groups
+// still render rather than the whole read flipping to unavailable.
+func TestFetchQuotaDetailFailureKeepsSummaryGroups(t *testing.T) {
+	serveQuota(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1internal:retrieveUserQuota" {
+			w.WriteHeader(http.StatusForbidden)
+			return
+		}
+		_, _ = w.Write([]byte(`{"groups":[{"displayName":"Claude and GPT models","buckets":[
+			{"bucketId":"3p-5h","displayName":"Five Hour Limit Remaining","window":"5h","resetTime":"2026-11-03T08:00:00Z","remainingFraction":1}
+		]}]}`))
+	})
+
+	p := New(provider.Config{Name: "agy"}, staticStore{antigravityQuotaAccount()})
+	snap, err := p.(*Provider).FetchQuota(context.Background(), antigravityQuotaAccount())
+	if err != nil {
+		t.Fatalf("FetchQuota: %v", err)
+	}
+	if snap.Status != quota.StatusAvailable || len(snap.Groups) != 1 {
+		t.Fatalf("snapshot = %+v, want the summary group only", snap)
+	}
+}
+
+// A Gemini bucket with no remaining fraction is a malformed read, matching the
+// summary parser: it must not claim Gemini is drained.
+func TestFetchQuotaGeminiMissingRemainingFractionIsUnavailable(t *testing.T) {
+	serveQuotaBoth(t, `{"groups":[{"displayName":"Claude and GPT models","buckets":[
+		{"bucketId":"3p-5h","displayName":"Five Hour Limit Remaining","window":"5h","resetTime":"2026-11-03T08:00:00Z","remainingFraction":1}
+	]}]}`, `{"buckets":[{"modelId":"gemini-3-flash"}]}`)
+
+	p := New(provider.Config{Name: "agy"}, staticStore{antigravityQuotaAccount()})
+	snap, err := p.(*Provider).FetchQuota(context.Background(), antigravityQuotaAccount())
+	if err != nil {
+		t.Fatalf("FetchQuota: %v", err)
+	}
+	if snap.Status != quota.StatusUnavailable {
+		t.Fatalf("status = %q, want unavailable", snap.Status)
+	}
+}
