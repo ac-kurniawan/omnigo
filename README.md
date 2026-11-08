@@ -36,7 +36,8 @@ Performance and simplicity are the point.
 - **HTMX dashboard** — manage providers, combos, keys, and OAuth logins.
 - **Observability** — optional OpenTelemetry metrics (HTTP duration,
   time-to-first-byte, in-flight requests, provider/combo outcomes) exposed in
-  Prometheus format at `/actuator/metrics`. Disabled by default.
+  Prometheus format at `/actuator/metrics`, and optional per-generation
+  tracing exported to Langfuse over OTLP. Both disabled by default.
 
 ## Quick Start
 
@@ -370,6 +371,73 @@ reports `rate_limit.allowed`/`limit_reached` separately, and an account can
 keep serving at 100% of a window. `status` follows those explicit signals.
 
 A reference template is available at [`config.example.yaml`](./config.example.yaml).
+
+### Tracing (optional)
+
+OmniGo can export one **generation** per upstream dispatch to a
+[Langfuse](https://langfuse.com) project over OTLP. A generation answers what
+metrics cannot: which provider and model served the request, how many tokens it
+consumed, how long it took, whether an attempt failed over, and — opt-in — what
+was actually said.
+
+```yaml
+observability:
+  langfuse:
+    enabled: true                        # default: false
+    host: https://cloud.langfuse.com     # default: cloud; self-hosted: http://localhost:3000
+    capture_content: false               # default: false
+```
+
+The two switches are hot-reloaded: enabling, disabling, or flipping content
+capture takes effect on the next dispatch without a restart.
+
+**Keys are never in `config.yaml`.** Save the project's public and secret key
+on the dashboard's **Settings** tab; they are encrypted into `auth.yaml`
+alongside provider credentials. Saving a new key pair rebuilds the exporter on
+the next request, so no restart is needed. The keys themselves are never
+logged, never written to a span, and never returned by the UI (stored values
+render as `********`).
+
+#### What is exported
+
+Each request produces a `http.request` span, and each dispatch that reached a
+provider produces a child generation span named `<operation>.<model>`:
+
+| Attribute | Value |
+| --------- | ----- |
+| `langfuse.observation.type` | `generation` |
+| `gen_ai.request.model` | the model id that was dispatched |
+| `gen_ai.system` | the configured provider name, as written in `config.yaml` |
+| `gen_ai.usage.input_tokens` / `output_tokens` | reported counts, omitted when zero |
+| `gen_ai.usage.cache_read.input_tokens` / `cache_creation.input_tokens` / `reasoning_tokens` | omitted unless non-zero |
+| `langfuse.observation.model.parameters` | `temperature`, `max_tokens`, `stream` |
+| `langfuse.observation.level` / `status_message` | `ERROR` unless the attempt succeeded, plus the bounded result label |
+| `langfuse.trace.metadata.omnigo_combo` / `omnigo_account` / `omnigo_result` | routing and outcome |
+
+The request span carries `http.route`, `http.response.status_code`, and — once
+the gateway key has been validated — `langfuse.user.id` set to the client key
+id (the same short identifier the API Keys panel shows). Inbound W3C
+`traceparent` is honoured, so a caller's trace continues through the gateway.
+
+An attempt that never reached a provider (unknown provider, disabled model)
+records no generation. A combo that fails over records one generation per
+attempt that actually dispatched.
+
+#### Content capture
+
+`capture_content: true` adds the request body and the assistant reply to the
+span. Use it deliberately: **message text leaves this process and is stored by
+Langfuse.**
+
+When enabled, captured values pass through the same redactor that guards
+client-facing errors (credential-shaped `key=value`, URL userinfo, Bearer
+tokens, `sk-` prefixes) and are capped at 64 KiB each. There is no PII
+detection beyond that, and the capture includes tool calls and model
+parameters — if your prompts carry personal data, leave it off. Token counts,
+latency, provider, and model are exported either way. Both buffered JSON and
+streamed SSE replies decode to an assistant message, so the stored generation
+reads as a conversation turn rather than raw frames. With capture off, no input
+or output attribute is set at all.
 
 ### Codex OAuth setup
 
