@@ -6,6 +6,8 @@ and gateway client keys.
 
 Performance and simplicity are the point.
 
+![OmniGo dashboard — providers, combos, and client keys](./assets/screenshots/dashboard.png)
+
 | Vision        | What it means                                          |
 | ------------- | ------------------------------------------------------ |
 | **Fast**        | In-memory routing, no database, SSE passthrough        |
