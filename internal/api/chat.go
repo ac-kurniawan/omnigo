@@ -51,16 +51,17 @@ func handleChat(getCfg func() *config.Config, registry *providerRegistry, tracke
 		msgs := messagesFromParsed(parsed)
 		cfg := getCfg()
 		req := provider.ChatRequest{Model: model, Stream: stream, Messages: msgs, Raw: raw, Parsed: parsed}
+		captureGen := CaptureGeneration(cfg)
 
 		cb, comboOK := findCombo(cfg, model)
 
 		cacheable := responseCache != nil && cfg != nil && cfg.Cache.EnabledOrDefault() && !cacheBypass(r, parsed, stream, comboOK)
 		if comboOK {
-			runCombo(chatResponder{dst: w}, r, cfg, registry, cb, req, tracker, tc, startTime, metrics)
+			runCombo(chatResponder{dst: w}, r, cfg, registry, cb, req, tracker, tc, startTime, metrics, captureGen)
 			return
 		}
 		if !cacheable {
-			serveDirect(w, r, cfg, registry, req, model, metrics, startTime, tc)
+			serveDirect(w, r, cfg, registry, req, model, metrics, startTime, tc, captureGen)
 			return
 		}
 
@@ -74,12 +75,12 @@ func handleChat(getCfg func() *config.Config, registry *providerRegistry, tracke
 		normal, hashable := cacheMessages(msgs)
 		temp, maxTokens, deterministic := cacheParams(parsed)
 		if caller == nil || caller.ID() == "" || !hashable || !deterministic {
-			serveResolved(w, r, p, provName, resolvedModel, req, metrics, startTime, tc)
+			serveResolved(w, r, p, provName, resolvedModel, req, metrics, startTime, tc, captureGen)
 			return
 		}
 		key, keyErr := cache.ComputeCacheKey(caller.ID(), provName, resolvedModel, normal, temp, maxTokens)
 		if keyErr != nil {
-			serveResolved(w, r, p, provName, resolvedModel, req, metrics, startTime, tc)
+			serveResolved(w, r, p, provName, resolvedModel, req, metrics, startTime, tc, captureGen)
 			return
 		}
 		cached, getErr := responseCache.Get(r.Context(), key)
@@ -92,7 +93,7 @@ func handleChat(getCfg func() *config.Config, registry *providerRegistry, tracke
 			return
 		}
 		if !errors.Is(getErr, cache.ErrNotFound) && !errors.Is(getErr, cache.ErrExpired) {
-			serveResolved(w, r, p, provName, resolvedModel, req, metrics, startTime, tc)
+			serveResolved(w, r, p, provName, resolvedModel, req, metrics, startTime, tc, captureGen)
 			return
 		}
 
@@ -100,9 +101,12 @@ func handleChat(getCfg func() *config.Config, registry *providerRegistry, tracke
 		metrics.RecordCacheMiss(r.Context(), resolvedModel)
 		SetTelemetryHeaders(w, tc, provName, resolvedModel, startTime)
 		recorded := &bodyRecorder{ResponseWriter: w}
-		providerCtx := withTokenUsage(r.Context(), metrics, provName, resolvedModel, "")
-		providerErr := p.ChatCompletion(providerCtx, req, recorded)
-		metrics.RecordProviderRequest(r.Context(), provName, resolvedModel, classifyProviderError(providerErr, recorded.committed, r.Context().Err() != nil))
+		start := time.Now()
+		cap, providerCtx, providerWriter := trackAttempt(r.Context(), metrics, provName, resolvedModel, "", recorded, captureGen)
+		providerErr := p.ChatCompletion(providerCtx, req, providerWriter)
+		result := classifyProviderError(providerErr, recorded.committed, r.Context().Err() != nil)
+		metrics.RecordProviderRequest(r.Context(), provName, resolvedModel, result)
+		metrics.RecordGeneration(r.Context(), generationFrom(start, time.Now(), "chat", provName, resolvedModel, "", cap, result, req, captureGen))
 		if providerErr != nil && !recorded.committed {
 			if recorded.body.Len() == 0 && !recorded.wrote {
 				writeProviderError(w, providerErr)
@@ -118,25 +122,28 @@ func handleChat(getCfg func() *config.Config, registry *providerRegistry, tracke
 	}
 }
 
-func serveDirect(w http.ResponseWriter, r *http.Request, cfg *config.Config, registry *providerRegistry, req provider.ChatRequest, model string, metrics Metrics, startTime time.Time, tc *TraceContext) {
+func serveDirect(w http.ResponseWriter, r *http.Request, cfg *config.Config, registry *providerRegistry, req provider.ChatRequest, model string, metrics Metrics, startTime time.Time, tc *TraceContext, capture bool) {
 	p, provName, resolvedModel, ok := resolveDirect(cfg, registry, model)
 	if !ok {
 		writeError(w, http.StatusNotFound, "model not found: "+model)
 		return
 	}
 	req.Model = resolvedModel
-	serveResolved(w, r, p, provName, resolvedModel, req, metrics, startTime, tc)
+	serveResolved(w, r, p, provName, resolvedModel, req, metrics, startTime, tc, capture)
 }
 
-func serveResolved(w http.ResponseWriter, r *http.Request, p provider.Provider, provName, resolvedModel string, req provider.ChatRequest, metrics Metrics, startTime time.Time, tc *TraceContext) {
+func serveResolved(w http.ResponseWriter, r *http.Request, p provider.Provider, provName, resolvedModel string, req provider.ChatRequest, metrics Metrics, startTime time.Time, tc *TraceContext, capture bool) {
 	SetTelemetryHeaders(w, tc, provName, resolvedModel, startTime)
 	// Providers stream straight to the client on this path, so a late failure
 	// must not be answered with a fresh JSON error envelope: the SSE body is
 	// already on the wire and the object would be parsed as a bad frame.
 	tracked := &commitTracker{ResponseWriter: w}
-	providerCtx := withTokenUsage(r.Context(), metrics, provName, resolvedModel, "")
-	providerErr := p.ChatCompletion(providerCtx, req, tracked)
-	metrics.RecordProviderRequest(r.Context(), provName, resolvedModel, classifyProviderError(providerErr, tracked.committed, r.Context().Err() != nil))
+	start := time.Now()
+	cap, providerCtx, providerWriter := trackAttempt(r.Context(), metrics, provName, resolvedModel, "", tracked, capture)
+	providerErr := p.ChatCompletion(providerCtx, req, providerWriter)
+	result := classifyProviderError(providerErr, tracked.committed, r.Context().Err() != nil)
+	metrics.RecordProviderRequest(r.Context(), provName, resolvedModel, result)
+	metrics.RecordGeneration(r.Context(), generationFrom(start, time.Now(), "chat", provName, resolvedModel, "", cap, result, req, capture))
 	if providerErr != nil && !tracked.committed {
 		writeProviderError(w, providerErr)
 	} else if providerErr != nil && req.Stream && r.Context().Err() == nil {
@@ -396,12 +403,12 @@ func finishAttempt(attempt http.ResponseWriter, providerErr error) error {
 	return providerErr
 }
 
-func runCombo(responder responder, r *http.Request, cfg *config.Config, registry *providerRegistry, cb config.Combo, req provider.ChatRequest, tracker *combo.Tracker, tc *TraceContext, startTime time.Time, metrics Metrics) {
+func runCombo(responder responder, r *http.Request, cfg *config.Config, registry *providerRegistry, cb config.Combo, req provider.ChatRequest, tracker *combo.Tracker, tc *TraceContext, startTime time.Time, metrics Metrics, capture bool) {
 	// A smart combo decides first, then delegates to the destination combo's
 	// own chain, which owns the failover. The strategy of the destination
 	// combo is what runs; the smart combo contributes only the choice.
 	if cb.IsSmart() {
-		runSmartCombo(responder, r, cfg, registry, cb, req, tracker, tc, startTime, metrics)
+		runSmartCombo(responder, r, cfg, registry, cb, req, tracker, tc, startTime, metrics, capture)
 		return
 	}
 	c := combo.Combo{
@@ -430,9 +437,14 @@ func runCombo(responder responder, r *http.Request, cfg *config.Config, registry
 		req.Model = t.Model
 		attempt := responder.attempt(req.Stream)
 		SetTelemetryHeaders(attempt, tc, t.Provider, t.Model, startTime)
-		providerCtx := withTokenUsage(ctx, metrics, t.Provider, t.Model, cb.Name)
-		providerErr := p.ChatCompletion(providerCtx, req, attempt)
+		start := time.Now()
+		cap, providerCtx, providerWriter := trackAttempt(ctx, metrics, t.Provider, t.Model, cb.Name, attempt, capture)
+		providerErr := p.ChatCompletion(providerCtx, req, providerWriter)
 		err := finishAttempt(attempt, providerErr)
+		// The generation span carries the attempt's real outcome: a committed
+		// stream that then failed is a stream failure, not a success.
+		genResult := classifyProviderError(err, errors.Is(err, errResponseCommitted), r.Context().Err() != nil)
+		metrics.RecordGeneration(ctx, generationFrom(start, time.Now(), "chat", t.Provider, t.Model, cb.Name, cap, genResult, req, capture))
 		if errors.Is(err, errResponseCommitted) {
 			responseCommitted = true
 			// A client abort mid-stream cancels the request context; that is not an
@@ -468,15 +480,6 @@ func runCombo(responder responder, r *http.Request, cfg *config.Config, registry
 	if err != nil && !responseCommitted {
 		writeProviderError(responder.writer(), err)
 	}
-}
-
-// withTokenUsage installs the sink that turns one completed upstream response
-// into token counters. combo is empty on a direct call. model is the id that
-// was dispatched: a combo target, or the bare model on a direct call.
-func withTokenUsage(ctx context.Context, metrics Metrics, providerName, model, combo string) context.Context {
-	return provider.WithUsageSink(ctx, func(usage provider.TokenUsage) {
-		metrics.RecordTokenUsage(ctx, providerName, model, usage.Account, combo, usage)
-	})
 }
 
 type sanitizedError struct {

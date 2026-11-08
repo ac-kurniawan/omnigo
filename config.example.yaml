@@ -18,9 +18,15 @@ dashboard:
   # enabled: true  # serve the dashboard UI; false answers 404 for the UI and /internal/* (default: true)
   # auth: true  # HTTP basic auth (default: true). Requires OMNIGO_DASH_USER and OMNIGO_DASH_PASS; there is no default account.
 
-# Observability. Metrics default to disabled.
+# Observability. Metrics and tracing default to disabled.
 # observability:
 #   metrics: true  # expose Prometheus metrics at /actuator/metrics (default: false)
+#   langfuse:
+#     enabled: true          # export one generation span per upstream dispatch (default: false)
+#     host: https://cloud.langfuse.com  # self-hosted: http://localhost:3000 (default: cloud)
+#     capture_content: false # include prompt/completion text; sends message text to Langfuse (default: false)
+# Langfuse project keys are not configured here: save them on the dashboard's
+# Settings tab, where they are encrypted into auth.yaml.
 
 # Per-account quota polling, shown on the dashboard's provider cards.
 # polling on, auto-drain opt-in: enabling this changes no routing behaviour.

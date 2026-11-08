@@ -2755,6 +2755,52 @@
     </div>
   </form>
 </div>
+
+<div class="card bg-base-100 border border-base-content/10 rounded-2xl shadow-sm p-4 sm:p-6 space-y-6">
+  <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-base-content/10 pb-4">
+    <div>
+      <h2 class="text-xl font-bold">Langfuse Tracing</h2>
+      <p class="text-xs text-base-content/60 mt-1">Exports one generation span per upstream dispatch over OTLP. Keys are stored encrypted in auth.yaml.</p>
+    </div>
+  </div>
+  <form action="/settings/langfuse" method="POST" hx-post="/settings/langfuse" hx-target="#settings" hx-swap="innerHTML" class="space-y-4 max-w-xl">
+    <div class="space-y-2">
+      <label class="flex items-center gap-2.5 cursor-pointer min-h-11">
+        <input type="checkbox" name="enabled" class="checkbox checkbox-xs checkbox-primary"{{if .Langfuse.EnabledOrDefault}} checked{{end}}>
+        <span class="text-xs font-semibold text-base-content/70">Enable tracing</span>
+      </label>
+      <label class="flex items-start gap-2.5 cursor-pointer min-h-11">
+        <input type="checkbox" name="capture_content" class="checkbox checkbox-xs checkbox-primary mt-0.5"{{if .Langfuse.CaptureContentEnabled}} checked{{end}}>
+        <span class="text-xs font-semibold text-base-content/70">Capture prompt and completion text
+          <span class="block font-normal text-base-content/50">Sends message text to Langfuse. Off by default: only model, provider, tokens, and latency are exported.</span>
+        </span>
+      </label>
+    </div>
+    <div class="grid grid-cols-1 gap-4">
+      <div>
+        <label class="label pb-1.5 pt-0 text-xs font-semibold text-base-content/70" for="langfuse-host">Host</label>
+        <input type="text" name="host" id="langfuse-host" value="{{.Langfuse.Host}}" placeholder="https://cloud.langfuse.com" class="input input-bordered input-sm w-full font-mono text-xs px-3 py-2 h-auto min-h-[2.25rem] rounded-lg">
+        <span class="text-[11px] text-base-content/40">blank uses https://cloud.langfuse.com; self-hosted is http://localhost:3000</span>
+      </div>
+      <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+        <div>
+          <label class="label pb-1.5 pt-0 text-xs font-semibold text-base-content/70" for="langfuse-public-key">Public key</label>
+          <input type="password" name="public_key" id="langfuse-public-key" value="{{if .LangfuseKeys.PublicKey}}********{{end}}" placeholder="pk-lf-..." class="input input-bordered input-sm w-full font-mono text-xs px-3 py-2 h-auto min-h-[2.25rem] rounded-lg">
+        </div>
+        <div>
+          <label class="label pb-1.5 pt-0 text-xs font-semibold text-base-content/70" for="langfuse-secret-key">Secret key</label>
+          <input type="password" name="secret_key" id="langfuse-secret-key" value="{{if .LangfuseKeys.SecretKey}}********{{end}}" placeholder="sk-lf-..." class="input input-bordered input-sm w-full font-mono text-xs px-3 py-2 h-auto min-h-[2.25rem] rounded-lg">
+        </div>
+      </div>
+    </div>
+    <div class="flex justify-end pt-2 border-t border-base-content/10">
+      <button type="submit" class="btn btn-primary btn-sm px-5 h-auto min-h-[2.25rem] rounded-lg gap-1.5 shadow-sm font-medium">
+        <svg xmlns="http://www.w3.org/2000/svg" class="size-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>
+        Save Settings
+      </button>
+    </div>
+  </form>
+</div>
 {{end}}
 
 {{define "models-modal-box"}}

@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/ac-kurniawan/omnigo/internal/auth"
+	"github.com/ac-kurniawan/omnigo/internal/observability/tracing"
 	"github.com/ac-kurniawan/omnigo/internal/provider"
 	"github.com/ac-kurniawan/omnigo/internal/quota"
 	prom "github.com/prometheus/client_golang/prometheus"
@@ -88,6 +89,9 @@ type Metrics struct {
 	quotaRemainingRatio metric.Float64Gauge
 	quotaStatus         metric.Int64Gauge
 	quotaResetsIn       metric.Float64Gauge
+
+	// tracer backs RecordGeneration. Nil when tracing is not wired.
+	tracer *tracing.Tracer
 }
 
 // New builds the metrics instruments. enabled reports whether recording and
@@ -251,6 +255,31 @@ func (m *Metrics) Shutdown(ctx context.Context) error {
 		return nil
 	}
 	return m.provider.Shutdown(ctx)
+}
+
+// SetTracer attaches the tracing backend that RecordGeneration delegates to.
+func (m *Metrics) SetTracer(t *tracing.Tracer) {
+	if m == nil {
+		return
+	}
+	m.tracer = t
+}
+
+// Tracer returns the tracing backend, or nil when none is attached.
+func (m *Metrics) Tracer() *tracing.Tracer {
+	if m == nil {
+		return nil
+	}
+	return m.tracer
+}
+
+// RecordGeneration exports one upstream dispatch as a generation span. With
+// no tracer attached it records nothing.
+func (m *Metrics) RecordGeneration(ctx context.Context, g tracing.Generation) {
+	if m == nil || m.tracer == nil {
+		return
+	}
+	m.tracer.RecordGeneration(ctx, g)
 }
 
 // Middleware instruments inbound requests with the OpenTelemetry HTTP server

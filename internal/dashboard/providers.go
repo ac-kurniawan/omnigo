@@ -316,12 +316,73 @@ func (s *Server) updateServerTimeouts(w http.ResponseWriter, r *http.Request) {
 	s.renderSettings(w)
 }
 
+// updateLangfuse replaces the Langfuse tracing settings. The key pair is
+// written to the encrypted vault; leaving both key fields blank keeps the
+// stored pair, and "********" in the secret field means unchanged.
+func (s *Server) updateLangfuse(w http.ResponseWriter, r *http.Request) {
+	enabled := r.FormValue("enabled") == "on"
+	capture := r.FormValue("capture_content") == "on"
+	host := strings.TrimSpace(r.FormValue("host"))
+	publicKey := strings.TrimSpace(r.FormValue("public_key"))
+	secretKey := strings.TrimSpace(r.FormValue("secret_key"))
+
+	if (publicKey == "") != (secretKey == "") {
+		http.Error(w, "public key and secret key must be set together", http.StatusBadRequest)
+		return
+	}
+	if secretKey == "********" {
+		secretKey = ""
+		publicKey = ""
+	}
+
+	if s.mutate != nil {
+		err := s.mutate(func(c *config.Config) error {
+			prev := c.Observability.Langfuse
+			c.Observability.Langfuse = config.Langfuse{
+				Enabled:        &enabled,
+				Host:           host,
+				CaptureContent: &capture,
+			}
+			if err := c.Validate(); err != nil {
+				c.Observability.Langfuse = prev
+				return err
+			}
+			return nil
+		})
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+	}
+
+	if publicKey != "" && s.store != nil {
+		sec := vault.LangfuseSecret{PublicKey: publicKey, SecretKey: secretKey}
+		if err := s.store.Update(func(v *vault.Vault) error {
+			v.Langfuse = sec
+			return nil
+		}); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+	}
+
+	if r.Header.Get("HX-Request") != "true" {
+		http.Redirect(w, r, "/", http.StatusSeeOther)
+		return
+	}
+	s.renderSettings(w)
+}
+
 func (s *Server) getSettings(w http.ResponseWriter, r *http.Request) {
 	s.renderSettings(w)
 }
 
 func (s *Server) renderSettings(w http.ResponseWriter) {
-	data := viewData{Server: s.getCfg().Server}
+	data := viewData{
+		Server:       s.getCfg().Server,
+		Langfuse:     s.getCfg().Observability.Langfuse,
+		LangfuseKeys: s.store.Get().Langfuse,
+	}
 	if err := s.tmpl.ExecuteTemplate(w, "settings", data); err != nil {
 		log.Printf("dashboard: render settings: %v", err)
 	}

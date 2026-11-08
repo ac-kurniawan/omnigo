@@ -49,6 +49,7 @@ func handleMessages(getCfg func() *config.Config, registry *providerRegistry, tr
 		}
 
 		cfg := getCfg()
+		captureGen := CaptureGeneration(cfg)
 		tx := newAnthropicTx(w, req.Model)
 
 		if cb, ok := findCombo(cfg, req.Model); ok {
@@ -56,7 +57,7 @@ func handleMessages(getCfg func() *config.Config, registry *providerRegistry, tr
 				tx.flagStream()
 			}
 			responder := anthropicResponder{tx: tx}
-			runCombo(responder, r, cfg, registry, cb, req, tracker, tc, startTime, metrics)
+			runCombo(responder, r, cfg, registry, cb, req, tracker, tc, startTime, metrics, captureGen)
 			tx.finished()
 			if recorded := tx.comboError; recorded != nil && !tx.committed && recorded.body.Len() > 0 {
 				writeMessagesError(w, recorded.statusCode(), comboErrorMessage(recorded.body.Bytes()))
@@ -79,11 +80,14 @@ func handleMessages(getCfg func() *config.Config, registry *providerRegistry, tr
 		}
 		attempt := tx.attempt()
 		SetTelemetryHeaders(attempt, tc, provName, resolvedModel, startTime)
-		providerCtx := withTokenUsage(r.Context(), metrics, provName, resolvedModel, "")
-		providerErr := p.ChatCompletion(providerCtx, req, attempt)
+		start := time.Now()
+		cap, providerCtx, providerWriter := trackAttempt(r.Context(), metrics, provName, resolvedModel, "", attempt, captureGen)
+		providerErr := p.ChatCompletion(providerCtx, req, providerWriter)
 		err = finishAttempt(attempt, providerErr)
 		clientGone := r.Context().Err() != nil
-		metrics.RecordProviderRequest(r.Context(), provName, resolvedModel, classifyProviderError(err, tx.committed, clientGone))
+		result := classifyProviderError(err, tx.committed, clientGone)
+		metrics.RecordProviderRequest(r.Context(), provName, resolvedModel, result)
+		metrics.RecordGeneration(r.Context(), generationFrom(start, time.Now(), "messages", provName, resolvedModel, "", cap, result, req, captureGen))
 		if err != nil && !tx.committed {
 			if tx.began {
 				// Headers and pings are already on the wire, so a JSON body

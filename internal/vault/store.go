@@ -81,6 +81,7 @@ func (v *Vault) Clone() *Vault {
 		ProviderSecrets:  make(map[string]ProviderSecret, len(v.ProviderSecrets)),
 		ProviderAccounts: make(map[string][]ProviderSecret, len(v.ProviderAccounts)),
 		ClientKeys:       make([]ClientKey, len(v.ClientKeys)),
+		Langfuse:         v.Langfuse,
 	}
 	for k, val := range v.ProviderSecrets {
 		c.ProviderSecrets[k] = val

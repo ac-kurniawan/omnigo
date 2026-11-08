@@ -42,6 +42,10 @@ type viewData struct {
 	Version   string
 	Quota     *quota.Cache
 	Server    config.Server
+	// Langfuse is the tracing section of observability; LangfuseKeys carries
+	// the stored project key pair, which the form never echoes back.
+	Langfuse     config.Langfuse
+	LangfuseKeys vault.LangfuseSecret
 	// SmartComboNames and SmartModelTargets feed the smart router's
 	// destination picker: the plain combos a route can point at, and every
 	// provider/model pair a route can name directly.
@@ -459,6 +463,7 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("POST /keys/{id}/revoke", s.revokeKey)
 	mux.HandleFunc("GET /settings", s.getSettings)
 	mux.HandleFunc("POST /settings/timeouts", s.updateServerTimeouts)
+	mux.HandleFunc("POST /settings/langfuse", s.updateLangfuse)
 	return mux
 }
 

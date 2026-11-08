@@ -371,6 +371,64 @@ func (w *bodyRecorder) statusCode() int {
 	return w.status
 }
 
+// maxObservedBody caps the bytes kept for tracing. Streaming continues past
+// the cap untouched; only the captured copy stops growing.
+const maxObservedBody = 256 << 10
+
+// observingWriter forwards every byte and forwards Flush unconditionally, so
+// SSE keeps streaming, while keeping a bounded copy for the generation span.
+type observingWriter struct {
+	http.ResponseWriter
+	buf     bytes.Buffer
+	ctype   string
+	limited bool
+}
+
+func (w *observingWriter) WriteHeader(status int) {
+	if ct := w.Header().Get("Content-Type"); ct != "" {
+		w.ctype = ct
+	}
+	w.ResponseWriter.WriteHeader(status)
+}
+
+func (w *observingWriter) Write(data []byte) (int, error) {
+	// Headers can be set without an explicit WriteHeader.
+	if w.ctype == "" {
+		if ct := w.Header().Get("Content-Type"); ct != "" {
+			w.ctype = ct
+		}
+	}
+	if !w.limited {
+		if room := maxObservedBody - w.buf.Len(); room > 0 {
+			if room > len(data) {
+				room = len(data)
+			}
+			_, _ = w.buf.Write(data[:room])
+		}
+		if w.buf.Len() >= maxObservedBody {
+			w.limited = true
+		}
+	}
+	return w.ResponseWriter.Write(data)
+}
+
+func (w *observingWriter) Flush() {
+	if f, ok := w.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
+func (w *observingWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
+
+func (w *observingWriter) bytes() []byte {
+	if w.buf.Len() == 0 {
+		return nil
+	}
+	return w.buf.Bytes()
+}
+
+func (w *observingWriter) contentType() string { return w.ctype }
+
 // writeStreamError tells a client whose stream already started that the
 // generation did not finish. The response is committed, so failover is no
 // longer possible and a JSON envelope would be parsed as a malformed chunk; an

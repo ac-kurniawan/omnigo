@@ -36,7 +36,17 @@ type Vault struct {
 	ProviderSecrets  map[string]ProviderSecret   `yaml:"provider_secrets,omitempty"`
 	ProviderAccounts map[string][]ProviderSecret `yaml:"provider_accounts,omitempty"`
 	ClientKeys       []ClientKey                 `yaml:"client_keys"`
+	// Langfuse holds the project public/secret key for OTLP export.
+	Langfuse LangfuseSecret `yaml:"langfuse,omitempty"`
 }
+
+// LangfuseSecret is the Langfuse project key pair used for OTLP export.
+type LangfuseSecret struct {
+	PublicKey string `yaml:"public_key,omitempty"`
+	SecretKey string `yaml:"secret_key,omitempty"`
+}
+
+func (s LangfuseSecret) Empty() bool { return s.PublicKey == "" && s.SecretKey == "" }
 
 func (v *Vault) Accounts(name string) []ProviderSecret {
 	if accounts := v.ProviderAccounts[name]; len(accounts) > 0 {
