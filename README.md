@@ -398,6 +398,18 @@ the next request, so no restart is needed. The keys themselves are never
 logged, never written to a span, and never returned by the UI (stored values
 render as `********`).
 
+For deployments that cannot reach the dashboard, set the pair in the
+environment instead:
+
+```bash
+LANGFUSE_PUBLIC_KEY=pk-lf-... LANGFUSE_SECRET_KEY=sk-lf-... ./omnigo
+```
+
+A complete environment pair takes precedence over the stored pair, so an
+operator who sets it overrides what the dashboard saved. A **partial** pair
+(only one variable set) is ignored and the stored pair is used: exporting with
+half of each would authenticate as garbage. Set both or neither.
+
 #### What is exported
 
 Each request produces a `http.request` span, and each dispatch that reached a

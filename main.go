@@ -258,8 +258,7 @@ func main() {
 			return cfg.Observability.Langfuse.HostOrDefault()
 		},
 		Keys: func() tracing.Keys {
-			sec := state.store.Get().Langfuse
-			return tracing.Keys{PublicKey: sec.PublicKey, SecretKey: sec.SecretKey}
+			return tracing.ResolveKeys(os.Getenv, state.store.Get().Langfuse)
 		},
 		Capture: func() bool {
 			return api.CaptureGeneration(state.getCfg())

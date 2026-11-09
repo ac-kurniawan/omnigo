@@ -79,7 +79,9 @@ Client → /v1/chat/completions
   keys and OAuth tokens (`access_token`, `refresh_token`, `expires_at`,
   `project_id`), gateway client-key hashes, and the Langfuse project key pair
   (`langfuse.public_key` / `langfuse.secret_key`) saved from the Settings tab.
-  Never commit plaintext secrets.
+  `LANGFUSE_PUBLIC_KEY` / `LANGFUSE_SECRET_KEY` override the stored pair when
+  both are set; a partial pair is ignored (`tracing.ResolveKeys`). Never commit
+  plaintext secrets.
 - **`.secret.key`** — 32-byte key material, auto-generated on first run if
   `OMNIGO_SECRET_KEY` (or `AIGO_SECRET_KEY`) is unset. **gitignored.** Losing it means re-entering
   credentials.
