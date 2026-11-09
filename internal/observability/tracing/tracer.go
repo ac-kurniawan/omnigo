@@ -176,15 +176,32 @@ func (t *Tracer) Shutdown(ctx context.Context) error {
 	return t.provider.Shutdown(ctx)
 }
 
+// excludedRoutes are dashboard and scrape paths that produce no Langfuse
+// trace: polling UI fragments and metrics scrapes would only add noise.
+// "/" covers the dashboard index route, declared as "GET /{$}".
+var excludedRoutes = map[string]bool{
+	"/":                  true,
+	"/actuator/metrics":  true,
+	"/combos":            true,
+	"/playground/models": true,
+	"/settings":          true,
+}
+
 // Middleware starts the inbound request span and fills in the caller identity,
 // route, and status once the handler returns. The identity is only known after
 // auth runs inside the mux, which is why these attributes are set last.
+// Excluded routes produce no span: they are matched on the request path before
+// dispatch, because ServeMux fills in r.Pattern only further down the chain.
 func (t *Tracer) Middleware(next http.Handler) http.Handler {
 	if t == nil {
 		return next
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if t.opts.Enabled != nil && !t.opts.Enabled() {
+			next.ServeHTTP(w, r)
+			return
+		}
+		if excludedRoute(r.URL.Path) {
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -207,6 +224,12 @@ func (t *Tracer) Middleware(next http.Handler) http.Handler {
 		}
 		span.End()
 	})
+}
+
+// excludedRoute reports whether path belongs to a route that must not reach
+// Langfuse. /static/ is matched as a prefix; every other entry is exact.
+func excludedRoute(path string) bool {
+	return excludedRoutes[path] || strings.HasPrefix(path, "/static/")
 }
 
 // routePattern returns the matched path template, collapsing unmatched

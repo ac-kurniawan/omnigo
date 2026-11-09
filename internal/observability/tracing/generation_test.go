@@ -3,6 +3,8 @@ package tracing
 import (
 	"context"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -177,5 +179,40 @@ func TestExtractOutputRejectsGarbage(t *testing.T) {
 	}
 	if got := extractAssistantOutput(nil, ""); got != nil {
 		t.Errorf("got %s, want nil", got)
+	}
+}
+
+func TestMiddlewareSkipsExcludedRoutes(t *testing.T) {
+	ok := func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusNoContent) }
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /actuator/metrics", ok)
+	mux.HandleFunc("GET /combos", ok)
+	mux.HandleFunc("GET /playground/models", ok)
+	mux.HandleFunc("GET /static/", ok)
+	mux.HandleFunc("GET /{$}", ok)
+	mux.HandleFunc("GET /settings", ok)
+	mux.HandleFunc("GET /keys", ok)
+
+	exported := func(t *testing.T, path string) []sdktrace.ReadOnlySpan {
+		t.Helper()
+		tr, rec := newTestTracer(t, false)
+		// Inner mux mirrors production, where the dashboard mux sits below
+		// this middleware and fills in r.Pattern itself.
+		tr.Middleware(mux).ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, path, nil))
+		return rec.Ended()
+	}
+
+	for _, path := range []string{"/actuator/metrics", "/combos", "/playground/models", "/static/app.js", "/", "/settings"} {
+		if spans := exported(t, path); len(spans) != 0 {
+			t.Errorf("%s exported %d spans, want 0", path, len(spans))
+		}
+	}
+
+	spans := exported(t, "/keys")
+	if len(spans) != 1 {
+		t.Fatalf("/keys exported %d spans, want 1", len(spans))
+	}
+	if got, _ := attrValue(t, spans[0], "http.route"); got.AsString() != "/keys" {
+		t.Errorf("http.route = %q, want /keys", got.AsString())
 	}
 }
