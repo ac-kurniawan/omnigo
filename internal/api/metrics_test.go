@@ -97,8 +97,9 @@ func (m *testMetrics) RecordSmartDecision(ctx context.Context, combo, route, res
 
 func (m *testMetrics) RecordTokenUsage(context.Context, string, string, string, string, provider.TokenUsage) {
 }
-func (m *testMetrics) RecordCacheHit(context.Context, string)  {}
-func (m *testMetrics) RecordCacheMiss(context.Context, string) {}
+func (m *testMetrics) RecordCacheHit(context.Context, string)       {}
+func (m *testMetrics) RecordCacheMiss(context.Context, string)      {}
+func (m *testMetrics) RecordGeneration(context.Context, Generation) {}
 
 // newRecordingRouter builds an authenticated router that records outcomes.
 func newRecordingRouter(t *testing.T, cfg *config.Config, m Metrics) (http.Handler, string) {

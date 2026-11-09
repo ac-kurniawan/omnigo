@@ -30,6 +30,9 @@ type Metrics interface {
 	RecordCacheHit(ctx context.Context, model string)
 	// RecordCacheMiss counts a cacheable lookup that found nothing for model.
 	RecordCacheMiss(ctx context.Context, model string)
+	// RecordGeneration exports one upstream dispatch to the tracing backend.
+	// It is a no-op when tracing is off.
+	RecordGeneration(ctx context.Context, g Generation)
 }
 
 type noopMetrics struct{}
@@ -39,8 +42,9 @@ func (noopMetrics) RecordCombinationAttempt(context.Context, string, string)    
 func (noopMetrics) RecordSmartDecision(context.Context, string, string, string)   {}
 func (noopMetrics) RecordTokenUsage(context.Context, string, string, string, string, provider.TokenUsage) {
 }
-func (noopMetrics) RecordCacheHit(context.Context, string)  {}
-func (noopMetrics) RecordCacheMiss(context.Context, string) {}
+func (noopMetrics) RecordCacheHit(context.Context, string)       {}
+func (noopMetrics) RecordCacheMiss(context.Context, string)      {}
+func (noopMetrics) RecordGeneration(context.Context, Generation) {}
 
 // Bounded dispatch result labels. Cardinality is fixed by this set, never by
 // client input.

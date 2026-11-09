@@ -46,10 +46,11 @@ func handleResponses(getCfg func() *config.Config, registry *providerRegistry, t
 		}
 
 		cfg := getCfg()
+		captureGen := CaptureGeneration(cfg)
 		tx := newResponsesTx(w, req.Model)
 
 		if cb, ok := findCombo(cfg, req.Model); ok {
-			runCombo(responsesResponder{tx: tx}, r, cfg, registry, cb, req, tracker, tc, startTime, metrics)
+			runCombo(responsesResponder{tx: tx}, r, cfg, registry, cb, req, tracker, tc, startTime, metrics, captureGen)
 			tx.finished()
 			return
 		}
@@ -65,11 +66,14 @@ func handleResponses(getCfg func() *config.Config, registry *providerRegistry, t
 		}
 		attempt := tx.attempt()
 		SetTelemetryHeaders(attempt, tc, provName, resolvedModel, startTime)
-		providerCtx := withTokenUsage(r.Context(), metrics, provName, resolvedModel, "")
-		providerErr := p.ChatCompletion(providerCtx, req, attempt)
+		start := time.Now()
+		cap, providerCtx, providerWriter := trackAttempt(r.Context(), metrics, provName, resolvedModel, "", attempt, captureGen)
+		providerErr := p.ChatCompletion(providerCtx, req, providerWriter)
 		err = finishAttempt(attempt, providerErr)
 		clientGone := r.Context().Err() != nil
-		metrics.RecordProviderRequest(r.Context(), provName, resolvedModel, classifyProviderError(err, tx.committed, clientGone))
+		result := classifyProviderError(err, tx.committed, clientGone)
+		metrics.RecordProviderRequest(r.Context(), provName, resolvedModel, result)
+		metrics.RecordGeneration(r.Context(), generationFrom(start, time.Now(), "responses", provName, resolvedModel, "", cap, result, req, captureGen))
 		if err != nil && !tx.committed {
 			writeProviderError(w, err)
 			return

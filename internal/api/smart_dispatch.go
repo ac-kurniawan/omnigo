@@ -41,7 +41,7 @@ func systemOneClientFactoryEnv(cfg config.SmartDecision) smartDecider {
 // The destination combo owns the failover: the targets are the destination
 // combo's own chain, run with the destination combo's strategy. A smart combo
 // contributes only the choice of chain.
-func runSmartCombo(responder responder, r *http.Request, cfg *config.Config, registry *providerRegistry, cb config.Combo, req provider.ChatRequest, tracker *combo.Tracker, tc *TraceContext, startTime time.Time, metrics Metrics) {
+func runSmartCombo(responder responder, r *http.Request, cfg *config.Config, registry *providerRegistry, cb config.Combo, req provider.ChatRequest, tracker *combo.Tracker, tc *TraceContext, startTime time.Time, metrics Metrics, capture bool) {
 	router := newSmartRouter(cfg, cb, smartDeciderFor(cfg, cb))
 	state := smartState(req.Messages)
 	decision := router.decide(r.Context(), state)
@@ -109,9 +109,12 @@ func runSmartCombo(responder responder, r *http.Request, cfg *config.Config, reg
 		req.Model = t.Model
 		attempt := responder.attempt(req.Stream)
 		SetTelemetryHeaders(attempt, tc, t.Provider, t.Model, startTime)
-		providerCtx := withTokenUsage(ctx, metrics, t.Provider, t.Model, comboName)
-		providerErr := p.ChatCompletion(providerCtx, req, attempt)
+		start := time.Now()
+		cap, providerCtx, providerWriter := trackAttempt(ctx, metrics, t.Provider, t.Model, comboName, attempt, capture)
+		providerErr := p.ChatCompletion(providerCtx, req, providerWriter)
 		err := finishAttempt(attempt, providerErr)
+		genResult := classifyProviderError(err, errors.Is(err, errResponseCommitted), r.Context().Err() != nil)
+		metrics.RecordGeneration(ctx, generationFrom(start, time.Now(), "chat", t.Provider, t.Model, comboName, cap, genResult, req, capture))
 		if errors.Is(err, errResponseCommitted) {
 			responseCommitted = true
 			clientGone := r.Context().Err() != nil

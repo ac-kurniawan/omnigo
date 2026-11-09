@@ -21,6 +21,7 @@ import (
 	"github.com/ac-kurniawan/omnigo/internal/config"
 	"github.com/ac-kurniawan/omnigo/internal/dashboard"
 	"github.com/ac-kurniawan/omnigo/internal/observability"
+	"github.com/ac-kurniawan/omnigo/internal/observability/tracing"
 	"github.com/ac-kurniawan/omnigo/internal/quota"
 	"github.com/ac-kurniawan/omnigo/internal/vault"
 	"github.com/ac-kurniawan/omnigo/internal/version"
@@ -119,7 +120,7 @@ func newApp(getCfg func() *config.Config, store *vault.Store, mutate config.Muta
 	root.Handle("/v1/", apiHandler)
 	root.Handle("/internal/", apiHandler)
 	root.Handle("/", dashboard.NewHandlerWithQuota(getCfg, store, mutate, quotaCache, tracker))
-	return metrics.Middleware(root), runtime
+	return metrics.Middleware(metrics.Tracer().Middleware(root)), runtime
 }
 
 // Server lifecycle bounds are transport concerns. Keep-alive stays fixed.
@@ -240,11 +241,42 @@ func main() {
 	if err != nil {
 		log.Fatalf("observability: %v", err)
 	}
+	// Tracing exports one generation span per upstream dispatch to Langfuse.
+	// Every input is a live closure, so a config reload or a key saved from
+	// the dashboard takes effect without a restart.
+	tracer, err := tracing.New(tracing.Options{
+		ServiceVersion: version.Value,
+		Enabled: func() bool {
+			cfg := state.getCfg()
+			return cfg != nil && cfg.Observability.Langfuse.EnabledOrDefault()
+		},
+		Host: func() string {
+			cfg := state.getCfg()
+			if cfg == nil {
+				return ""
+			}
+			return cfg.Observability.Langfuse.HostOrDefault()
+		},
+		Keys: func() tracing.Keys {
+			return tracing.ResolveKeys(os.Getenv, state.store.Get().Langfuse)
+		},
+		Capture: func() bool {
+			return api.CaptureGeneration(state.getCfg())
+		},
+	})
+	if err != nil {
+		log.Fatalf("tracing: %v", err)
+	}
+	metrics.SetTracer(tracer)
+
 	defer func() {
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		if err := metrics.Shutdown(shutdownCtx); err != nil {
 			log.Printf("metrics shutdown: %v", err)
+		}
+		if err := tracer.Shutdown(shutdownCtx); err != nil {
+			log.Printf("tracing shutdown: %v", err)
 		}
 	}()
 

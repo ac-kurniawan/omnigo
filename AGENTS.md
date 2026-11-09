@@ -23,8 +23,9 @@ gofmt -w .                    # format (or goimports)
 - **Go version**: `1.26+` (`go.mod` pins the floor).
 - **Module**: `github.com/ac-kurniawan/omnigo`.
 - **Dependencies**: `gopkg.in/yaml.v3` and the OpenTelemetry Go SDK
-  (`go.opentelemetry.io/otel` + `exporters/prometheus`) are the third-party
-  dependencies. Everything else is stdlib (`net/http`, `crypto/aes`,
+  (`go.opentelemetry.io/otel`, `exporters/prometheus`, `exporters/otlp/otlptrace/otlptracehttp`)
+  are the third-party dependencies. Treat the whole otel family as one unit:
+  bump `otel`, `sdk`, `metric`, and the exporters together. Everything else is stdlib (`net/http`, `crypto/aes`,
   `html/template`, `hash`). Do not add a dependency for something a few lines
   of stdlib covers.
 
@@ -42,12 +43,15 @@ gofmt -w .                    # format (or goimports)
 | API        | `internal/api`    | `/v1/chat/completions`, `/v1/models`, internal endpoints   |
 | Dashboard  | `internal/dashboard` | HTMX UI: providers, combos, keys, OAuth login              |
 | Observability | `internal/observability` | OpenTelemetry meter, Prometheus exposition at `/actuator/metrics` |
+| Tracing | `internal/observability/tracing` | OTLP exporter to Langfuse: one generation span per upstream dispatch, plus the inbound request span |
 | Quota      | `internal/quota`  | Per-account quota snapshots, in-memory cache, background poller, opt-in auto-drain |
 
 ## Request Pipeline
 
 ```
 Client → /v1/chat/completions
+  → metrics.Middleware (installs the *auth.Caller holder)
+  → tracing.Middleware (inbound span; caller id filled after dispatch)
   → auth middleware (Bearer ak-... vs stored hash)
   → parse OpenAI body
   → model resolves to a combo name or a `<provider>/<model>`
@@ -57,11 +61,14 @@ Client → /v1/chat/completions
                    → the route's destination combo owns the failover
                    → on any decision failure, use the default route
       direct: dispatch to that provider
-  → provider.ChatCompletion(ctx, req, w)
+  → per dispatch: trackAttempt installs one usage sink (token metrics + generation capture)
+                  → provider.ChatCompletion(ctx, req, w)
+                    w is wrapped by observingWriter only when capture_content is on
       openai:      forward request to {base_url}/chat/completions (SSE passthrough)
       antigravity: refresh token if expiring → translate OpenAI→Gemini envelope
                    → POST {base_url}/v1internal:streamGenerateContent?alt=sse
                    → translate Gemini SSE → OpenAI SSE
+  → RecordProviderRequest + RecordGeneration (one span per attempt that dispatched)
 ```
 
 ## Config & Secrets
@@ -70,7 +77,11 @@ Client → /v1/chat/completions
 - **`config.yaml`** — plaintext, safe to commit or edit (gitignored in root; reference template at `config.example.yaml`). Server, providers (name/type/base_url/models), combos. Models listed here are the *cache* of each provider's live `/models` (or `:fetchAvailableModels`) response.
 - **`auth.yaml`** — **encrypted at rest** (AES-256-GCM). Holds provider API
   keys and OAuth tokens (`access_token`, `refresh_token`, `expires_at`,
-  `project_id`) plus gateway client-key hashes. Never commit plaintext secrets.
+  `project_id`), gateway client-key hashes, and the Langfuse project key pair
+  (`langfuse.public_key` / `langfuse.secret_key`) saved from the Settings tab.
+  `LANGFUSE_PUBLIC_KEY` / `LANGFUSE_SECRET_KEY` override the stored pair when
+  both are set; a partial pair is ignored (`tracing.ResolveKeys`). Never commit
+  plaintext secrets.
 - **`.secret.key`** — 32-byte key material, auto-generated on first run if
   `OMNIGO_SECRET_KEY` (or `AIGO_SECRET_KEY`) is unset. **gitignored.** Losing it means re-entering
   credentials.
@@ -121,7 +132,7 @@ go test ./...                                    # full suite
 
 1. Never commit secrets, tokens, or API keys.
 2. Never commit `auth.yaml` or `.secret.key`.
-3. Never add an unsanctioned third-party dependency when stdlib suffices (only `yaml.v3` and `go.opentelemetry.io/otel` are approved).
+3. Never add an unsanctioned third-party dependency when stdlib suffices (only `yaml.v3` and the `go.opentelemetry.io/otel` family, including the Prometheus and OTLP trace exporters, are approved).
 4. Never write production code before a failing test exists.
 5. Never log or return raw credentials.
 6. Keep database-free: all state is in-memory + YAML files. No SQL, no ORM.
@@ -169,6 +180,34 @@ model is served by the same `POST /v1/systemone` endpoint and the request's
 package must not hard-code Jev's name, id, or behaviour. A smart combo's
 `decision.model` names any model the account can use; `GET /system-one/models`
 lists them.
+
+### Adding a traced dispatch
+
+Every upstream call site must produce exactly one generation. The pattern is
+fixed, and two rules in it are load-bearing:
+
+```go
+cap, providerCtx, providerWriter := trackAttempt(ctx, metrics, t.Provider, t.Model, cb.Name, attempt, capture)
+providerErr := p.ChatCompletion(providerCtx, req, providerWriter)
+err := finishAttempt(attempt, providerErr)   // always the ORIGINAL attempt writer
+result := classifyProviderError(err, errors.Is(err, errResponseCommitted), r.Context().Err() != nil)
+metrics.RecordProviderRequest(ctx, t.Provider, t.Model, result)
+metrics.RecordGeneration(ctx, generationFrom(start, time.Now(), "chat", t.Provider, t.Model, cb.Name, cap, result, req, capture))
+```
+
+1. **One usage sink per attempt.** `trackAttempt` replaces `withTokenUsage`.
+   Calling `provider.WithUsageSink` a second time overwrites the first, so
+   token metrics or the generation record would silently go missing. Extend
+   the single callback instead of stacking another.
+2. **The observer never replaces the attempt writer.** `finishAttempt` decides
+   failover from the attempt's commit state, so it keeps the original writer;
+   `observingWriter` only sits between the provider and that writer, and
+   forwards `Flush` unconditionally (SSE depends on it).
+
+Record a generation only after the provider was actually called: an unknown
+provider or a disabled model returns before dispatch and must produce no span.
+`capture` comes from `CaptureGeneration(getCfg())`, computed once per request;
+content is only read when it is true.
 
 ## Reference Docs
 

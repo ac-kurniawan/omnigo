@@ -2,7 +2,9 @@ package config
 
 import (
 	"fmt"
+	"net/url"
 	"os"
+	"strings"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -216,6 +218,51 @@ type Observability struct {
 	// Metrics exposes Prometheus-format metrics at /actuator/metrics.
 	// Default: disabled (nil).
 	Metrics *bool `yaml:"metrics,omitempty"`
+	// Langfuse exports one OTLP generation span per upstream dispatch.
+	// Credentials live encrypted in auth.yaml.
+	// Default: disabled.
+	Langfuse Langfuse `yaml:"langfuse,omitempty"`
+}
+
+// Langfuse exports one OTLP generation span per upstream dispatch.
+// Default: disabled.
+type Langfuse struct {
+	Enabled *bool  `yaml:"enabled,omitempty"`
+	Host    string `yaml:"host,omitempty"`
+	// CaptureContent includes raw prompt and completion text in the span.
+	// Default: false.
+	CaptureContent *bool `yaml:"capture_content,omitempty"`
+}
+
+// EnabledOrDefault reports whether tracing export is on. Default: false.
+func (l Langfuse) EnabledOrDefault() bool {
+	return l.Enabled != nil && *l.Enabled
+}
+
+// CaptureContentEnabled reports whether prompt/completion text is exported.
+// Default: false.
+func (l Langfuse) CaptureContentEnabled() bool {
+	return l.CaptureContent != nil && *l.CaptureContent
+}
+
+const defaultLangfuseHost = "https://cloud.langfuse.com"
+
+// HostOrDefault returns the Langfuse base URL without a trailing slash.
+func (l Langfuse) HostOrDefault() string {
+	host := strings.TrimRight(strings.TrimSpace(l.Host), "/")
+	if host == "" {
+		return defaultLangfuseHost
+	}
+	return host
+}
+
+func (l Langfuse) validate() error {
+	host := l.HostOrDefault()
+	u, err := url.Parse(host)
+	if err != nil || u.Host == "" || (u.Scheme != "https" && u.Scheme != "http") {
+		return fmt.Errorf("invalid host %q", host)
+	}
+	return nil
 }
 
 // MetricsEnabled reports whether the metrics endpoint and recording are on.
@@ -354,6 +401,11 @@ var validTypes = map[string]bool{"openai": true, "antigravity": true, "codex": t
 var validStrategies = map[string]bool{"priority": true, "fill-first": true, "reliable": true, "round-robin": true, StrategySmart: true}
 
 func (c *Config) Validate() error {
+	if c.Observability.Langfuse.EnabledOrDefault() {
+		if err := c.Observability.Langfuse.validate(); err != nil {
+			return fmt.Errorf("observability.langfuse: %w", err)
+		}
+	}
 	if c.Cache != nil {
 		if err := c.Cache.Validate(); err != nil {
 			return fmt.Errorf("cache: %w", err)
