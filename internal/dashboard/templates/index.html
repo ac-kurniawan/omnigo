@@ -345,6 +345,7 @@
                     <select name="type" class="select select-bordered select-sm w-full font-mono text-xs px-3 h-auto min-h-[2.25rem] rounded-lg" required>
                       <option value="openai">openai (Bearer API Key)</option>
                       <option value="opencode">opencode (OpenCode Go — API key)</option>
+                      <option value="commandcode">commandcode (Command Code — API key)</option>
                       <option value="antigravity">antigravity (Google OAuth2 SSO)</option>
                       <option value="codex">codex (ChatGPT OAuth + PKCE)</option>
                       <option value="codebuddy-cn">codebuddy-cn (Tencent CodeBuddy — copilot.tencent.com)</option>
@@ -2169,7 +2170,7 @@
             </button>
             <ul tabindex="0" class="dropdown-content menu menu-sm bg-base-100 rounded-box border border-base-content/10 shadow-lg z-10 w-44 p-1">
               <li><button type="button" onclick="document.getElementById('edit-modal-{{.Name}}').showModal()">Edit</button></li>
-              {{if or (eq .Type "openai") (eq .Type "opencode") (eq .Type "codebuddy") (eq .Type "codebuddy-cn") (eq .Type "codebuddy-intl") (eq .Type "muse")}}
+              {{if or (eq .Type "openai") (eq .Type "opencode") (eq .Type "commandcode") (eq .Type "codebuddy") (eq .Type "codebuddy-cn") (eq .Type "codebuddy-intl") (eq .Type "muse")}}
                 {{if or $hasKey $accounts}}
                   <li><button type="button" onclick="document.getElementById('key-modal-{{.Name}}').showModal()">Manage API Keys</button></li>
                 {{else}}
@@ -2214,7 +2215,7 @@
             <form method="dialog" class="modal-backdrop"><button>close</button></form>
           </dialog>
 
-          {{if or (eq .Type "openai") (eq .Type "opencode") (eq .Type "codebuddy") (eq .Type "codebuddy-cn") (eq .Type "codebuddy-intl") (eq .Type "muse")}}
+          {{if or (eq .Type "openai") (eq .Type "opencode") (eq .Type "commandcode") (eq .Type "codebuddy") (eq .Type "codebuddy-cn") (eq .Type "codebuddy-intl") (eq .Type "muse")}}
             <dialog id="key-modal-{{.Name}}" class="modal modal-bottom sm:modal-middle">
               <div class="modal-box max-w-lg text-left border border-base-content/10 shadow-2xl p-6 rounded-2xl">
                 <h3 class="text-base font-bold flex items-center gap-2 text-primary">
@@ -2345,7 +2346,7 @@
 
         </td>
       </tr>
-      {{if or (eq .Type "antigravity") (eq .Type "codex") (and (or (eq .Type "codebuddy") (eq .Type "codebuddy-cn") (eq .Type "codebuddy-intl") (eq .Type "openai") (eq .Type "opencode") (eq .Type "muse")) $accounts)}}
+      {{if or (eq .Type "antigravity") (eq .Type "codex") (and (or (eq .Type "codebuddy") (eq .Type "codebuddy-cn") (eq .Type "codebuddy-intl") (eq .Type "openai") (eq .Type "opencode") (eq .Type "commandcode") (eq .Type "muse")) $accounts)}}
       <tr class="bg-base-200/20">
         <td colspan="4" class="px-4 py-3">
           <div class="collapse collapse-arrow accounts-collapse border border-base-content/10 rounded-xl bg-base-100/40" data-accordion="{{$provName}}">
