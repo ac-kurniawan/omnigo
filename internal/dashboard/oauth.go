@@ -31,8 +31,13 @@ func (s *Server) findProvider(name string) *config.Provider {
 func (s *Server) oauthLogin(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("provider")
 	pc := s.findProvider(name)
-	if pc == nil || (pc.Type != "antigravity" && pc.Type != "codex") {
+	if pc == nil || (pc.Type != "antigravity" && pc.Type != "codex" && pc.Type != "commandcode") {
 		http.NotFound(w, r)
+		return
+	}
+
+	if pc.Type == "commandcode" {
+		s.commandCodeLogin(w, r, name)
 		return
 	}
 
@@ -181,13 +186,18 @@ func (s *Server) finishCodexLogin(w http.ResponseWriter, r *http.Request, name, 
 func (s *Server) oauthPasteCallback(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("provider")
 	pc := s.findProvider(name)
-	if pc == nil || (pc.Type != "antigravity" && pc.Type != "codex") {
+	if pc == nil || (pc.Type != "antigravity" && pc.Type != "codex" && pc.Type != "commandcode") {
 		http.NotFound(w, r)
 		return
 	}
 
 	rawInput := r.FormValue("callback")
 	codeField := r.FormValue("code")
+
+	if pc.Type == "commandcode" {
+		s.commandCodePasteCallback(w, r, name, rawInput, codeField)
+		return
+	}
 
 	if pc.Type == "codex" {
 		s.codexPasteCallback(w, r, name, rawInput, codeField)

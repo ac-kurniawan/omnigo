@@ -24,8 +24,10 @@ Performance and simplicity are the point.
     while removing `required` entries that do not name a defined property.
   - `codex` — ChatGPT Codex via OAuth2 with PKCE and automatic rotating-token
     refresh, translating the Responses SSE API to OpenAI chat completions.
-  - Models are fetched from each provider's live or official catalog and cached;
-    Codex retains a conservative static fallback when its catalog is unavailable.
+  - `commandcode` — CommandCode Go subscription via browser sign-in (Studio
+    issues a permanent CLI key; no OAuth2 token endpoint exists). Serves chat
+    through the Go-only `POST /alpha/generate` with OpenAI translation and
+    dynamic models plus quota polling.
 - **API key management** — issue client keys (`ak-…`) to access the gateway.
 - **Combo management** — route one model name across a fallback chain with
   `priority` or `fill-first` strategy.
@@ -309,6 +311,13 @@ A reference template is available at [`config.example.yaml`](./config.example.ya
 The loopback redirect targets the machine running the browser, so a dashboard on a remote server still uses the paste workflow. Run the browser locally and paste the callback into the remote dashboard over a trusted HTTPS connection. Browser-based device authorization is not supported. Datacenter IPs may also be rejected by OpenAI during token exchange; if that occurs, run OmniGo on a network OpenAI accepts. If a rotating refresh token is expired, revoked, reused, or otherwise rejected permanently, OmniGo stops retrying it and reports that re-authentication is required. Use **Connect ChatGPT** again to replace the credentials and resume requests; repeated use of an old refresh token cannot recover the session.
 
 Codex inference and model catalog endpoints are private upstream interfaces and may change without notice. OmniGo sanitizes upstream errors and keeps its bundled model fallback when catalog discovery fails or returns malformed data. Codex quota responses can include five-hour and seven-day reset windows; combo strategies mark only the exhausted provider/model target as drained until a bounded cooldown expires, then automatically retry it.
+
+### CommandCode browser sign-in setup
+
+1. Add a provider with `type: commandcode` in `config.yaml` or choose **commandcode** in the dashboard's provider form. No API key is required.
+2. Open the provider's **Connect CommandCode** dialog and click **Open CommandCode Studio**. Sign in with Studio and approve the CLI key — Studio sends the permanent `user_…` key back to the dashboard automatically.
+3. If the automatic callback does not complete, paste the `user_…` key into the dialog's fallback field. OmniGo validates it against `GET /alpha/whoami?limits=1` and stores the account encrypted; do not edit `auth.yaml` manually.
+4. Use a direct model such as `commandcode-go/<model>` or add it to a combo. Models auto-discover from the Provider API with a static fallback; quota badges render from the monthly/session/weekly snapshot.
 
 ## How it works
 

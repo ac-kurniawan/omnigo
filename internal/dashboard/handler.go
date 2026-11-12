@@ -1,6 +1,7 @@
 package dashboard
 
 import (
+	"context"
 	"crypto/rand"
 	"embed"
 	"encoding/hex"
@@ -17,6 +18,7 @@ import (
 	"github.com/ac-kurniawan/omnigo/internal/config"
 	"github.com/ac-kurniawan/omnigo/internal/provider/antigravity"
 	"github.com/ac-kurniawan/omnigo/internal/provider/codex"
+	"github.com/ac-kurniawan/omnigo/internal/provider/commandcode"
 	"github.com/ac-kurniawan/omnigo/internal/quota"
 	"github.com/ac-kurniawan/omnigo/internal/vault"
 	"github.com/ac-kurniawan/omnigo/internal/version"
@@ -80,8 +82,16 @@ type Server struct {
 	// provider (defaults to the codex package).
 	codexExchange func(r *http.Request, code, verifier, redirectURI string) (*codex.Token, error)
 
+	// commandcodeValidate is the injectable whoami seam for the CommandCode
+	// provider (defaults to the commandcode package); tests override it.
+	commandcodeValidate func(ctx context.Context, apiBase, key string) (commandcode.WhoAmI, error)
+
 	oauthMu      sync.Mutex
 	oauthPending map[string]oauthPendingState
+	// commandCodePending tracks browser sign-in states for commandcode
+	// providers: waiting, connected, or failed. It is separate from
+	// oauthPending because the Studio browser flow has no code/verifier.
+	commandCodePending map[string]commandCodePendingEntry
 }
 
 func NewHandler(getCfg func() *config.Config, store *vault.Store, mutate config.MutateFunc, tracker ...*combo.Tracker) http.Handler {
@@ -363,7 +373,11 @@ func newServer(getCfg func() *config.Config, store *vault.Store, mutate config.M
 	s.codexExchange = func(r *http.Request, code, verifier, redirectURI string) (*codex.Token, error) {
 		return codex.ExchangeCode(r.Context(), code, verifier, redirectURI)
 	}
+	s.commandcodeValidate = func(ctx context.Context, apiBase, key string) (commandcode.WhoAmI, error) {
+		return commandcode.ValidateKey(ctx, nil, apiBase, key)
+	}
 	s.oauthPending = make(map[string]oauthPendingState)
+	s.commandCodePending = make(map[string]commandCodePendingEntry)
 	return s
 }
 
@@ -374,6 +388,10 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("GET /oauth/login/{provider}", s.oauthLogin)
 	mux.HandleFunc("GET /oauth/callback", s.oauthCallback)
 	mux.HandleFunc("POST /oauth/{provider}/paste-callback", s.oauthPasteCallback)
+	mux.HandleFunc("POST /oauth/commandcode/callback", s.oauthCommandCodeCallback)
+	mux.HandleFunc("OPTIONS /oauth/commandcode/callback", s.oauthCommandCodeCallback)
+	mux.HandleFunc("GET /oauth/commandcode/callback", s.oauthCommandCodeCallback)
+	mux.HandleFunc("GET /oauth/commandcode/pending", s.oauthCommandCodePending)
 	mux.HandleFunc("GET /providers", s.getProviders)
 	mux.HandleFunc("POST /providers", s.createProvider)
 	mux.HandleFunc("POST /providers/{name}/timeouts", s.updateProviderTimeouts)

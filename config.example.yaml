@@ -59,6 +59,13 @@ providers:
   #     - gpt-6-sol
   #     - gpt-6-luna
 
+  # CommandCode Go provider (connect via dashboard browser sign-in; no API key needed).
+  # Serves chat through Go-only POST https://api.commandcode.ai/alpha/generate.
+  # Models are auto-discovered from the Provider API with a static fallback.
+  # - name: commandcode-go
+  #   type: commandcode
+  #   # base_url: https://api.commandcode.ai/alpha/generate  # override only for testing; defaults to the Go generate endpoint
+  #   models: []  # leave empty to auto-discover; restrict here to pin a subset
   # Standard OpenAI-compatible provider
   # - name: openai-main
   #   type: openai

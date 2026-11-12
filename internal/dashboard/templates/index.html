@@ -308,6 +308,7 @@
                       <option value="openai">openai (Bearer API Key)</option>
                       <option value="antigravity">antigravity (Google OAuth2 SSO)</option>
                       <option value="codex">codex (ChatGPT OAuth + PKCE)</option>
+                      <option value="commandcode">commandcode (CommandCode browser sign-in)</option>
                     </select>
                   </div>
                   <div>
@@ -1653,6 +1654,17 @@
                   <span class="size-2.5 rounded-full bg-error ring-4 ring-error/20 shrink-0"></span>
                 </div>
               {{end}}
+            {{else if eq .Type "commandcode"}}
+              {{if or $accounts (and $sec $sec.APIKey)}}
+                <div class="tooltip tooltip-right inline-flex items-center gap-1.5" data-tip="{{if $accounts}}{{healthyCount $accounts}} healthy of {{len $accounts}} registered{{else}}Connected{{end}}{{if $sec.Email}} ({{$sec.Email}}){{end}}">
+                  <span class="size-2.5 rounded-full bg-success ring-4 ring-success/20 shrink-0"></span>
+                  {{if $accounts}}<span class="text-[11px] font-mono text-base-content/70 leading-none">{{healthyCount $accounts}}/{{len $accounts}} connected</span>{{end}}
+                </div>
+              {{else}}
+                <div class="tooltip tooltip-right inline-flex items-center" data-tip="Not Connected — Click Connect CommandCode">
+                  <span class="size-2.5 rounded-full bg-error ring-4 ring-error/20 shrink-0"></span>
+                </div>
+              {{end}}
             {{else}}
               {{if $hasKey}}
                 <div class="tooltip tooltip-right inline-flex items-center" data-tip="API Key Configured">
@@ -1680,6 +1692,11 @@
             <span class="px-2.5 py-1 text-xs font-mono font-medium rounded-lg bg-accent/15 text-accent border border-accent/20 inline-flex items-center gap-1.5 leading-none">
               <svg xmlns="http://www.w3.org/2000/svg" class="size-3" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2a10 10 0 100 20 10 10 0 000-20zm0 4a6 6 0 110 12 6 6 0 010-12z"/></svg>
               codex
+            </span>
+          {{else if eq .Type "commandcode"}}
+            <span class="px-2.5 py-1 text-xs font-mono font-medium rounded-lg bg-primary/15 text-primary border border-primary/20 inline-flex items-center gap-1.5 leading-none">
+              <svg xmlns="http://www.w3.org/2000/svg" class="size-3" viewBox="0 0 24 24" fill="currentColor"><path d="M13 2L3 14h7l-1 8 10-12h-7l1-8z"/></svg>
+              commandcode
             </span>
           {{else}}
             <span class="px-2.5 py-1 text-xs font-mono font-medium rounded-lg bg-info/15 text-info border border-info/20 inline-flex items-center gap-1.5 leading-none">
@@ -1743,6 +1760,9 @@
               {{end}}
               {{if eq .Type "codex"}}
                 <li><button type="button" onclick="document.getElementById('modal-{{.Name}}').showModal()">Connect ChatGPT</button></li>
+              {{end}}
+              {{if eq .Type "commandcode"}}
+                <li><button type="button" onclick="document.getElementById('modal-{{.Name}}').showModal()">Connect CommandCode</button></li>
               {{end}}
               <li><button type="button" hx-post="/internal/test/{{.Name}}" hx-target="#result" hx-swap="innerHTML">Test</button></li>
               <li><button type="button" hx-post="/internal/refresh-models/{{.Name}}" hx-target="#result" hx-swap="innerHTML" hx-on::after-request="htmx.ajax('GET', '/providers', {target:'#providers', swap:'innerHTML'})">Refresh Models</button></li>
@@ -1889,9 +1909,50 @@
             </dialog>
           {{end}}
 
+          {{if eq .Type "commandcode"}}
+            <dialog id="modal-{{.Name}}" class="modal modal-bottom sm:modal-middle">
+              <div class="modal-box max-w-xl text-left border border-base-content/10 shadow-2xl p-6 rounded-2xl">
+                <h3 class="text-lg font-bold flex items-center gap-2 text-primary">
+                  <svg xmlns="http://www.w3.org/2000/svg" class="size-5" viewBox="0 0 24 24" fill="currentColor"><path d="M13 2L3 14h7l-1 8 10-12h-7l1-8z"/></svg>
+                  Connect CommandCode
+                </h3>
+                <p class="text-xs text-base-content/70 mt-1">Sign in with CommandCode Studio in your browser. Studio issues a CLI key and sends it back to this dashboard automatically.</p>
+                <div class="space-y-4 my-5">
+                  <div class="bg-base-200/70 p-4 rounded-xl border border-base-content/10">
+                    <div class="text-xs font-bold text-base-content/80 uppercase tracking-wider mb-1">Step 1: Authorize in Studio</div>
+                    <p class="text-xs text-base-content/60 mb-3">Click below to open CommandCode Studio in a new tab. Sign in and approve the CLI key.</p>
+                    <a href="/oauth/login/{{.Name}}" target="_blank" class="btn btn-sm btn-outline btn-success gap-2 w-full justify-between rounded-xl px-4 py-2 h-auto min-h-[2.25rem]">
+                      <span>1. Open CommandCode Studio (New Tab)</span>
+                      <svg xmlns="http://www.w3.org/2000/svg" class="size-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" /></svg>
+                    </a>
+                  </div>
+                  <div class="bg-base-200/70 p-4 rounded-xl border border-base-content/10">
+                    <div class="text-xs font-bold text-base-content/80 uppercase tracking-wider mb-1">Step 2: Paste CLI Key (fallback)</div>
+                    <p class="text-xs text-base-content/60 mb-3">If the automatic browser callback did not complete, paste the <code class="text-primary text-xs px-1.5 py-0.5 bg-base-300/60 rounded">user_…</code> CLI key from Studio below:</p>
+                    <form action="/oauth/{{.Name}}/paste-callback" method="POST" hx-post="/oauth/{{.Name}}/paste-callback" hx-target="#result" hx-swap="innerHTML" hx-on::after-request="document.getElementById('modal-{{.Name}}').close(); htmx.ajax('GET', '/providers', {target:'#providers', swap:'innerHTML'})" class="space-y-3">
+                      <textarea name="callback" rows="3" placeholder="user_..." class="textarea textarea-bordered textarea-sm w-full font-mono text-xs p-3 rounded-xl" required></textarea>
+                      <div class="flex justify-end gap-2">
+                        <button type="submit" class="btn btn-sm btn-primary px-5 h-auto min-h-[2.25rem] rounded-xl gap-1.5 shadow-sm font-medium">
+                          <svg xmlns="http://www.w3.org/2000/svg" class="size-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7" /></svg>
+                          Authenticate &amp; Link Account
+                        </button>
+                      </div>
+                    </form>
+                  </div>
+                </div>
+                <div class="modal-action border-t border-base-content/10 pt-3">
+                  <form method="dialog">
+                    <button class="btn btn-sm btn-ghost px-4 rounded-xl">Cancel</button>
+                  </form>
+                </div>
+              </div>
+              <form method="dialog" class="modal-backdrop"><button>close</button></form>
+            </dialog>
+          {{end}}
+
         </td>
       </tr>
-      {{if or (eq .Type "antigravity") (eq .Type "codex")}}
+      {{if or (eq .Type "antigravity") (eq .Type "codex") (eq .Type "commandcode")}}
       <tr class="bg-base-200/20">
         <td colspan="4" class="px-4 py-3">
           <div class="collapse collapse-arrow accounts-collapse border border-base-content/10 rounded-xl bg-base-100/40" data-accordion="{{$provName}}">
