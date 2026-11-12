@@ -52,16 +52,27 @@ func parseStreamTimeout(value string, fallback time.Duration) time.Duration {
 }
 
 type Provider struct {
-	Name           string   `yaml:"name"`
-	Type           string   `yaml:"type"`
-	BaseURL        string   `yaml:"base_url"`
-	APIKey         string   `yaml:"-"`
-	Models         []string `yaml:"models"`
-	DisabledModels []string `yaml:"disabled_models,omitempty"`
-	Disabled       bool     `yaml:"disabled,omitempty"`
-	Timeout        string   `yaml:"timeout,omitempty"`
-	StreamTimeout  string   `yaml:"stream_timeout,omitempty"`
-	MaxConcurrency int      `yaml:"max_concurrency,omitempty"`
+	Name           string        `yaml:"name"`
+	Type           string        `yaml:"type"`
+	BaseURL        string        `yaml:"base_url"`
+	APIKey         string        `yaml:"-"`
+	Models         []string      `yaml:"models"`
+	DisabledModels []string      `yaml:"disabled_models,omitempty"`
+	Disabled       bool          `yaml:"disabled,omitempty"`
+	Timeout        string        `yaml:"timeout,omitempty"`
+	StreamTimeout  string        `yaml:"stream_timeout,omitempty"`
+	MaxConcurrency int           `yaml:"max_concurrency,omitempty"`
+	Quota          ProviderQuota `yaml:"quota,omitempty"`
+}
+
+// ProviderQuota holds plan allowances a provider's own quota endpoint does not
+// report. Only CommandCode needs it today: its API exposes monthly spend but no
+// window caps, so the 5-hour and weekly limits must come from the operator.
+// The global Quota type configures the poller itself.
+type ProviderQuota struct {
+	MonthlyCredits float64 `yaml:"monthly_credits,omitempty"`
+	FiveHourCap    float64 `yaml:"five_hour_cap,omitempty"`
+	WeeklyCap      float64 `yaml:"weekly_cap,omitempty"`
 }
 
 func (p Provider) ParsedTimeout(defaultTimeout time.Duration) time.Duration {

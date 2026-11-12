@@ -92,6 +92,11 @@ func buildProvider(cfg config.Provider, store *vault.Store, transport http.Round
 		Timeout:       cfg.ParsedTimeout(defaults.Request),
 		StreamTimeout: cfg.ParsedStreamTimeout(defaults.Stream),
 		Transport:     transport,
+		Quota: provider.QuotaConfig{
+			MonthlyCredits: cfg.Quota.MonthlyCredits,
+			FiveHourCap:    cfg.Quota.FiveHourCap,
+			WeeklyCap:      cfg.Quota.WeeklyCap,
+		},
 	}, credStore{store: store, name: cfg.Name})
 	if cfg.MaxConcurrency > 0 {
 		p = provider.WithConcurrencyLimit(p, cfg.MaxConcurrency)

@@ -175,6 +175,16 @@ type Config struct {
 	Timeout       time.Duration
 	Transport     http.RoundTripper
 	StreamTimeout time.Duration
+	Quota         QuotaConfig
+}
+
+// QuotaConfig carries the plan allowances a provider's quota endpoint does not
+// report itself. Zero values mean "unknown", which the dashboard renders as an
+// absolute figure instead of a percentage; they never mean "zero remaining".
+type QuotaConfig struct {
+	MonthlyCredits float64
+	FiveHourCap    float64
+	WeeklyCap      float64
 }
 
 type Credentials struct {

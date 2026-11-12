@@ -95,6 +95,16 @@ providers:
   #     - deepseek/deepseek-v4-pro
   #     - moonshotai/Kimi-K3.1-Pro
   #     - zai-org/GLM-5.2
+  #   # Command Code exposes monthly spend but no window caps, so the limits
+  #   # below come from your plan. Without them only the monthly figure is shown
+  #   # as an absolute value; the 5-hour and weekly windows stay blank.
+  #   # Plan caps (commandcode.ai/docs/resources/usage-limits):
+  #   #   Go $2/$5, GOAT up to $20/$50, Pro up to $22/$55,
+  #   #   Max 10x $45/$90, Max 20x $90/$180, Team Pro $12/$24
+  #   quota:
+  #     monthly_credits: 10   # your plan's included monthly credits
+  #     five_hour_cap: 3      # 5-hour cap
+  #     weekly_cap: 6         # weekly cap
 
 combos:
   - name: auto

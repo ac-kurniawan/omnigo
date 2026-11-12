@@ -22,8 +22,10 @@ import (
 )
 
 const (
-	defaultGenerateURL = "https://api.commandcode.ai/alpha/generate"
-	defaultModelsURL   = "https://api.commandcode.ai/provider/v1/models?view=client"
+	defaultGenerateURL     = "https://api.commandcode.ai/alpha/generate"
+	defaultModelsURL       = "https://api.commandcode.ai/provider/v1/models?view=client"
+	defaultUsageURL        = "https://api.commandcode.ai/alpha/billing/credits"
+	defaultUsageSummaryURL = "https://api.commandcode.ai/alpha/usage/summary"
 
 	commandCodeVersion = "1.88.5"
 	defaultUserAgent   = "cli"
@@ -70,6 +72,7 @@ type Provider struct {
 	stream    *http.Client
 	idle      time.Duration
 	budget    time.Duration
+	quota     provider.QuotaConfig
 
 	projectSlugOnce sync.Once
 	projectSlug     string
@@ -95,6 +98,7 @@ func New(cfg provider.Config, store provider.CredStore) provider.Provider {
 		stream:    provider.StreamClient(client),
 		idle:      timeout,
 		budget:    cfg.StreamTimeout,
+		quota:     cfg.Quota,
 	}
 }
 
@@ -106,6 +110,27 @@ func modelsURLFor(generate string) string {
 		return defaultModelsURL
 	}
 	return parsed.Scheme + "://" + parsed.Host + "/provider/v1/models?view=client"
+}
+
+// creditsURLFor derives the billing endpoint from the configured generate
+// host, mirroring modelsURLFor so a self-hosted or test endpoint is honored.
+// It is the only route reporting per-window spend.
+func creditsURLFor(generate string) string {
+	parsed, err := url.Parse(generate)
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		return defaultUsageURL
+	}
+	return parsed.Scheme + "://" + parsed.Host + "/alpha/billing/credits"
+}
+
+// usageURLFor derives the usage-summary endpoint, which reports the month's
+// spend that the billing payload does not state directly.
+func usageURLFor(generate string) string {
+	parsed, err := url.Parse(generate)
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		return defaultUsageSummaryURL
+	}
+	return parsed.Scheme + "://" + parsed.Host + "/alpha/usage/summary"
 }
 
 func (p *Provider) Name() string { return p.name }
