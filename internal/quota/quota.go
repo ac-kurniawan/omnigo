@@ -53,6 +53,7 @@ type Group struct {
 const (
 	fiveHourMinutes = 300
 	weeklyMinutes   = 10080
+	monthlyMinutes  = 43200
 )
 
 // Label is the operator-facing name for a window. Codex's generic primary and
@@ -62,18 +63,28 @@ const (
 func (w Window) Label() string {
 	switch w.WindowMinutes {
 	case fiveHourMinutes:
-		if name := windowName(w); name != "window" && name != "primary" {
-			return name + " · 5-hour limit"
-		}
-		return "5-hour limit"
+		return suffixedLabel(w, "primary", "5-hour limit")
 	case weeklyMinutes:
-		if name := windowName(w); name != "window" && name != "secondary" {
-			return name + " · Weekly limit"
-		}
-		return "Weekly limit"
+		return suffixedLabel(w, "secondary", "Weekly limit")
+	case monthlyMinutes:
+		return suffixedLabel(w, "monthly", "Monthly limit")
 	default:
 		return windowName(w)
 	}
+}
+
+// suffixedLabel prefixes a window's own name onto its standardized length,
+// unless the name is already the generic one or repeats the suffix. A provider
+// that names its window "5-hour" must not render "5-hour · 5-hour limit".
+func suffixedLabel(w Window, generic, suffix string) string {
+	name := windowName(w)
+	if name == "window" || name == generic {
+		return suffix
+	}
+	if strings.EqualFold(name, suffix) || strings.HasPrefix(strings.ToLower(name), strings.ToLower(strings.SplitN(suffix, " ", 2)[0])) {
+		return suffix
+	}
+	return name + " · " + suffix
 }
 
 // RemainingPercent is the unconsumed fraction of the window, clamped to

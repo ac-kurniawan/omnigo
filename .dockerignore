@@ -9,4 +9,6 @@ config.yaml
 aigo
 omnigo
 graft/
+.env
+.env.*
 docs/

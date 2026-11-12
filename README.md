@@ -94,6 +94,9 @@ OmniGo stores its configuration files under **`~/.config/omnigo/`** (or `%APPDAT
 You can override the directory or individual files via CLI flags or environment variables:
 - `-dir <path>` or `OMNIGO_CONFIG_DIR=<path>`
 - `-config <path>`, `-auth <path>`, `-key <path>`
+- `-env <path>` (default `.env`). Read before anything else, so it can set `OMNIGO_CONFIG_DIR`. A missing file is ignored.
+
+Copy `.env.example` to `.env` to get started; `.env` is gitignored. A variable already set in the real environment always wins over the file, so container and systemd deploys can omit it.
 
 ### Timeouts
 
