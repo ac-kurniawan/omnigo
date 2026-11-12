@@ -281,3 +281,38 @@ func TestCommandCodeTestProbeUsesConfiguredModel(t *testing.T) {
 		t.Fatalf("probe model = %v, want probe-model-id", got)
 	}
 }
+
+func TestCommandCodeUsageNeverReportsAPIKeyAsAccount(t *testing.T) {
+	const key = "user_secret_key_value_1234"
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("{\"type\":\"text-delta\",\"text\":\"hi\"}\n"))
+		_, _ = w.Write([]byte("{\"type\":\"finish\",\"finishReason\":\"stop\",\"totalUsage\":{\"inputTokens\":3,\"outputTokens\":2}}\n"))
+	}))
+	defer ts.Close()
+
+	p := New(provider.Config{Name: "cmc", BaseURL: ts.URL, Timeout: 5 * time.Second},
+		&memoryCredStore{creds: provider.Credentials{APIKey: key}})
+
+	var got []provider.TokenUsage
+	ctx := provider.WithUsageSink(context.Background(), func(u provider.TokenUsage) {
+		got = append(got, u)
+	})
+	rec := httptest.NewRecorder()
+	req := chatReq("deepseek/deepseek-v4-pro")
+	req.Stream = true
+	if err := p.ChatCompletion(ctx, req, rec); err != nil {
+		t.Fatalf("ChatCompletion failed: %v", err)
+	}
+
+	if len(got) != 1 {
+		t.Fatalf("usage reports = %d, want 1", len(got))
+	}
+	if got[0].Account == key {
+		t.Fatalf("usage Account leaked the API key %q", key)
+	}
+	if strings.Contains(got[0].Account, key) {
+		t.Fatalf("usage Account %q contains the API key", got[0].Account)
+	}
+}

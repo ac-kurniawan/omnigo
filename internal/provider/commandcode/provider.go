@@ -147,7 +147,7 @@ func (p *Provider) ChatCompletion(ctx context.Context, req provider.ChatRequest,
 		}
 
 		attempt := provider.NewStreamingAttemptWriter(w, req.Stream)
-		lastErr = p.chatWithKey(ctx, req, body, sessionID, key, attempt)
+		lastErr = p.chatWithKey(ctx, req, body, sessionID, key, account.Identity(), attempt)
 		if lastErr == nil {
 			return attempt.Commit(w)
 		}
@@ -165,7 +165,7 @@ func (p *Provider) ChatCompletion(ctx context.Context, req provider.ChatRequest,
 	return lastErr
 }
 
-func (p *Provider) chatWithKey(ctx context.Context, req provider.ChatRequest, body []byte, sessionID, key string, w http.ResponseWriter) error {
+func (p *Provider) chatWithKey(ctx context.Context, req provider.ChatRequest, body []byte, sessionID, key, account string, w http.ResponseWriter) error {
 	ctx, cancel := context.WithCancelCause(ctx)
 	defer cancel(nil)
 	guard := provider.NewIdleGuard(p.idle, provider.StreamBudget(p.budget, req.Stream), func() { cancel(provider.ErrUpstreamStall) })
@@ -194,11 +194,11 @@ func (p *Provider) chatWithKey(ctx context.Context, req provider.ChatRequest, bo
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.Header().Set("Cache-Control", "no-cache")
 		w.WriteHeader(http.StatusOK)
-		return p.translateStream(ctx, reader, req.Model, key, w)
+		return p.translateStream(ctx, reader, req.Model, account, w)
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	return p.translateComplete(ctx, reader, req.Model, key, w)
+	return p.translateComplete(ctx, reader, req.Model, account, w)
 }
 
 func (p *Provider) setHeaders(req *http.Request, apiKey, sessionID string, stream bool) {
