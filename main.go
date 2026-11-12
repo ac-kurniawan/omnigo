@@ -197,8 +197,15 @@ func main() {
 	cfgFlag := flag.String("config", "", "path to config.yaml (overrides default in config dir)")
 	keyFlag := flag.String("key", "", "path to secret key file (overrides default in config dir)")
 	authFlag := flag.String("auth", "", "path to auth.yaml (overrides default in config dir)")
+	envFlag := flag.String("env", ".env", "path to an env file loaded before anything else (missing file is ignored)")
 	showVersion := flag.Bool("version", false, "display version and exit")
 	flag.Parse()
+
+	// The env file loads before paths resolve because OMNIGO_CONFIG_DIR is
+	// read there. Real environment variables always win over the file.
+	if err := config.LoadEnvFile(*envFlag); err != nil {
+		log.Fatalf("env: %v", err)
+	}
 
 	if *showVersion {
 		fmt.Printf("omnigo %s\n", version.Value)
