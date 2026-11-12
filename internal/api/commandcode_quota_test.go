@@ -17,12 +17,17 @@ import (
 // when a snapshot exists under the account's identity.
 func TestCommandCodeQuotaReachesCache(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/alpha/usage/summary" {
-			http.NotFound(w, r)
-			return
-		}
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"totalMonthlyCredits":0.5,"totalCredits":0.5,"periodStart":"2026-10-26T13:40:58.000Z","periodBasis":"billing-period"}`))
+		switch r.URL.Path {
+		case "/alpha/billing/credits":
+			_, _ = w.Write([]byte(`{"credits":{"monthlyCredits":9.5},"windowLimits":{"limited":true,
+              "fiveHour":{"used":0.024,"cap":3,"exceeded":false,"resetAt":1794540754769},
+              "weekly":{"used":0.4858,"cap":6,"exceeded":false,"resetAt":1795098681945}}}`))
+		case "/alpha/usage/summary":
+			_, _ = w.Write([]byte(`{"totalMonthlyCredits":0.5,"totalCredits":0.5,"periodStart":"2026-10-26T13:40:58.000Z","periodBasis":"billing-period"}`))
+		default:
+			http.NotFound(w, r)
+		}
 	}))
 	defer ts.Close()
 
@@ -75,5 +80,10 @@ func TestCommandCodeQuotaReachesCache(t *testing.T) {
 	}
 	if stored.Windows[2].UsedPercent <= 0 {
 		t.Fatalf("monthly UsedPercent = %v, want measured usage", stored.Windows[2].UsedPercent)
+	}
+	for i := 0; i < 2; i++ {
+		if stored.Windows[i].UsedPercent <= 0 {
+			t.Errorf("window %d UsedPercent = %v, want measured usage", i, stored.Windows[i].UsedPercent)
+		}
 	}
 }
