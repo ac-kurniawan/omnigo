@@ -85,6 +85,17 @@ providers:
   #     - qwen3.8-max
   #     - gpt-6-luna
 
+  # Command Code (API key from ~/.commandcode/auth.json or commandcode.ai/studio).
+  # base_url is the full generate endpoint, not a prefix. The key is saved on
+  # the dashboard and never written here.
+  # - name: cmc
+  #   type: commandcode
+  #   base_url: https://api.commandcode.ai/alpha/generate
+  #   models:
+  #     - deepseek/deepseek-v4-pro
+  #     - moonshotai/Kimi-K3.1-Pro
+  #     - zai-org/GLM-5.2
+
 combos:
   - name: auto
     strategy: priority # priority | fill-first | reliable | round-robin | smart
