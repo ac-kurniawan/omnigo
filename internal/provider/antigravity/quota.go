@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -256,7 +255,7 @@ func postQuota(ctx context.Context, path, accessToken string, body map[string]an
 	if resp.StatusCode != http.StatusOK {
 		return nil, quotaStatusError{code: resp.StatusCode}
 	}
-	return io.ReadAll(resp.Body)
+	return provider.ReadBoundedBody(resp.Body)
 }
 
 // markExhausted records the first exhausted window as the account's reason. A

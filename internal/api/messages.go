@@ -52,7 +52,7 @@ func handleMessages(getCfg func() *config.Config, registry *providerRegistry, tr
 		captureGen := CaptureGeneration(cfg)
 		tx := newAnthropicTx(w, req.Model)
 
-		if cb, ok := findCombo(cfg, req.Model); ok {
+		if cb, ok := config.FindCombo(cfg, req.Model); ok {
 			if req.Stream {
 				tx.flagStream()
 			}
@@ -117,7 +117,7 @@ type anthropicResponder struct {
 	tx *anthropicTx
 }
 
-func (r anthropicResponder) attempt(stream bool) http.ResponseWriter {
+func (r anthropicResponder) attempt(stream, failover bool) http.ResponseWriter {
 	if stream {
 		r.tx.flagStream()
 	}

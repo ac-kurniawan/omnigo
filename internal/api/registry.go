@@ -61,6 +61,9 @@ func newSharedTransport() *http.Transport {
 // all; they no longer own a private transport.
 func (r *providerRegistry) CloseIdleConnections() {
 	r.transport.CloseIdleConnections()
+	// Streaming rides a separate HTTP/1.1 pool per base transport, so it needs
+	// its own close.
+	provider.CloseStreamIdleConnections()
 }
 
 func (r *providerRegistry) Get(cfg *config.Config, name string) (provider.Provider, bool) {

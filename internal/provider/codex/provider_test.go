@@ -1333,8 +1333,8 @@ func TestChatCompletionKeepsLegacyTransportForNonLiteModel(t *testing.T) {
 }
 
 // A 200 response whose stream closes with zero events is a transient fault of
-// that target, not a truncated generation: a typed 502 gets one same-target
-// retry at the combo layer and parks the target only after repeated strikes,
+// that target, not a truncated generation: a typed 502 fails over to the next
+// target at the combo layer and parks the target only after repeated strikes,
 // instead of the immediate drain a plain error causes.
 func TestProviderZeroPayloadDisconnectIsBadGateway(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

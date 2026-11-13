@@ -449,3 +449,71 @@ func readUntilContains(t *testing.T, r io.Reader, want string, timeout time.Dura
 		return ""
 	}
 }
+
+// A single-target combo has nothing to fail over to, so holding the upstream's
+// frames back until a reply frame commits buys nothing. A thinking model
+// streams reasoning for a long time before its first answer token; buffering
+// that phase leaves the client with no bytes at all and looks like a hang.
+func TestSingleTargetComboStreamsReasoningBeforeFirstReply(t *testing.T) {
+	provider.Register("openai", func(cfg provider.Config, store provider.CredStore) provider.Provider {
+		return &responseProvider{name: cfg.Name, chat: func(_ context.Context, _ provider.ChatRequest, w http.ResponseWriter) error {
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.WriteHeader(http.StatusOK)
+			flusher := w.(http.Flusher)
+			_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"thinking\"}}]}\n\n"))
+			flusher.Flush()
+			_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"answer\"}}]}\n\n"))
+			flusher.Flush()
+			_, _ = w.Write([]byte("data: [DONE]\n\n"))
+			flusher.Flush()
+			return nil
+		}}
+	})
+	cfg := &config.Config{
+		Providers: []config.Provider{{Name: "solo", Type: "openai", Models: []string{"m1"}}},
+		Combos:    []config.Combo{{Name: "solo-combo", Strategy: "priority", Targets: []config.ComboTarget{{Provider: "solo", Model: "m1"}}}},
+	}
+	rr := performChat(t, cfg, combo.NewTracker(""), `{"model":"solo-combo","stream":true,"messages":[]}`)
+	if !strings.Contains(rr.Body.String(), `"reasoning_content":"thinking"`) {
+		t.Fatalf("reasoning frame did not reach the client: %q", rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), `"content":"answer"`) {
+		t.Fatalf("answer frame did not reach the client: %q", rr.Body.String())
+	}
+}
+
+// Forward mode commits on the first frame, but that must not make a replyless
+// stream look successful: a stream that only carried keepalives, a role frame,
+// or reasoning still ends without a reply and has to be reported as failed.
+func TestForwardedStreamWithoutReplyIsReportedAsFailure(t *testing.T) {
+	var calls []string
+	provider.Register("openai", func(cfg provider.Config, store provider.CredStore) provider.Provider {
+		return &responseProvider{name: cfg.Name, chat: func(_ context.Context, _ provider.ChatRequest, w http.ResponseWriter) error {
+			calls = append(calls, cfg.Name)
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.WriteHeader(http.StatusOK)
+			flusher := w.(http.Flusher)
+			for _, frame := range []string{
+				`data: {"choices":[{"delta":{"role":"assistant"}}]}` + "\n\n",
+				`data: {"choices":[{"delta":{"reasoning_content":"thinking"}}]}` + "\n\n",
+				`data: {"choices":[{"delta":{},"finish_reason":"stop"}]}` + "\n\n",
+				"data: [DONE]\n\n",
+			} {
+				_, _ = w.Write([]byte(frame))
+				flusher.Flush()
+			}
+			return nil
+		}}
+	})
+	cfg := &config.Config{
+		Providers: []config.Provider{{Name: "solo", Type: "openai", Models: []string{"m1"}}},
+		Combos:    []config.Combo{{Name: "solo-empty", Strategy: "priority", Targets: []config.ComboTarget{{Provider: "solo", Model: "m1"}}}},
+	}
+	rr := performChat(t, cfg, combo.NewTracker(""), `{"model":"solo-empty","stream":true,"messages":[]}`)
+	if !strings.Contains(rr.Body.String(), "event: error") {
+		t.Fatalf("replyless forwarded stream ended as success: %q", rr.Body.String())
+	}
+	if len(calls) != 1 {
+		t.Fatalf("target called %d times, want 1 (no failover exists)", len(calls))
+	}
+}

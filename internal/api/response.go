@@ -23,6 +23,12 @@ type sseCommitState struct {
 	ready   bool
 }
 
+// continueScan starts a new scan window at the front of the next chunk, so a
+// writer that dropped its buffer can keep classifying what follows.
+func (s *sseCommitState) continueScan() {
+	s.scanned = 0
+}
+
 func (s *sseCommitState) feed(body []byte) bool {
 	if s.ready {
 		return true
@@ -181,11 +187,26 @@ type bufferedResponseWriter struct {
 	stream        bool
 	headerWritten bool
 	committed     bool
-	sse           sseCommitState
+	// forward commits on the first frame instead of waiting for a reply
+	// frame, for an attempt that has no failover left to protect.
+	forward bool
+	sse     sseCommitState
 }
 
-func newBufferedResponseWriter(destination http.ResponseWriter, stream bool) *bufferedResponseWriter {
-	return &bufferedResponseWriter{destination: destination, header: make(http.Header), status: http.StatusOK, stream: stream}
+// newBufferedResponseWriter builds the attempt writer for a streaming reply.
+// failover reports whether another target can still take over: while it can,
+// nothing reaches the client before a reply frame, because a failover must be
+// able to replace the whole attempt. Without that chance the first upstream
+// frame is forwarded, so a thinking model's reasoning is not held back until
+// the first answer token.
+func newBufferedResponseWriter(destination http.ResponseWriter, stream, failover bool) *bufferedResponseWriter {
+	return &bufferedResponseWriter{
+		destination: destination,
+		header:      make(http.Header),
+		status:      http.StatusOK,
+		stream:      stream,
+		forward:     stream && !failover,
+	}
 }
 
 func (w *bufferedResponseWriter) Header() http.Header {
@@ -202,6 +223,13 @@ func (w *bufferedResponseWriter) WriteHeader(status int) {
 
 func (w *bufferedResponseWriter) Write(data []byte) (int, error) {
 	if w.committed {
+		if w.forward {
+			// A forwarded attempt keeps classifying the frames it never
+			// buffered, so a stream that never carried a reply is still
+			// distinguishable from a completed one.
+			w.sse.continueScan()
+			w.sse.feed(data)
+		}
 		return w.destination.Write(data)
 	}
 	if !w.headerWritten {
@@ -215,7 +243,8 @@ func (w *bufferedResponseWriter) Flush() {
 		return
 	}
 	if !w.committed {
-		if !w.sse.feed(w.body.Bytes()) {
+		replied := w.sse.feed(w.body.Bytes())
+		if !w.forward && !replied {
 			return
 		}
 		w.commit()
@@ -236,6 +265,7 @@ func (w *bufferedResponseWriter) commit() {
 	w.committed = true
 	_, _ = w.destination.Write(w.body.Bytes())
 	w.body.Reset()
+	w.sse.continueScan()
 }
 
 // Committed reports whether a content frame has already reached the client.
@@ -249,6 +279,12 @@ func (w *bufferedResponseWriter) finish(err error) error {
 		if err != nil {
 			return errors.Join(errResponseCommitted, err)
 		}
+		// Forward mode put the frames on the wire before it could prove a
+		// reply. The stream is committed either way, so the only honest report
+		// left is the committed-failure path.
+		if w.forward && !w.sse.ready {
+			return errors.Join(errResponseCommitted, errors.New("upstream returned no reply"))
+		}
 		return nil
 	}
 	if err != nil {
@@ -261,7 +297,9 @@ func (w *bufferedResponseWriter) finish(err error) error {
 		return errors.New("upstream returned an empty response")
 	}
 	if w.stream {
-		if !w.sse.feed(w.body.Bytes()) {
+		// A forwarded attempt already committed its frames, so there is
+		// nothing left to classify here.
+		if !w.forward && !w.sse.feed(w.body.Bytes()) {
 			return errors.New("upstream returned no reply")
 		}
 	} else if strings.Contains(w.header.Get("Content-Type"), "application/json") {
@@ -322,7 +360,6 @@ type bodyRecorder struct {
 	wrote     bool
 	committed bool
 	body      bytes.Buffer
-	flushed   bool
 }
 
 func (w *bodyRecorder) WriteHeader(status int) {
@@ -348,9 +385,9 @@ func (w *bodyRecorder) Write(data []byte) (int, error) {
 	return w.body.Write(data)
 }
 
-func (w *bodyRecorder) Flush() {
-	w.flushed = true
-}
+// Flush is a no-op: a provider that type-asserts http.Flusher must not push a
+// partial body past the recorder.
+func (w *bodyRecorder) Flush() {}
 
 func (w *bodyRecorder) commit() {
 	if w.committed {

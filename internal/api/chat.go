@@ -53,7 +53,7 @@ func handleChat(getCfg func() *config.Config, registry *providerRegistry, tracke
 		req := provider.ChatRequest{Model: model, Stream: stream, Messages: msgs, Raw: raw, Parsed: parsed}
 		captureGen := CaptureGeneration(cfg)
 
-		cb, comboOK := findCombo(cfg, model)
+		cb, comboOK := config.FindCombo(cfg, model)
 
 		cacheable := responseCache != nil && cfg != nil && cfg.Cache.EnabledOrDefault() && !cacheBypass(r, parsed, stream, comboOK)
 		if comboOK {
@@ -316,15 +316,6 @@ func cacheControlNoCache(header string) bool {
 	return false
 }
 
-func findCombo(cfg *config.Config, name string) (config.Combo, bool) {
-	for _, cb := range cfg.Combos {
-		if cb.Name == name {
-			return cb, true
-		}
-	}
-	return config.Combo{}, false
-}
-
 func resolveDirect(cfg *config.Config, registry *providerRegistry, model string) (provider.Provider, string, string, bool) {
 	if i := strings.Index(model, "/"); i > 0 {
 		provName := model[:i]
@@ -369,8 +360,8 @@ type chatResponder struct {
 	dst http.ResponseWriter
 }
 
-func (c chatResponder) attempt(stream bool) http.ResponseWriter {
-	return newBufferedResponseWriter(c.dst, stream)
+func (c chatResponder) attempt(stream, failover bool) http.ResponseWriter {
+	return newBufferedResponseWriter(c.dst, stream, failover)
 }
 
 func (c chatResponder) onCommittedFailure(message string) {
@@ -385,9 +376,26 @@ func (c chatResponder) writer() http.ResponseWriter {
 // stay wire-agnostic: chat streams Chat Completions frames, the Responses
 // endpoint synthesizes the Responses event lifecycle instead.
 type responder interface {
-	attempt(stream bool) http.ResponseWriter
+	// attempt returns the writer for one dispatch. failover reports whether
+	// another target can still take over, which decides whether the attempt
+	// buffers until a reply arrives or forwards from the first upstream frame.
+	attempt(stream, failover bool) http.ResponseWriter
 	onCommittedFailure(message string)
 	writer() http.ResponseWriter
+}
+
+// hasTargetAfter reports whether the chain still has a target to fail over to
+// once t fails. Only the last target of a chain has none, and that is what lets
+// its attempt forward the stream instead of buffering for a failover that
+// cannot happen.
+//
+// Targets are values, so the same provider/model can be listed twice; the chain
+// walks them in order, so the position to ask about is how many dispatches have
+// already run, not the first entry that compares equal. Counting can only
+// over-estimate what is left (the engine may skip a drained target), and
+// over-estimating keeps the attempt buffering, which is the safe direction.
+func hasTargetAfter(total, dispatched int) bool {
+	return dispatched < total-1
 }
 
 // finisher is the attempt writer that can prove whether the upstream answered.
@@ -421,56 +429,15 @@ func runCombo(responder responder, r *http.Request, cfg *config.Config, registry
 	for _, t := range cb.Targets {
 		c.Targets = append(c.Targets, combo.Target{Provider: t.Provider, Model: t.Model})
 	}
+	dispatch := runTarget(responder, r, cfg, registry, req, tracker, tc, startTime, metrics, capture, cb.Name, cb.Strategy, cb.ParsedDrainTTL())
 	responseCommitted := false
+	dispatched := 0
 	_, err := c.Run(r.Context(), func(ctx context.Context, t combo.Target) error {
-		p, ok := providerForName(cfg, registry, t.Provider)
-		if !ok {
-			metrics.RecordProviderRequest(ctx, t.Provider, t.Model, resultUnavailable)
-			return fmt.Errorf("unknown provider: %s", t.Provider)
-		}
-		for _, pc := range cfg.Providers {
-			if pc.Name == t.Provider && pc.IsModelDisabled(t.Model) {
-				metrics.RecordProviderRequest(ctx, t.Provider, t.Model, resultUnavailable)
-				return fmt.Errorf("model %q is disabled on provider %q", t.Model, t.Provider)
-			}
-		}
-		req.Model = t.Model
-		attempt := responder.attempt(req.Stream)
-		SetTelemetryHeaders(attempt, tc, t.Provider, t.Model, startTime)
-		start := time.Now()
-		cap, providerCtx, providerWriter := trackAttempt(ctx, metrics, t.Provider, t.Model, cb.Name, attempt, capture)
-		providerErr := p.ChatCompletion(providerCtx, req, providerWriter)
-		err := finishAttempt(attempt, providerErr)
-		// The generation span carries the attempt's real outcome: a committed
-		// stream that then failed is a stream failure, not a success.
-		genResult := classifyProviderError(err, errors.Is(err, errResponseCommitted), r.Context().Err() != nil)
-		metrics.RecordGeneration(ctx, generationFrom(start, time.Now(), "chat", t.Provider, t.Model, cb.Name, cap, genResult, req, capture))
-		if errors.Is(err, errResponseCommitted) {
-			responseCommitted = true
-			// A client abort mid-stream cancels the request context; that is not an
-			// upstream fault, so the target stays healthy. A deadline this process
-			// imposed on the attempt is not one either. A stalled upstream leaves
-			// both contexts alive and is still drained.
-			clientGone := r.Context().Err() != nil
-			gatewayDeadline := ctx.Err() != nil && !clientGone
-			metrics.RecordProviderRequest(ctx, t.Provider, t.Model, classifyProviderError(err, true, clientGone))
-			if tracker != nil && cb.Strategy != "priority" && !clientGone && !gatewayDeadline {
-				tracker.MarkDrained(t, cb.ParsedDrainTTL(), sanitizeFailure(err))
-			}
-			// The client already has part of the answer and no failover is
-			// possible, so say the generation failed instead of ending the
-			// stream as if it had completed.
-			if req.Stream && !clientGone {
-				responder.onCommittedFailure(sanitizeFailure(err))
-			}
-			return nil
-		}
-		if err != nil {
-			metrics.RecordProviderRequest(ctx, t.Provider, t.Model, classifyProviderError(err, false, false))
-			return sanitizedError{err: err, message: sanitizeFailure(err)}
-		}
-		metrics.RecordProviderRequest(ctx, t.Provider, t.Model, resultSuccess)
-		return nil
+		failover := hasTargetAfter(len(c.Targets), dispatched)
+		dispatched++
+		committed, err := dispatch(ctx, t, failover)
+		responseCommitted = committed || responseCommitted
+		return err
 	})
 	attemptResult := resultSuccess
 	if err != nil {
@@ -479,6 +446,69 @@ func runCombo(responder responder, r *http.Request, cfg *config.Config, registry
 	metrics.RecordCombinationAttempt(r.Context(), cb.Name, attemptResult)
 	if err != nil && !responseCommitted {
 		writeProviderError(responder.writer(), err)
+	}
+}
+
+// runTarget builds the dispatch closure a combo chain runs for every target.
+// One definition serves a plain combo and a smart combo's resolved chain, so
+// availability checks, telemetry, generation records, and the committed-stream
+// failure rules cannot drift between them.
+//
+// The returned closure reports whether the response reached the client: a
+// committed attempt ends the chain because no target can replace bytes the
+// client already has.
+func runTarget(responder responder, r *http.Request, cfg *config.Config, registry *providerRegistry, req provider.ChatRequest, tracker *combo.Tracker, tc *TraceContext, startTime time.Time, metrics Metrics, capture bool, comboName, strategy string, drainTTL time.Duration) func(ctx context.Context, t combo.Target, failover bool) (bool, error) {
+	return func(ctx context.Context, t combo.Target, failover bool) (bool, error) {
+		p, ok := providerForName(cfg, registry, t.Provider)
+		if !ok {
+			metrics.RecordProviderRequest(ctx, t.Provider, t.Model, resultUnavailable)
+			return false, fmt.Errorf("unknown provider: %s", t.Provider)
+		}
+		for _, pc := range cfg.Providers {
+			if pc.Name == t.Provider && pc.IsModelDisabled(t.Model) {
+				metrics.RecordProviderRequest(ctx, t.Provider, t.Model, resultUnavailable)
+				return false, fmt.Errorf("model %q is disabled on provider %q", t.Model, t.Provider)
+			}
+		}
+		// A copy per target: every dispatch needs its own model id, and the
+		// parsed body and raw bytes stay shared.
+		request := req
+		request.Model = t.Model
+		attempt := responder.attempt(request.Stream, failover)
+		SetTelemetryHeaders(attempt, tc, t.Provider, t.Model, startTime)
+		start := time.Now()
+		cap, providerCtx, providerWriter := trackAttempt(ctx, metrics, t.Provider, t.Model, comboName, attempt, capture)
+		providerErr := p.ChatCompletion(providerCtx, request, providerWriter)
+		err := finishAttempt(attempt, providerErr)
+		// The generation span carries the attempt's real outcome: a committed
+		// stream that then failed is a stream failure, not a success.
+		genResult := classifyProviderError(err, errors.Is(err, errResponseCommitted), r.Context().Err() != nil)
+		metrics.RecordGeneration(ctx, generationFrom(start, time.Now(), "chat", t.Provider, t.Model, comboName, cap, genResult, request, capture))
+		if errors.Is(err, errResponseCommitted) {
+			// A client abort mid-stream cancels the request context; that is not
+			// an upstream fault, so the target stays healthy. A deadline this
+			// process imposed on the attempt is not one either. A stalled
+			// upstream leaves both contexts alive and is still drained.
+			clientGone := r.Context().Err() != nil
+			gatewayDeadline := ctx.Err() != nil && !clientGone
+			metrics.RecordProviderRequest(ctx, t.Provider, t.Model, classifyProviderError(err, true, clientGone))
+			if tracker != nil && strategy != "priority" && !clientGone && !gatewayDeadline {
+				tracker.MarkDrained(t, drainTTL, sanitizeFailure(err))
+			}
+			// The client already has part of the answer and no failover is
+			// possible, so say the generation failed instead of ending the
+			// stream as if it had completed.
+			if request.Stream && !clientGone {
+				responder.onCommittedFailure(sanitizeFailure(err))
+			}
+			return true, nil
+		}
+		if err != nil {
+			metrics.RecordProviderRequest(ctx, t.Provider, t.Model, classifyProviderError(err, false, false))
+			return false, sanitizedError{err: err, message: sanitizeFailure(err)}
+		}
+		metrics.RecordProviderRequest(ctx, t.Provider, t.Model, resultSuccess)
+		return false, nil
 	}
 }
 

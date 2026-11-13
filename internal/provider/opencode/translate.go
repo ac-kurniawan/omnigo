@@ -1,10 +1,7 @@
 package opencode
 
 import (
-	"bufio"
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -15,8 +12,6 @@ import (
 
 	"github.com/ac-kurniawan/omnigo/internal/provider"
 )
-
-const maxSSELine = 50 * 1024 * 1024
 
 func toAnthropicMessagesBody(req provider.ChatRequest) ([]byte, error) {
 	root := requestRoot(req)
@@ -30,7 +25,7 @@ func toAnthropicMessagesBody(req provider.ChatRequest) ([]byte, error) {
 		"max_tokens": 4096,
 		"stream":     req.Stream,
 	}
-	if value, ok := firstPresent(root, "max_tokens", "max_completion_tokens"); ok {
+	if value, ok := provider.FirstPresent(root, "max_tokens", "max_completion_tokens"); ok {
 		out["max_tokens"] = value
 	}
 	for _, key := range []string{"temperature", "top_p", "top_k", "stop_sequences"} {
@@ -482,13 +477,13 @@ func translateToolChoice(raw any) (any, error) {
 func streamAnthropicToChat(ctx context.Context, r io.Reader, model, account string, w http.ResponseWriter) error {
 	state := newAnthropicState(model)
 	flusher, _ := w.(http.Flusher)
-	err := parseSSE(ctx, r, func(eventType string, data []byte) error {
+	err := provider.ReadSSE(ctx, r, "opencode", func(eventType string, data []byte) error {
 		chunks, err := state.consume(eventType, data)
 		if err != nil {
 			return err
 		}
 		for _, chunk := range chunks {
-			if err := writeSSEChunk(w, chunk); err != nil {
+			if err := provider.WriteSSEChunk(w, chunk); err != nil {
 				return err
 			}
 			if flusher != nil {
@@ -517,7 +512,7 @@ func streamAnthropicToChat(ctx context.Context, r io.Reader, model, account stri
 }
 
 func completeAnthropicToChat(ctx context.Context, r io.Reader, model, account string, w http.ResponseWriter) error {
-	body, err := io.ReadAll(r)
+	body, err := provider.ReadCompletionBody(r)
 	if err != nil {
 		return err
 	}
@@ -530,7 +525,7 @@ func completeAnthropicToChat(ctx context.Context, r io.Reader, model, account st
 	}
 	id, _ := resp["id"].(string)
 	if id == "" {
-		id = "chatcmpl-" + randomID()
+		id = "chatcmpl-" + provider.RandomID()
 	}
 	blocks, _ := resp["content"].([]any)
 	var text strings.Builder
@@ -595,7 +590,7 @@ type anthropicState struct {
 }
 
 func newAnthropicState(model string) *anthropicState {
-	return &anthropicState{id: "chatcmpl-" + randomID(), model: model, created: time.Now().Unix(), toolIndex: -1}
+	return &anthropicState{id: "chatcmpl-" + provider.RandomID(), model: model, created: time.Now().Unix(), toolIndex: -1}
 }
 
 func (s *anthropicState) consume(eventType string, payload []byte) ([]map[string]any, error) {
@@ -626,7 +621,7 @@ func (s *anthropicState) consume(eventType string, payload []byte) ([]map[string
 	case "content_block_start":
 		block, _ := event["content_block"].(map[string]any)
 		s.block, _ = block["type"].(string)
-		if index, ok := numberAsInt(event["index"]); ok {
+		if index, ok := provider.NumberAsInt(event["index"]); ok {
 			s.index = index
 		}
 		if s.block == "tool_use" {
@@ -805,28 +800,28 @@ func readAnthropicUsage(raw any) countedUsage {
 	}
 	var usage countedUsage
 	usage.present = true
-	if value, ok := numberAsInt(first(data["input_tokens"], data["prompt_tokens"])); ok {
+	if value, ok := provider.NumberAsInt(provider.First(data["input_tokens"], data["prompt_tokens"])); ok {
 		usage.input, usage.inputSet = value, true
 	}
-	if value, ok := numberAsInt(first(data["output_tokens"], data["completion_tokens"])); ok {
+	if value, ok := provider.NumberAsInt(provider.First(data["output_tokens"], data["completion_tokens"])); ok {
 		usage.output, usage.outputSet = value, true
 	}
-	if value, ok := numberAsInt(first(data["cache_read_input_tokens"], data["cached_tokens"])); ok {
+	if value, ok := provider.NumberAsInt(provider.First(data["cache_read_input_tokens"], data["cached_tokens"])); ok {
 		usage.cached, usage.cachedSet = value, true
 	}
-	if value, ok := numberAsInt(data["cache_creation_input_tokens"]); ok {
+	if value, ok := provider.NumberAsInt(data["cache_creation_input_tokens"]); ok {
 		usage.cacheCreate, usage.createSet = value, true
 	}
-	if value, ok := numberAsInt(data["reasoning_tokens"]); ok {
+	if value, ok := provider.NumberAsInt(data["reasoning_tokens"]); ok {
 		usage.reasoning, usage.reasoningSet = value, true
 	}
 	if details, ok := data["input_tokens_details"].(map[string]any); ok {
-		if value, ok := numberAsInt(details["cached_tokens"]); ok {
+		if value, ok := provider.NumberAsInt(details["cached_tokens"]); ok {
 			usage.cached, usage.cachedSet = value, true
 		}
 	}
 	if details, ok := data["output_tokens_details"].(map[string]any); ok {
-		if value, ok := numberAsInt(details["reasoning_tokens"]); ok {
+		if value, ok := provider.NumberAsInt(details["reasoning_tokens"]); ok {
 			usage.reasoning, usage.reasoningSet = value, true
 		}
 	}
@@ -836,13 +831,13 @@ func readAnthropicUsage(raw any) countedUsage {
 func streamResponsesToChat(ctx context.Context, r io.Reader, model string, creds provider.Credentials, w http.ResponseWriter) error {
 	state := newResponsesState(model)
 	flusher, _ := w.(http.Flusher)
-	err := parseSSE(ctx, r, func(eventType string, data []byte) error {
+	err := provider.ReadSSE(ctx, r, "opencode", func(eventType string, data []byte) error {
 		chunks, err := state.consume(eventType, data)
 		if err != nil {
 			return err
 		}
 		for _, chunk := range chunks {
-			if err := writeSSEChunk(w, chunk); err != nil {
+			if err := provider.WriteSSEChunk(w, chunk); err != nil {
 				return err
 			}
 			if flusher != nil {
@@ -859,7 +854,7 @@ func streamResponsesToChat(ctx context.Context, r io.Reader, model string, creds
 
 func completeResponsesToChat(ctx context.Context, r io.Reader, model string, creds provider.Credentials, w http.ResponseWriter) error {
 	state := newResponsesState(model)
-	if err := parseSSE(ctx, r, func(eventType string, data []byte) error {
+	if err := provider.ReadSSE(ctx, r, "opencode", func(eventType string, data []byte) error {
 		_, err := state.consume(eventType, data)
 		return err
 	}); err != nil {
@@ -899,7 +894,7 @@ type responsesState struct {
 
 func newResponsesState(model string) *responsesState {
 	return &responsesState{
-		id: "chatcmpl-" + randomID(), model: model, created: time.Now().Unix(),
+		id: "chatcmpl-" + provider.RandomID(), model: model, created: time.Now().Unix(),
 		byItem: map[string]*toolCall{}, byOutput: map[int]*toolCall{},
 	}
 }
@@ -1054,7 +1049,7 @@ func (s *responsesState) addTool(event map[string]any, item map[string]any) *too
 		call.id, _ = item["id"].(string)
 	}
 	if call.id == "" {
-		call.id = "call_" + randomID()
+		call.id = "call_" + provider.RandomID()
 	}
 	call.itemID, _ = item["id"].(string)
 	call.name, _ = item["name"].(string)
@@ -1062,7 +1057,7 @@ func (s *responsesState) addTool(event map[string]any, item map[string]any) *too
 	if call.itemID != "" {
 		s.byItem[call.itemID] = call
 	}
-	if index, ok := numberAsInt(event["output_index"]); ok {
+	if index, ok := provider.NumberAsInt(event["output_index"]); ok {
 		s.byOutput[index] = call
 	}
 	return call
@@ -1088,7 +1083,7 @@ func (s *responsesState) findTool(event map[string]any) *toolCall {
 			}
 		}
 	}
-	if index, ok := numberAsInt(event["output_index"]); ok {
+	if index, ok := provider.NumberAsInt(event["output_index"]); ok {
 		if call := s.byOutput[index]; call != nil {
 			return call
 		}
@@ -1223,86 +1218,26 @@ func readResponsesUsage(raw any) countedUsage {
 	}
 	var usage countedUsage
 	usage.present = true
-	if value, ok := numberAsInt(first(data["input_tokens"], data["prompt_tokens"])); ok {
+	if value, ok := provider.NumberAsInt(provider.First(data["input_tokens"], data["prompt_tokens"])); ok {
 		usage.input, usage.inputSet = value, true
 	}
-	if value, ok := numberAsInt(first(data["output_tokens"], data["completion_tokens"])); ok {
+	if value, ok := provider.NumberAsInt(provider.First(data["output_tokens"], data["completion_tokens"])); ok {
 		usage.output, usage.outputSet = value, true
 	}
-	if value, ok := numberAsInt(data["cache_creation_input_tokens"]); ok {
+	if value, ok := provider.NumberAsInt(data["cache_creation_input_tokens"]); ok {
 		usage.cacheCreate, usage.createSet = value, true
 	}
 	if details, ok := data["input_tokens_details"].(map[string]any); ok {
-		if value, ok := numberAsInt(details["cached_tokens"]); ok {
+		if value, ok := provider.NumberAsInt(details["cached_tokens"]); ok {
 			usage.cached, usage.cachedSet = value, true
 		}
 	}
 	if details, ok := data["output_tokens_details"].(map[string]any); ok {
-		if value, ok := numberAsInt(details["reasoning_tokens"]); ok {
+		if value, ok := provider.NumberAsInt(details["reasoning_tokens"]); ok {
 			usage.reasoning, usage.reasoningSet = value, true
 		}
 	}
 	return usage
-}
-
-func parseSSE(ctx context.Context, reader io.Reader, consume func(string, []byte) error) error {
-	scanner := bufio.NewScanner(reader)
-	scanner.Buffer(make([]byte, 64*1024), maxSSELine)
-	var eventType string
-	var data strings.Builder
-	flush := func() error {
-		if data.Len() == 0 {
-			eventType = ""
-			return nil
-		}
-		payload := strings.TrimSuffix(data.String(), "\n")
-		typeName := eventType
-		data.Reset()
-		eventType = ""
-		if payload == "[DONE]" {
-			return nil
-		}
-		return consume(typeName, []byte(payload))
-	}
-	for scanner.Scan() {
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		line := scanner.Text()
-		if line == "" {
-			if err := flush(); err != nil {
-				return err
-			}
-			continue
-		}
-		if strings.HasPrefix(line, ":") {
-			continue
-		}
-		field, value, _ := strings.Cut(line, ":")
-		value = strings.TrimPrefix(value, " ")
-		switch field {
-		case "event":
-			eventType = strings.TrimSpace(value)
-		case "data":
-			if data.Len() > 0 {
-				data.WriteByte('\n')
-			}
-			data.WriteString(value)
-		}
-	}
-	if err := scanner.Err(); err != nil {
-		return fmt.Errorf("opencode: read SSE stream: %w", err)
-	}
-	return flush()
-}
-
-func writeSSEChunk(w io.Writer, chunk map[string]any) error {
-	data, err := json.Marshal(chunk)
-	if err != nil {
-		return err
-	}
-	_, err = fmt.Fprintf(w, "data: %s\n\n", data)
-	return err
 }
 
 func requiredSlice(object map[string]any, key string) ([]any, error) {
@@ -1329,46 +1264,6 @@ func requiredString(object map[string]any, key, path string) (string, error) {
 	return value, nil
 }
 
-func firstPresent(object map[string]any, keys ...string) (any, bool) {
-	for _, key := range keys {
-		if value, ok := object[key]; ok && value != nil {
-			return value, true
-		}
-	}
-	return nil, false
-}
-
-func numberAsInt(value any) (int, bool) {
-	switch number := value.(type) {
-	case float64:
-		return int(number), true
-	case json.Number:
-		parsed, err := number.Int64()
-		return int(parsed), err == nil
-	case int:
-		return number, true
-	default:
-		return 0, false
-	}
-}
-
-func first(values ...any) any {
-	for _, value := range values {
-		if value != nil {
-			return value
-		}
-	}
-	return nil
-}
-
 func invalid(format string, args ...any) error {
 	return fmt.Errorf("opencode: "+format, args...)
-}
-
-func randomID() string {
-	value := make([]byte, 12)
-	if _, err := rand.Read(value); err != nil {
-		return fmt.Sprintf("%d", time.Now().UnixNano())
-	}
-	return hex.EncodeToString(value)
 }

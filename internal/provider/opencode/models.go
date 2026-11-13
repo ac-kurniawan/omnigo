@@ -143,7 +143,7 @@ func parseModels(r io.Reader) ([]provider.Model, error) {
 }
 
 func parseModelsWithProtocols(r io.Reader) ([]provider.Model, map[string]protocol, error) {
-	body, err := io.ReadAll(r)
+	body, err := provider.ReadBoundedBody(r)
 	if err != nil {
 		return nil, nil, err
 	}

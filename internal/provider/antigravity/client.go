@@ -5,10 +5,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"sort"
 	"time"
+
+	"github.com/ac-kurniawan/omnigo/internal/provider"
 )
 
 // unaryClient bounds the OAuth and metadata calls so a hung Google endpoint
@@ -110,7 +111,7 @@ func DiscoverProject(ctx context.Context, accessToken string) (string, error) {
 	if resp.StatusCode != http.StatusOK {
 		return "", fmt.Errorf("loadCodeAssist: status %d", resp.StatusCode)
 	}
-	b, err := io.ReadAll(resp.Body)
+	b, err := provider.ReadBoundedBody(resp.Body)
 	if err != nil {
 		return "", err
 	}
@@ -131,7 +132,7 @@ func DiscoverProject(ctx context.Context, accessToken string) (string, error) {
 		})
 		if err == nil {
 			defer retryResp.Body.Close()
-			if rb, err := io.ReadAll(retryResp.Body); err == nil {
+			if rb, err := provider.ReadBoundedBody(retryResp.Body); err == nil {
 				if rpid := extractProjectID(rb); rpid != "" {
 					return rpid, nil
 				}
@@ -200,7 +201,7 @@ func fetchModels(ctx context.Context, accessToken, projectID string) ([]string, 
 		// Fallback to default catalog on error status (e.g. 403 or 404)
 		return DefaultAntigravityModels, nil
 	}
-	b, err := io.ReadAll(resp.Body)
+	b, err := provider.ReadBoundedBody(resp.Body)
 	if err != nil {
 		return DefaultAntigravityModels, nil
 	}

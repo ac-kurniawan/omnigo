@@ -302,29 +302,32 @@ func copyHeaders(dst, src http.Header) {
 }
 
 func copyJSONBodyWithUsage(ctx context.Context, r io.Reader, account string, w io.Writer) error {
-	body, err := io.ReadAll(r)
+	body, err := provider.ReadCompletionBody(r)
 	if err != nil {
 		return err
 	}
 	if _, err := w.Write(body); err != nil {
 		return err
 	}
-	if usage, found := provider.ChatUsageFromSSELine(append([]byte("data: "), body...)); found {
+	// The body is one JSON object, not a framed stream. ChatUsageFromSSELine
+	// expects a data line, so pass the offset it looks past instead of copying
+	// the whole body to prepend a prefix.
+	if usage, found := provider.ChatUsageFromJSONLine(body); found {
 		usage.Account = account
 		provider.ReportUsage(ctx, usage)
 	}
 	return nil
 }
 
+// proxyStream forwards an upstream stream verbatim while counting the usage
+// object on its data lines.
 func proxyStream(ctx context.Context, r io.Reader, account string, w http.ResponseWriter) error {
 	flusher, _ := w.(http.Flusher)
 	buf := make([]byte, 32*1024)
-	var lineBuf bytes.Buffer
+	scanner := &lineScanner{}
 	for {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		default:
+		if err := ctx.Err(); err != nil {
+			return err
 		}
 		n, err := r.Read(buf)
 		if n > 0 {
@@ -334,27 +337,78 @@ func proxyStream(ctx context.Context, r io.Reader, account string, w http.Respon
 			if flusher != nil {
 				flusher.Flush()
 			}
-			lineBuf.Write(buf[:n])
-			for {
-				line, rest, found := bytes.Cut(lineBuf.Bytes(), []byte("\n"))
-				if !found {
-					break
+			scanner.add(buf[:n], func(line []byte) {
+				if !bytes.HasPrefix(line, []byte("data:")) {
+					return
 				}
-				lineBuf = *bytes.NewBuffer(rest)
-				if bytes.HasPrefix(line, []byte("data:")) {
-					if usage, found := provider.ChatUsageFromSSELine(line); found {
-						usage.Account = account
-						provider.ReportUsage(ctx, usage)
-					}
+				if usage, found := provider.ChatUsageFromSSELine(line); found {
+					usage.Account = account
+					provider.ReportUsage(ctx, usage)
 				}
-			}
+			})
 		}
 		if err != nil {
 			if errors.Is(err, io.EOF) {
-				break
+				return nil
 			}
 			return err
 		}
 	}
-	return nil
+}
+
+// lineScanner splits a byte stream into lines while holding at most one
+// unterminated tail. A line longer than provider.MaxSSELine is never returned
+// and its remaining bytes are dropped as they arrive: the accumulator is
+// discarded instead of grown, so a hostile upstream cannot make this process
+// hold an arbitrarily long line. Scanning resumes at the next newline.
+type lineScanner struct {
+	// limit caps one line; zero means provider.MaxSSELine. Tests set it small.
+	limit int
+	// pending holds the current line; start skips the lines already returned.
+	// The two are compacted once per add call, so a stream costs one copy per
+	// read rather than one per line.
+	pending []byte
+	start   int
+	// discarding marks the tail of an overlong line, whose bytes are dropped
+	// until a newline arrives.
+	discarding bool
+}
+
+// add appends one chunk and hands every complete, in-bounds line to emit. The
+// slice passed to emit aliases the scanner's buffer, so it must be consumed
+// before add returns; nothing is retained, which is why the buffer can be
+// compacted in place.
+func (s *lineScanner) add(chunk []byte, emit func(line []byte)) {
+	if s.discarding {
+		i := bytes.IndexByte(chunk, '\n')
+		if i < 0 {
+			return
+		}
+		s.discarding = false
+		chunk = chunk[i+1:]
+	}
+	s.pending = append(s.pending, chunk...)
+	for s.start < len(s.pending) {
+		i := bytes.IndexByte(s.pending[s.start:], '\n')
+		if i < 0 {
+			break
+		}
+		emit(s.pending[s.start : s.start+i])
+		s.start += i + 1
+	}
+	limit := s.limit
+	if limit <= 0 {
+		limit = provider.MaxSSELine
+	}
+	if len(s.pending)-s.start > limit {
+		// Drop the oversized accumulator, and the capacity it grew to, so the
+		// next line starts small instead of reusing a cap-sized buffer.
+		s.discarding = true
+		s.pending, s.start = nil, 0
+		return
+	}
+	if s.start > 0 {
+		s.pending = s.pending[:copy(s.pending, s.pending[s.start:])]
+		s.start = 0
+	}
 }

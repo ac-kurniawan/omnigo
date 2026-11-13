@@ -22,11 +22,11 @@ var ErrUpstreamStall = errors.New("upstream stalled")
 // a dead connection look identical to a clock. IdleGuard bounds silence
 // instead, and its stream budget bounds a generation that never finishes.
 //
-// Each streaming RoundTrip uses a fresh clone of the pooled transport. A
-// healthy HTTP/2 connection otherwise multiplexes every request to one host,
-// so one silent stream can hold the connection's flow-control window and stall
-// its siblings. Closing the response body closes only that clone's connections;
-// the pooled transport used by short unary calls is left in place.
+// The transport disables HTTP/2 multiplexing. A healthy multiplexed connection
+// carries every stream to one host at once, so one silent stream holds the
+// connection's flow-control window and stalls its siblings; over HTTP/1.1 each
+// in-flight stream has its own connection, and a released one goes back to the
+// shared pool for the next request instead of paying a fresh handshake.
 func StreamClient(client *http.Client) *http.Client {
 	if client == nil {
 		return &http.Client{Transport: &isolatedTransport{}}
@@ -38,39 +38,58 @@ func StreamClient(client *http.Client) *http.Client {
 	}
 }
 
+// maxIsolatedIdleConns bounds the HTTP/1.1 connections this process parks per
+// host for streaming. The shared transport's own cap counts multiplexed
+// streams, so it does not bound these.
+const maxIsolatedIdleConns = 100
+
 type isolatedTransport struct {
 	base http.RoundTripper
 }
+
+// streamTransports holds one HTTP/1.1 clone of a base transport per base
+// transport, so every streaming client in the process draws from one pool.
+var streamTransports sync.Map
 
 func (t *isolatedTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	base := t.base
 	if base == nil {
 		base = http.DefaultTransport
 	}
+	return isolatedFor(base).RoundTrip(req)
+}
+
+// isolatedFor returns the HTTP/1.1 clone of base. A transport that cannot be
+// cloned is used as is.
+func isolatedFor(base http.RoundTripper) http.RoundTripper {
 	transport, ok := base.(*http.Transport)
 	if !ok {
-		return base.RoundTrip(req)
+		return base
+	}
+	if shared, ok := streamTransports.Load(base); ok {
+		return shared.(*http.Transport)
 	}
 	dedicated := transport.Clone()
-	resp, err := dedicated.RoundTrip(req)
-	if err != nil {
+	dedicated.ForceAttemptHTTP2 = false
+	dedicated.MaxIdleConnsPerHost = maxIsolatedIdleConns
+	shared, loaded := streamTransports.LoadOrStore(base, dedicated)
+	if loaded {
+		// A concurrent caller won the race; keep only its transport so the
+		// loser's connections do not stay parked for the life of the process.
 		dedicated.CloseIdleConnections()
-		return nil, err
 	}
-	resp.Body = &isolatedBody{ReadCloser: resp.Body, transport: dedicated}
-	return resp, nil
+	return shared.(*http.Transport)
 }
 
-type isolatedBody struct {
-	io.ReadCloser
-	transport *http.Transport
-	once      sync.Once
-}
-
-func (b *isolatedBody) Close() error {
-	err := b.ReadCloser.Close()
-	b.once.Do(func() { b.transport.CloseIdleConnections() })
-	return err
+// CloseStreamIdleConnections drains every streaming pool. Shutdown calls it
+// alongside the shared transport's close, since these are separate pools.
+func CloseStreamIdleConnections() {
+	streamTransports.Range(func(_, value any) bool {
+		if transport, ok := value.(*http.Transport); ok {
+			transport.CloseIdleConnections()
+		}
+		return true
+	})
 }
 
 // StreamBudget returns the total wall-clock budget for one generation: the

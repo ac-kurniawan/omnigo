@@ -57,6 +57,11 @@ Client → /v1/chat/completions
   → model resolves to a combo name or a `<provider>/<model>`
       combo: combo engine orders targets (priority | fill-first)
              → for each target in order until success
+             → a 502/503/504 fails over to the next target; the same target is
+               retried only when the chain has no target left
+             → a streaming attempt buffers until a reply frame so a later target
+               can take over, except on the last target, whose first frame is
+               forwarded immediately
       smart combo: ask a System One model which route fits the request
                    → the route's destination combo owns the failover
                    → on any decision failure, use the default route

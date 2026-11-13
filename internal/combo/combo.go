@@ -56,7 +56,7 @@ func (c Combo) Run(ctx context.Context, dispatch DispatchFunc) (Target, error) {
 		if c.Timeout > 0 && time.Since(attemptStart) >= c.Timeout {
 			return Target{}, errors.Join(ErrComboTimeout, lastErr)
 		}
-		err := c.attempt(ctx, attemptStart, target, dispatch)
+		err := c.attempt(ctx, attemptStart, target, dispatch, healthySiblings(targets, i))
 		if err != nil {
 			lastErr = err
 			if ctx.Err() != nil {
@@ -105,12 +105,14 @@ func (c Combo) Run(ctx context.Context, dispatch DispatchFunc) (Target, error) {
 	return Target{}, lastErr
 }
 
-// attempt runs one target. A 502, 503, or 504 is tried once more on the same
-// target before the caller decides whether to drain it; 429 and request-caused
-// 4xx are not. The combo deadline cancels the retry.
-func (c Combo) attempt(ctx context.Context, started time.Time, target Target, dispatch DispatchFunc) error {
+// attempt runs one target. A 502, 503, or 504 is retried on the same target
+// only when the chain has none left to try: elsewhere that target's failure
+// spends the next target's attempt instead of re-sending the whole prompt to an
+// upstream that just failed. 429 and request-caused 4xx are never retried. The
+// attempt context bounds the retry against the combo deadline.
+func (c Combo) attempt(ctx context.Context, started time.Time, target Target, dispatch DispatchFunc, siblings int) error {
 	err := c.dispatchOnce(ctx, started, target, dispatch)
-	if err == nil || !isTransientGateway(err) || errors.Is(err, context.DeadlineExceeded) || ctx.Err() != nil {
+	if err == nil || siblings > 0 || !isTransientGateway(err) || errors.Is(err, context.DeadlineExceeded) || ctx.Err() != nil {
 		return err
 	}
 	if c.Timeout > 0 && time.Since(started) >= c.Timeout {
