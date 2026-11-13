@@ -427,19 +427,32 @@ func (p *codebuddyProvider) chatWithKey(ctx context.Context, req provider.ChatRe
 	}
 	defer resp.Body.Close()
 
-	bodyBytes, err := io.ReadAll(resp.Body)
+	// The body is inspected only far enough to recognise a refusal: CodeBuddy
+	// signals an error code inside a 200 body, and everything else is a
+	// generation that must be forwarded chunk by chunk instead of buffered
+	// whole in this process's memory. The guard wraps the body once, for the
+	// whole response, so the sniff and the streaming copy share one idle bound.
+	guarded := guard.Wrap(resp.Body)
+	head, err := io.ReadAll(io.LimitReader(guarded, maxRefusalBytes))
 	if err != nil {
 		return guard.Err(fmt.Errorf("read codebuddy response: %w", err))
 	}
-
-	// CodeBuddy returns code: 6004 or errors either on HTTP 200 or 4xx.
-	if statusErr := parseError(resp.StatusCode, bodyBytes); statusErr != nil {
-		provider.WarnUpstreamError(p.name, req.Model, "", statusErr.StatusCode, string(bodyBytes))
+	if statusErr := parseError(resp.StatusCode, head); statusErr != nil {
+		provider.WarnUpstreamError(p.name, req.Model, "", statusErr.StatusCode, string(head))
 		return statusErr
 	}
-
+	// The upstream always streams for chat, so a body that opens as a JSON
+	// object is an error envelope, not a generation. One larger than the sniff
+	// window cannot be decoded: fail the target instead of forwarding a
+	// refusal as if it were the answer.
+	if trimmed := bytes.TrimLeft(head, " \t\r\n"); len(trimmed) > 0 && trimmed[0] == '{' {
+		if !json.Valid(trimmed) {
+			provider.WarnUpstreamError(p.name, req.Model, "", resp.StatusCode, string(head))
+			return provider.NewHTTPStatusError(http.StatusBadGateway, "codebuddy: unreadable upstream error envelope")
+		}
+	}
 	if resp.StatusCode != http.StatusOK {
-		provider.WarnUpstreamError(p.name, req.Model, "", resp.StatusCode, string(bodyBytes))
+		provider.WarnUpstreamError(p.name, req.Model, "", resp.StatusCode, string(head))
 		return provider.NewHTTPStatusError(resp.StatusCode, fmt.Sprintf("upstream status %d", resp.StatusCode))
 	}
 
@@ -451,15 +464,30 @@ func (p *codebuddyProvider) chatWithKey(ctx context.Context, req provider.ChatRe
 	w.WriteHeader(resp.StatusCode)
 
 	flusher, _ := w.(http.Flusher)
-	if flusher != nil {
-		flusher.Flush()
+	remaining := io.MultiReader(bytes.NewReader(head), guarded)
+	buf := make([]byte, 32*1024)
+	for {
+		n, rErr := remaining.Read(buf)
+		if n > 0 {
+			if _, wErr := w.Write(buf[:n]); wErr != nil {
+				return wErr
+			}
+			if flusher != nil {
+				flusher.Flush()
+			}
+		}
+		if rErr != nil {
+			if errors.Is(rErr, io.EOF) {
+				return guard.Err(nil)
+			}
+			return guard.Err(rErr)
+		}
 	}
-	_, err = io.Copy(w, guard.Wrap(bytes.NewReader(bodyBytes)))
-	if flusher != nil {
-		flusher.Flush()
-	}
-	return guard.Err(err)
 }
+
+// maxRefusalBytes bounds the prefix inspected for an in-body error code. An
+// error envelope is a small JSON object; a generation is far larger.
+const maxRefusalBytes = 64 << 10
 
 // DefaultIntlModels are returned when upstream CodeBuddy Intl has no /v2/models endpoint (404) or fails.
 var DefaultIntlModels = []provider.Model{

@@ -49,7 +49,7 @@ func handleResponses(getCfg func() *config.Config, registry *providerRegistry, t
 		captureGen := CaptureGeneration(cfg)
 		tx := newResponsesTx(w, req.Model)
 
-		if cb, ok := findCombo(cfg, req.Model); ok {
+		if cb, ok := config.FindCombo(cfg, req.Model); ok {
 			runCombo(responsesResponder{tx: tx}, r, cfg, registry, cb, req, tracker, tc, startTime, metrics, captureGen)
 			tx.finished()
 			return
@@ -91,7 +91,7 @@ type responsesResponder struct {
 	tx *responsesTx
 }
 
-func (r responsesResponder) attempt(stream bool) http.ResponseWriter {
+func (r responsesResponder) attempt(stream, failover bool) http.ResponseWriter {
 	if stream {
 		r.tx.flagStream()
 	}

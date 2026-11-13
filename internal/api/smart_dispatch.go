@@ -2,7 +2,6 @@ package api
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -93,47 +92,15 @@ func runSmartCombo(responder responder, r *http.Request, cfg *config.Config, reg
 		c.Targets = append(c.Targets, combo.Target{Provider: t.Provider, Model: t.Model})
 	}
 
+	dispatch := runTarget(responder, r, cfg, registry, req, tracker, tc, startTime, metrics, capture, comboName, strategy, cb.ParsedDrainTTL())
 	responseCommitted := false
+	dispatched := 0
 	_, err := c.Run(r.Context(), func(ctx context.Context, t combo.Target) error {
-		p, ok := providerForName(cfg, registry, t.Provider)
-		if !ok {
-			metrics.RecordProviderRequest(ctx, t.Provider, t.Model, resultUnavailable)
-			return fmt.Errorf("unknown provider: %s", t.Provider)
-		}
-		for _, pc := range cfg.Providers {
-			if pc.Name == t.Provider && pc.IsModelDisabled(t.Model) {
-				metrics.RecordProviderRequest(ctx, t.Provider, t.Model, resultUnavailable)
-				return fmt.Errorf("model %q is disabled on provider %q", t.Model, t.Provider)
-			}
-		}
-		req.Model = t.Model
-		attempt := responder.attempt(req.Stream)
-		SetTelemetryHeaders(attempt, tc, t.Provider, t.Model, startTime)
-		start := time.Now()
-		cap, providerCtx, providerWriter := trackAttempt(ctx, metrics, t.Provider, t.Model, comboName, attempt, capture)
-		providerErr := p.ChatCompletion(providerCtx, req, providerWriter)
-		err := finishAttempt(attempt, providerErr)
-		genResult := classifyProviderError(err, errors.Is(err, errResponseCommitted), r.Context().Err() != nil)
-		metrics.RecordGeneration(ctx, generationFrom(start, time.Now(), "chat", t.Provider, t.Model, comboName, cap, genResult, req, capture))
-		if errors.Is(err, errResponseCommitted) {
-			responseCommitted = true
-			clientGone := r.Context().Err() != nil
-			gatewayDeadline := ctx.Err() != nil && !clientGone
-			metrics.RecordProviderRequest(ctx, t.Provider, t.Model, classifyProviderError(err, true, clientGone))
-			if tracker != nil && strategy != "priority" && !clientGone && !gatewayDeadline {
-				tracker.MarkDrained(t, cb.ParsedDrainTTL(), sanitizeFailure(err))
-			}
-			if req.Stream && !clientGone {
-				responder.onCommittedFailure(sanitizeFailure(err))
-			}
-			return nil
-		}
-		if err != nil {
-			metrics.RecordProviderRequest(ctx, t.Provider, t.Model, classifyProviderError(err, false, false))
-			return sanitizedError{err: err, message: sanitizeFailure(err)}
-		}
-		metrics.RecordProviderRequest(ctx, t.Provider, t.Model, resultSuccess)
-		return nil
+		failover := hasTargetAfter(len(c.Targets), dispatched)
+		dispatched++
+		committed, err := dispatch(ctx, t, failover)
+		responseCommitted = committed || responseCommitted
+		return err
 	})
 	attemptResult := resultSuccess
 	if err != nil {

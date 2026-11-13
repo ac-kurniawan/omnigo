@@ -1,8 +1,6 @@
 package commandcode
 
 import (
-	"crypto/rand"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -64,56 +62,26 @@ func readUsage(raw any) countedUsage {
 		return countedUsage{}
 	}
 	usage := countedUsage{present: true}
-	if value, ok := numberAsInt(first(data["inputTokens"], data["prompt_tokens"], data["promptTokens"])); ok {
+	if value, ok := provider.NumberAsInt(provider.First(data["inputTokens"], data["prompt_tokens"], data["promptTokens"])); ok {
 		usage.input = value
 	}
-	if value, ok := numberAsInt(first(data["outputTokens"], data["completion_tokens"], data["completionTokens"])); ok {
+	if value, ok := provider.NumberAsInt(provider.First(data["outputTokens"], data["completion_tokens"], data["completionTokens"])); ok {
 		usage.output = value
 	}
 	if details, ok := data["inputTokenDetails"].(map[string]any); ok {
-		if value, ok := numberAsInt(details["cacheReadTokens"]); ok {
+		if value, ok := provider.NumberAsInt(details["cacheReadTokens"]); ok {
 			usage.cached = value
 		}
-		if value, ok := numberAsInt(details["cacheWriteTokens"]); ok {
+		if value, ok := provider.NumberAsInt(details["cacheWriteTokens"]); ok {
 			usage.cacheCreate = value
 		}
 	}
 	if details, ok := data["outputTokenDetails"].(map[string]any); ok {
-		if value, ok := numberAsInt(details["reasoningTokens"]); ok {
+		if value, ok := provider.NumberAsInt(details["reasoningTokens"]); ok {
 			usage.reasoning = value
 		}
 	}
 	return usage
-}
-
-func first(values ...any) any {
-	for _, value := range values {
-		if value != nil {
-			return value
-		}
-	}
-	return nil
-}
-
-func numberAsInt(value any) (int, bool) {
-	switch typed := value.(type) {
-	case float64:
-		if typed < 0 {
-			return 0, false
-		}
-		return int(typed), true
-	case json.Number:
-		n, err := typed.Int64()
-		if err != nil || n < 0 {
-			return 0, false
-		}
-		return int(n), true
-	case int:
-		return typed, typed >= 0
-	case int64:
-		return int(typed), typed >= 0
-	}
-	return 0, false
 }
 
 type toolCall struct {
@@ -140,7 +108,7 @@ type state struct {
 
 func newState(model string) *state {
 	return &state{
-		id:          "chatcmpl-" + randomID(),
+		id:          "chatcmpl-" + provider.RandomID(),
 		model:       model,
 		created:     time.Now().Unix(),
 		toolIndexBy: map[string]int{},
@@ -265,7 +233,7 @@ func (s *state) consume(event map[string]any) ([]map[string]any, error) {
 		if reason, ok := event["finishReason"].(string); ok && reason != "" {
 			s.finish = openAIFinish(reason, len(s.tools) > 0)
 		}
-		if usage := readUsage(first(event["usage"], event["totalUsage"])); usage.present {
+		if usage := readUsage(provider.First(event["usage"], event["totalUsage"])); usage.present {
 			s.usage = usage
 		}
 		return nil, nil
@@ -274,7 +242,7 @@ func (s *state) consume(event map[string]any) ([]map[string]any, error) {
 			reason, _ := event["finishReason"].(string)
 			s.finish = openAIFinish(reason, len(s.tools) > 0)
 		}
-		if usage := readUsage(first(event["totalUsage"], event["usage"])); usage.present {
+		if usage := readUsage(provider.First(event["totalUsage"], event["usage"])); usage.present {
 			s.usage = usage
 		}
 		s.finished = true
@@ -333,11 +301,11 @@ func commandCodeError(event map[string]any) error {
 	message := errorMessage(event)
 	code := 0
 	if nested, ok := event["error"].(map[string]any); ok {
-		if value, ok := numberAsInt(first(nested["statusCode"], nested["status"])); ok {
+		if value, ok := provider.NumberAsInt(provider.First(nested["statusCode"], nested["status"])); ok {
 			code = value
 		}
 	}
-	if value, ok := numberAsInt(first(event["statusCode"], event["status"])); ok {
+	if value, ok := provider.NumberAsInt(provider.First(event["statusCode"], event["status"])); ok {
 		code = value
 	}
 	if code < 400 || code > 599 {
@@ -350,7 +318,7 @@ func commandCodeError(event map[string]any) error {
 }
 
 func errorMessage(event map[string]any) string {
-	value := first(event["error"], event["message"])
+	value := provider.First(event["error"], event["message"])
 	switch typed := value.(type) {
 	case string:
 		return typed
@@ -426,12 +394,4 @@ func writeCompletion(w io.Writer, s *state) error {
 		"usage": s.usage.usageMap(),
 	}
 	return json.NewEncoder(w).Encode(body)
-}
-
-func randomID() string {
-	value := make([]byte, 12)
-	if _, err := rand.Read(value); err != nil {
-		return fmt.Sprintf("%d", time.Now().UnixNano())
-	}
-	return hex.EncodeToString(value)
 }

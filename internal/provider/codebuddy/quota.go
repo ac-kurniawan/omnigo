@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"math"
 	"net/http"
 	"strconv"
@@ -82,7 +81,7 @@ func (p *codebuddyProvider) FetchQuota(ctx context.Context, account provider.Cre
 		return snap, fmt.Errorf("codebuddy: quota upstream status %d", resp.StatusCode)
 	}
 
-	bodyBytes, err := io.ReadAll(resp.Body)
+	bodyBytes, err := provider.ReadBoundedBody(resp.Body)
 	if err != nil {
 		snap.Status = quota.StatusUnavailable
 		snap.Reason = "read response failed"

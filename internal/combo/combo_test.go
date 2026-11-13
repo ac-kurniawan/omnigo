@@ -711,18 +711,51 @@ func Test429BackoffGrowsWithoutRetryAfter(t *testing.T) {
 	}
 }
 
-// A blip 502 is retried once on the same target. The second attempt succeeding
-// means the target is not drained and the caller sees the success.
-func Test502RetriesOnceOnTheSameTarget(t *testing.T) {
+// A chain with another target left spends a 5xx on that target instead of
+// asking the same one twice: a duplicate dispatch re-sends the whole prompt to
+// an upstream that just failed. The target is not drained by one blip.
+func Test502FailsOverWithoutRetryingTheSameTarget(t *testing.T) {
 	tr := NewTracker("")
 	t1 := Target{Provider: "a", Model: "m1"}
 	t2 := Target{Provider: "b", Model: "m2"}
-	c := Combo{Name: "safe", Strategy: "fill-first", Targets: []Target{t1, t2}, Tracker: tr, DrainTTL: time.Minute}
+	// The transient-strike window is process-wide, so the name is unique per
+	// test: a shared name would inherit strikes from another test.
+	c := Combo{Name: "no-retry-with-sibling", Strategy: "fill-first", Targets: []Target{t1, t2}, Tracker: tr, DrainTTL: time.Minute}
 
 	var calls int
 	got, err := c.Run(context.Background(), func(_ context.Context, target Target) error {
 		if target != t1 {
-			t.Fatalf("fell over to %s before retrying a", target.Provider)
+			return nil
+		}
+		calls++
+		return mockClientError{status: http.StatusBadGateway}
+	})
+	if err != nil {
+		t.Fatalf("failover should have succeeded, got %v", err)
+	}
+	if got != t2 {
+		t.Fatalf("returned %+v, want b/m2", got)
+	}
+	if calls != 1 {
+		t.Fatalf("a was called %d times, want 1", calls)
+	}
+	if tr.IsDrained(t1) {
+		t.Fatal("a single blip drained the target")
+	}
+}
+
+// With nothing left to fail over to, a blip 502 is still retried once on the
+// same target: a single-target chain would otherwise turn one bad reply into
+// a hard failure. The second attempt succeeding leaves the target healthy.
+func Test502RetriesOnceWhenNoSiblingIsLeft(t *testing.T) {
+	tr := NewTracker("")
+	t1 := Target{Provider: "a", Model: "m1"}
+	c := Combo{Name: "retry-last-target", Strategy: "fill-first", Targets: []Target{t1}, Tracker: tr, DrainTTL: time.Minute}
+
+	var calls int
+	got, err := c.Run(context.Background(), func(_ context.Context, target Target) error {
+		if target != t1 {
+			t.Fatalf("dispatched to %s, want a/m1", target.Provider)
 		}
 		calls++
 		if calls == 1 {

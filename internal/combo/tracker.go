@@ -204,8 +204,12 @@ func (t *Tracker) persist() {
 	if err != nil {
 		return
 	}
-	if err := os.Chmod(t.path, 0o600); err != nil && !os.IsNotExist(err) {
+	if err := t.writeFile(t.path, b, 0o600); err != nil {
 		return
 	}
-	_ = t.writeFile(t.path, b, 0o600)
+	// WriteFile applies the mode only when it creates the file, so a file left
+	// behind by an older build keeps its looser permissions. Tighten it here,
+	// after the write: a chmod before the write would target a path that may
+	// not exist yet.
+	_ = os.Chmod(t.path, 0o600)
 }

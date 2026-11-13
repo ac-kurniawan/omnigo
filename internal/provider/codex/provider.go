@@ -1,11 +1,8 @@
 package codex
 
 import (
-	"bufio"
 	"bytes"
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -342,7 +339,7 @@ func (p *Provider) chatWithAccount(ctx context.Context, req provider.ChatRequest
 	// exchange only, not credential work.
 	guard := provider.NewIdleGuard(p.idle, provider.StreamBudget(p.streamTimeout, req.Stream), func() { cancel(provider.ErrUpstreamStall) })
 	defer guard.Stop()
-	sessionID := randomID()
+	sessionID := provider.RandomID()
 	resp, err := p.send(ctx, creds, body, sessionID, req.Model, req.Stream, lite)
 	if err != nil {
 		return guard.Err(err)
@@ -430,13 +427,13 @@ func (p *Provider) streamResponse(ctx context.Context, body io.Reader, model str
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	flusher, _ := w.(http.Flusher)
-	err := parseSSE(ctx, body, func(eventType string, data []byte) error {
+	err := provider.ReadSSE(ctx, body, "codex", func(eventType string, data []byte) error {
 		chunks, err := state.consume(eventType, data)
 		if err != nil {
 			return err
 		}
 		for _, chunk := range chunks {
-			if err := writeSSEChunk(w, chunk); err != nil {
+			if err := provider.WriteSSEChunk(w, chunk); err != nil {
 				return err
 			}
 			if flusher != nil {
@@ -455,10 +452,10 @@ func (p *Provider) streamResponse(ctx context.Context, body io.Reader, model str
 		if state.events == 0 {
 			// The upstream accepted the request, sent headers, then closed
 			// without a single event. That is a transient fault of this
-			// target, not a malformed generation: a typed 502 gets one
-			// same-target retry at the combo layer and parks the target
-			// only after repeated strikes, instead of the immediate drain
-			// a plain error causes.
+			// target, not a malformed generation: a typed 502 fails over to
+			// the next target (retried here only when this chain has none
+			// left) and parks the target only after repeated strikes,
+			// instead of the immediate drain a plain error causes.
 			return provider.NewHTTPStatusError(http.StatusBadGateway, "codex: upstream stream closed before first payload")
 		}
 		return fmt.Errorf("codex: incomplete SSE response")
@@ -475,7 +472,7 @@ func (p *Provider) streamResponse(ctx context.Context, body io.Reader, model str
 
 func (p *Provider) completeResponse(ctx context.Context, body io.Reader, model string, account provider.Credentials, w http.ResponseWriter) error {
 	state := newStreamState(model)
-	if err := parseSSE(ctx, body, func(eventType string, data []byte) error {
+	if err := provider.ReadSSE(ctx, body, "codex", func(eventType string, data []byte) error {
 		_, err := state.consume(eventType, data)
 		return err
 	}); err != nil {
@@ -488,10 +485,10 @@ func (p *Provider) completeResponse(ctx context.Context, body io.Reader, model s
 		if state.events == 0 {
 			// The upstream accepted the request, sent headers, then closed
 			// without a single event. That is a transient fault of this
-			// target, not a malformed generation: a typed 502 gets one
-			// same-target retry at the combo layer and parks the target
-			// only after repeated strikes, instead of the immediate drain
-			// a plain error causes.
+			// target, not a malformed generation: a typed 502 fails over to
+			// the next target (retried here only when this chain has none
+			// left) and parks the target only after repeated strikes,
+			// instead of the immediate drain a plain error causes.
 			return provider.NewHTTPStatusError(http.StatusBadGateway, "codex: upstream stream closed before first payload")
 		}
 		return fmt.Errorf("codex: incomplete SSE response")
@@ -522,7 +519,7 @@ func (p *Provider) completeResponse(ctx context.Context, body io.Reader, model s
 
 func newStreamState(model string) *streamState {
 	return &streamState{
-		id:           "chatcmpl-" + randomID(),
+		id:           "chatcmpl-" + provider.RandomID(),
 		model:        model,
 		created:      time.Now().Unix(),
 		toolByItem:   map[string]*toolCall{},
@@ -672,7 +669,7 @@ func (s *streamState) addToolCall(event, item map[string]any) *toolCall {
 	call := &toolCall{Index: len(s.toolCalls)}
 	call.ID, _ = item["call_id"].(string)
 	if call.ID == "" {
-		call.ID = "call_" + randomID()
+		call.ID = "call_" + provider.RandomID()
 	}
 	call.ItemID, _ = item["id"].(string)
 	call.Name, _ = item["name"].(string)
@@ -680,7 +677,7 @@ func (s *streamState) addToolCall(event, item map[string]any) *toolCall {
 	if call.ItemID != "" {
 		s.toolByItem[call.ItemID] = call
 	}
-	if index, ok := numberAsInt(event["output_index"]); ok {
+	if index, ok := provider.NumberAsInt(event["output_index"]); ok {
 		s.toolByOutput[index] = call
 	}
 	return call
@@ -706,7 +703,7 @@ func (s *streamState) findToolCall(event map[string]any) *toolCall {
 			}
 		}
 	}
-	if index, ok := numberAsInt(event["output_index"]); ok {
+	if index, ok := provider.NumberAsInt(event["output_index"]); ok {
 		return s.toolByOutput[index]
 	}
 	if len(s.toolCalls) == 1 {
@@ -717,19 +714,19 @@ func (s *streamState) findToolCall(event map[string]any) *toolCall {
 
 func (s *streamState) readUsage(value any) {
 	data, _ := value.(map[string]any)
-	s.usage.PromptTokens, _ = numberAsInt(first(data["input_tokens"], data["prompt_tokens"]))
-	s.usage.CompletionTokens, _ = numberAsInt(first(data["output_tokens"], data["completion_tokens"]))
-	s.usage.TotalTokens, _ = numberAsInt(data["total_tokens"])
+	s.usage.PromptTokens, _ = provider.NumberAsInt(provider.First(data["input_tokens"], data["prompt_tokens"]))
+	s.usage.CompletionTokens, _ = provider.NumberAsInt(provider.First(data["output_tokens"], data["completion_tokens"]))
+	s.usage.TotalTokens, _ = provider.NumberAsInt(data["total_tokens"])
 	if s.usage.TotalTokens == 0 {
 		s.usage.TotalTokens = s.usage.PromptTokens + s.usage.CompletionTokens
 	}
 	if details, ok := data["input_tokens_details"].(map[string]any); ok {
-		s.usage.CachedTokens, _ = numberAsInt(details["cached_tokens"])
+		s.usage.CachedTokens, _ = provider.NumberAsInt(details["cached_tokens"])
 	}
 	if details, ok := data["output_tokens_details"].(map[string]any); ok {
-		s.usage.ReasoningTokens, _ = numberAsInt(details["reasoning_tokens"])
+		s.usage.ReasoningTokens, _ = provider.NumberAsInt(details["reasoning_tokens"])
 	}
-	s.usage.CacheCreationInputTokens, _ = numberAsInt(data["cache_creation_input_tokens"])
+	s.usage.CacheCreationInputTokens, _ = provider.NumberAsInt(data["cache_creation_input_tokens"])
 	s.usage.present = true
 }
 
@@ -774,104 +771,6 @@ func (s *streamState) chunk(delta map[string]any, finishReason any, usage map[st
 		out["usage"] = usage
 	}
 	return out
-}
-
-func writeSSEChunk(w io.Writer, chunk map[string]any) error {
-	data, err := json.Marshal(chunk)
-	if err != nil {
-		return err
-	}
-	_, err = fmt.Fprintf(w, "data: %s\n\n", data)
-	return err
-}
-
-// maxSSELine is the longest SSE line the scanner will accept. A reasoning
-// delta arrives as one line, and a long one runs past a few megabytes; below
-// this the scanner ends the stream with "token too long" wherever that delta
-// happened to be. 50 MiB matches the bound the other providers use.
-const maxSSELine = 50 * 1024 * 1024
-
-func parseSSE(ctx context.Context, reader io.Reader, consume func(string, []byte) error) error {
-	scanner := bufio.NewScanner(reader)
-	scanner.Buffer(make([]byte, 64*1024), maxSSELine)
-	var eventType string
-	var data strings.Builder
-	flush := func() error {
-		if data.Len() == 0 {
-			eventType = ""
-			return nil
-		}
-		payload := strings.TrimSuffix(data.String(), "\n")
-		data.Reset()
-		typeName := eventType
-		eventType = ""
-		if payload == "[DONE]" {
-			return nil
-		}
-		return consume(typeName, []byte(payload))
-	}
-	for scanner.Scan() {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		default:
-		}
-		line := scanner.Text()
-		if line == "" {
-			if err := flush(); err != nil {
-				return err
-			}
-			continue
-		}
-		if strings.HasPrefix(line, ":") {
-			continue
-		}
-		if strings.HasPrefix(line, "event:") {
-			eventType = strings.TrimSpace(strings.TrimPrefix(line, "event:"))
-			continue
-		}
-		if strings.HasPrefix(line, "data:") {
-			if data.Len() > 0 {
-				data.WriteByte('\n')
-			}
-			data.WriteString(strings.TrimSpace(strings.TrimPrefix(line, "data:")))
-		}
-	}
-	if err := scanner.Err(); err != nil {
-		return fmt.Errorf("codex: read SSE stream: %w", err)
-	}
-	return flush()
-}
-
-func numberAsInt(value any) (int, bool) {
-	switch number := value.(type) {
-	case float64:
-		return int(number), true
-	case json.Number:
-		value, err := number.Int64()
-		return int(value), err == nil
-	case int:
-		return number, true
-	default:
-		return 0, false
-	}
-}
-
-func first(values ...any) any {
-	for _, value := range values {
-		if value != nil {
-			return value
-		}
-	}
-	return nil
-}
-
-func randomID() string {
-	value := make([]byte, 12)
-	if _, err := rand.Read(value); err != nil {
-		return fmt.Sprintf("%d", time.Now().UnixNano())
-	}
-	return hex.EncodeToString(value)
 }
 
 func init() {

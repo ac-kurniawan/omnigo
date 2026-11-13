@@ -533,6 +533,22 @@ func ChatUsageFromSSELine(line []byte) (TokenUsage, bool) {
 	return chatUsageFromSSELine(line)
 }
 
+// ChatUsageFromJSONLine reports the usage object of a body that is one JSON
+// object rather than a framed stream, without copying it to add a data prefix.
+func ChatUsageFromJSONLine(body []byte) (TokenUsage, bool) {
+	payload := bytes.TrimSpace(body)
+	if len(payload) == 0 || payload[0] != '{' || !bytes.Contains(payload, usageKey) {
+		return TokenUsage{}, false
+	}
+	var chunk struct {
+		Usage *chatUsageWire `json:"usage"`
+	}
+	if err := json.Unmarshal(payload, &chunk); err != nil || chunk.Usage == nil || !chunk.Usage.present() {
+		return TokenUsage{}, false
+	}
+	return chunk.Usage.tokenUsage(), true
+}
+
 // usageKey is the exact bytes of the usage field name, so content chunks skip
 // the JSON decode the same way the finish_reason scan does.
 var usageKey = []byte(`"usage"`)

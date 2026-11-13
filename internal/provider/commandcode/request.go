@@ -74,7 +74,7 @@ func buildEnvelope(req provider.ChatRequest, threadID string) ([]byte, error) {
 
 func maxTokens(body map[string]any) int {
 	for _, key := range []string{"max_tokens", "max_completion_tokens", "max_output_tokens"} {
-		if value, ok := numberAsInt(body[key]); ok && value > 0 {
+		if value, ok := provider.NumberAsInt(body[key]); ok && value > 0 {
 			return value
 		}
 	}

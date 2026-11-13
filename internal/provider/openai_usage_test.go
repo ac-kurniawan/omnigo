@@ -287,3 +287,26 @@ func TestOpenAIStreamUsageOnUnterminatedLine(t *testing.T) {
 		t.Fatalf("usage = %+v, want %+v", got, want)
 	}
 }
+
+// A translator that holds one JSON body reads usage through
+// ChatUsageFromJSONLine instead of copying the body to prepend a data prefix.
+// Both entry points must agree on what counts as a usage object.
+func TestChatUsageFromJSONLineMatchesSSELine(t *testing.T) {
+	cases := []string{
+		`{"usage":{"prompt_tokens":11,"completion_tokens":4,"total_tokens":15}}`,
+		`{"choices":[],"usage":{"input_tokens":9,"output_tokens":1}}`,
+		`  {"usage":{"prompt_tokens":0,"completion_tokens":0}}  `,
+		`{"choices":[]}`,
+		`{"choices":[],"usage":null}`,
+		`{"choices":[],"usage":[]}`,
+		`{"choices":[],"usage":{}}`,
+		``,
+	}
+	for _, body := range cases {
+		want, wantOK := ChatUsageFromSSELine(append([]byte("data: "), body...))
+		got, gotOK := ChatUsageFromJSONLine([]byte(body))
+		if gotOK != wantOK || got != want {
+			t.Fatalf("body %q: JSONLine = %+v/%v, SSELine = %+v/%v", body, got, gotOK, want, wantOK)
+		}
+	}
+}

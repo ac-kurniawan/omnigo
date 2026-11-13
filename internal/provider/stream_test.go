@@ -223,7 +223,11 @@ func TestIdleGuardFastStreamCancelsOnlyAfterIdleSilence(t *testing.T) {
 	}
 }
 
-func TestStalledHTTP2StreamDoesNotBlockSibling(t *testing.T) {
+// HTTP/2 can no longer carry streaming: the stream transport forces HTTP/1.1,
+// so one in-flight stream per connection is the isolation that matters. A
+// stalled stream must still not hold its sibling, and the sibling must get its
+// own connection instead of queueing behind the stalled one.
+func TestStalledStreamDoesNotBlockSibling(t *testing.T) {
 	const bound = 750 * time.Millisecond
 	release := make(chan struct{})
 	var conns atomic.Int32
@@ -247,8 +251,6 @@ func TestStalledHTTP2StreamDoesNotBlockSibling(t *testing.T) {
 		_, _ = io.WriteString(w, "data: done\n\n")
 		flusher.Flush()
 	}))
-	upstream.EnableHTTP2 = true
-	upstream.Config.HTTP2 = &http.HTTP2Config{MaxConcurrentStreams: 1}
 	upstream.Config.ConnState = func(_ net.Conn, state http.ConnState) {
 		if state == http.StateNew {
 			conns.Add(1)
@@ -259,7 +261,6 @@ func TestStalledHTTP2StreamDoesNotBlockSibling(t *testing.T) {
 	defer close(release)
 
 	base := upstream.Client().Transport.(*http.Transport)
-	base.HTTP2 = &http.HTTP2Config{StrictMaxConcurrentRequests: true}
 	client := &http.Client{Transport: base}
 	stream := StreamClient(client)
 
@@ -302,12 +303,92 @@ func TestStalledHTTP2StreamDoesNotBlockSibling(t *testing.T) {
 		t.Fatalf("stalled stream blocked its sibling past %s", bound)
 	}
 	if got := conns.Load(); got < 2 {
-		t.Fatalf("HTTPS connections = %d, want a dedicated connection for each in-flight stream", got)
+		t.Fatalf("%d HTTPS connections, want a dedicated connection for each in-flight stream", got)
 	}
 
 	select {
 	case err := <-errc:
 		t.Fatalf("both streams completed while the first was still stalled: %v", err)
 	default:
+	}
+}
+
+// Sequential streams must ride the connection the previous one released.
+// Cloning the transport per request paid a TCP and TLS handshake on every
+// generation; isolation only needs one connection per in-flight stream.
+func TestStreamClientReusesIdleConnection(t *testing.T) {
+	var conns atomic.Int32
+	upstream := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "data: start\n\n")
+		w.(http.Flusher).Flush()
+	}))
+	upstream.Config.ConnState = func(_ net.Conn, state http.ConnState) {
+		if state == http.StateNew {
+			conns.Add(1)
+		}
+	}
+	upstream.StartTLS()
+	defer upstream.Close()
+
+	base := upstream.Client().Transport.(*http.Transport)
+	stream := StreamClient(&http.Client{Transport: base})
+	for range 4 {
+		resp, err := stream.Get(upstream.URL)
+		if err != nil {
+			t.Fatalf("stream request: %v", err)
+		}
+		_, _ = io.Copy(io.Discard, resp.Body)
+		_ = resp.Body.Close()
+	}
+	if got := conns.Load(); got != 1 {
+		t.Fatalf("HTTPS connections = %d for 4 sequential streams, want 1 reused connection", got)
+	}
+}
+
+// Every streaming provider draws from one HTTP/1.1 pool per base transport,
+// and that pool is separate from the shared unary transport, so shutdown has to
+// drain it explicitly. The observable proof is that the connection is gone.
+func TestCloseStreamIdleConnectionsDrainsStreamPools(t *testing.T) {
+	var conns atomic.Int32
+	upstream := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "data: x\n\n")
+	}))
+	upstream.Config.ConnState = func(_ net.Conn, s http.ConnState) {
+		if s == http.StateNew {
+			conns.Add(1)
+		}
+	}
+	upstream.Start()
+	defer upstream.Close()
+
+	transport := &http.Transport{}
+	stream := StreamClient(&http.Client{Transport: transport})
+	fetch := func() {
+		resp, err := stream.Get(upstream.URL)
+		if err != nil {
+			t.Fatalf("stream request: %v", err)
+		}
+		_, _ = io.Copy(io.Discard, resp.Body)
+		_ = resp.Body.Close()
+	}
+
+	fetch()
+	fetch()
+	if got := conns.Load(); got != 1 {
+		t.Fatalf("connections = %d for two sequential streams, want the idle connection reused", got)
+	}
+
+	CloseStreamIdleConnections()
+	fetch()
+	if got := conns.Load(); got != 2 {
+		t.Fatalf("connections = %d after draining the pool, want a fresh dial", got)
+	}
+
+	// The caller's transport is untouched: closing the streaming pool must not
+	// disturb the shared client the rest of the process rides.
+	if transport.IdleConnTimeout != 0 {
+		t.Fatal("the caller's transport was reconfigured")
 	}
 }
