@@ -346,6 +346,46 @@ func TestStreamClientReusesIdleConnection(t *testing.T) {
 	}
 }
 
+// A clone of an HTTP/2-capable transport keeps the "h2" ALPN entry that
+// configuring HTTP/2 installed on the base. Switching ForceAttemptHTTP2 off
+// then left the clone advertising h2 while speaking HTTP/1.1, so an upstream
+// that picked h2 answered with SETTINGS frames and the request died as a
+// malformed HTTP response. The stream pool must offer HTTP/1.1 alone.
+func TestStreamClientNegotiatesHTTP11AgainstHTTP2Upstream(t *testing.T) {
+	upstream := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "data: x\n\n")
+	}))
+	upstream.EnableHTTP2 = true
+	upstream.StartTLS()
+	defer upstream.Close()
+
+	base := upstream.Client().Transport.(*http.Transport)
+	if !base.ForceAttemptHTTP2 {
+		t.Fatal("test upstream client has HTTP/2 disabled")
+	}
+	stream := StreamClient(&http.Client{Transport: base})
+	resp, err := stream.Get(upstream.URL)
+	if err != nil {
+		t.Fatalf("stream request to an HTTP/2-capable upstream: %v", err)
+	}
+	resp.Body.Close()
+	if resp.ProtoMajor != 1 {
+		t.Fatalf("stream negotiated %s, want HTTP/1.1", resp.Proto)
+	}
+
+	// The pool is a clone: pinning its ALPN must not reach the caller's
+	// transport, which carries every unary request and still speaks HTTP/2.
+	unary, err := upstream.Client().Get(upstream.URL)
+	if err != nil {
+		t.Fatalf("unary request after a stream: %v", err)
+	}
+	defer unary.Body.Close()
+	if unary.ProtoMajor != 2 {
+		t.Fatalf("shared transport negotiated %s after a stream, want HTTP/2", unary.Proto)
+	}
+}
+
 // Every streaming provider draws from one HTTP/1.1 pool per base transport,
 // and that pool is separate from the shared unary transport, so shutdown has to
 // drain it explicitly. The observable proof is that the connection is gone.

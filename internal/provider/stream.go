@@ -71,6 +71,13 @@ func isolatedFor(base http.RoundTripper) http.RoundTripper {
 	}
 	dedicated := transport.Clone()
 	dedicated.ForceAttemptHTTP2 = false
+	// Clone copies the ALPN list that configuring HTTP/2 installed on the
+	// base. Leaving "h2" there makes the clone advertise HTTP/2 while it
+	// speaks HTTP/1.1, and an upstream that picks h2 answers with SETTINGS
+	// frames the HTTP/1.1 reader reports as a malformed response.
+	if dedicated.TLSClientConfig != nil {
+		dedicated.TLSClientConfig.NextProtos = []string{"http/1.1"}
+	}
 	dedicated.MaxIdleConnsPerHost = maxIsolatedIdleConns
 	shared, loaded := streamTransports.LoadOrStore(base, dedicated)
 	if loaded {
