@@ -1764,3 +1764,78 @@ func TestChatDirectModelWithAnUnknownEffortIsNotFound(t *testing.T) {
 		t.Fatalf("status = %d, want 404 for an unknown effort; body %s", rr.Code, rr.Body.String())
 	}
 }
+
+// Two efforts of one model are different requests: neither may be served from
+// the other's cached response, and each must reach the provider with its own
+// level. The cache key carries the effort label for exactly this reason.
+func TestChatCacheSeparatesEffortsOfOneModel(t *testing.T) {
+	var calls atomic.Int32
+	var gotEffort []string
+	var mu sync.Mutex
+	provider.Register("openai", func(cfg provider.Config, store provider.CredStore) provider.Provider {
+		return &responseProvider{name: cfg.Name, chat: func(ctx context.Context, req provider.ChatRequest, w http.ResponseWriter) error {
+			calls.Add(1)
+			mu.Lock()
+			gotEffort = append(gotEffort, req.Effort)
+			mu.Unlock()
+			_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"` + req.Effort + `"}}]}`))
+			w.(http.Flusher).Flush()
+			return nil
+		}}
+	})
+	cfg, v, raw := cacheTestFixture(t, "k1")
+	router := cacheTestRouter(cfg, v)
+
+	high := `{"model":"openai/gpt-4o|high","messages":[{"role":"user","content":"hi"}]}`
+	low := `{"model":"openai/gpt-4o|low","messages":[{"role":"user","content":"hi"}]}`
+
+	if rr := doChat(router, raw["k1"], high, nil); rr.Header().Get("X-Cache") != "MISS" {
+		t.Fatalf("first high-effort request X-Cache = %q, want MISS", rr.Header().Get("X-Cache"))
+	}
+	// A different effort must not be answered from the high-effort entry.
+	if rr := doChat(router, raw["k1"], low, nil); rr.Header().Get("X-Cache") != "MISS" {
+		t.Fatalf("low-effort request was served from the high-effort cache entry (X-Cache = %q)", rr.Header().Get("X-Cache"))
+	}
+	// The same effort again is the only request that may hit.
+	if rr := doChat(router, raw["k1"], high, nil); rr.Header().Get("X-Cache") != "HIT" {
+		t.Fatalf("repeat high-effort request X-Cache = %q, want HIT", rr.Header().Get("X-Cache"))
+	}
+	if got := calls.Load(); got != 2 {
+		t.Fatalf("provider called %d times, want 2 (one per distinct effort)", got)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(gotEffort) != 2 || gotEffort[0] != "high" || gotEffort[1] != "low" {
+		t.Fatalf("provider efforts = %v, want [high low]", gotEffort)
+	}
+}
+
+// A bare model id resolves without a provider prefix, so "gpt-4o|high" must
+// strip the effort before the catalog lookup and still dispatch at that level.
+func TestChatBareModelCarriesEffortSuffix(t *testing.T) {
+	var got provider.ChatRequest
+	provider.Register("openai", func(cfg provider.Config, store provider.CredStore) provider.Provider {
+		return &fakeProvider{name: cfg.Name, chat: func(r provider.ChatRequest) error {
+			got = r
+			return nil
+		}}
+	})
+	cfg := &config.Config{
+		Providers: []config.Provider{{Name: "oai", Type: "openai", BaseURL: "https://x", Models: []string{"gpt-4o"}}},
+	}
+	raw, hash, prefix, _ := auth.GenerateKey()
+	v := &vault.Vault{
+		ProviderSecrets: map[string]vault.ProviderSecret{"oai": {APIKey: "sk-x"}},
+		ClientKeys:      []vault.ClientKey{{ID: "k1", KeyHash: hash, Prefix: prefix, Active: true}},
+	}
+	req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(`{"model":"gpt-4o|high","messages":[{"role":"user","content":"hi"}]}`))
+	req.Header.Set("Authorization", "Bearer "+raw)
+	rr := httptest.NewRecorder()
+	testRouter(t, cfg, v).ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d body %s", rr.Code, rr.Body.String())
+	}
+	if got.Model != "gpt-4o" || got.Effort != "high" {
+		t.Fatalf("provider got model=%q effort=%q, want gpt-4o at high", got.Model, got.Effort)
+	}
+}

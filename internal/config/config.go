@@ -544,6 +544,9 @@ func (c *Config) Validate() error {
 		for _, t := range cb.Targets {
 			key := t.Provider + "\x00" + t.Model + "\x00" + t.Effort
 			if seenTarget[key] {
+				if t.Effort != "" {
+					return fmt.Errorf("combo %q: duplicate target %s/%s at effort %q", cb.Name, t.Provider, t.Model, t.Effort)
+				}
 				return fmt.Errorf("combo %q: duplicate target %s/%s", cb.Name, t.Provider, t.Model)
 			}
 			seenTarget[key] = true

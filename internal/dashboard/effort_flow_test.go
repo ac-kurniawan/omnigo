@@ -60,9 +60,10 @@ func TestCreateComboWithAnEffortTarget(t *testing.T) {
 	}
 }
 
-// An effort that is not a concrete level is dropped, leaving no target, which
-// the form rejects rather than storing a target the upstream cannot honour.
-func TestCreateComboDropsAnUnparseableEffort(t *testing.T) {
+// An effort that is not a concrete level is rejected by name, naming the entry
+// and the levels that would work. Silently dropping it would save a shorter
+// chain than the operator asked for with no indication.
+func TestCreateComboRejectsAnUnparseableEffort(t *testing.T) {
 	cfg := &config.Config{
 		Providers: []config.Provider{{Name: "agy", Type: "antigravity", Models: []string{"gemini-3.1-pro-low"}}},
 	}
@@ -86,7 +87,16 @@ func TestCreateComboDropsAnUnparseableEffort(t *testing.T) {
 	rr := httptest.NewRecorder()
 	s.routes().ServeHTTP(rr, req)
 
-	if rr.Code == http.StatusOK {
-		t.Fatalf("status = %d, want the empty target chain to be rejected", rr.Code)
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 for an unknown effort", rr.Code)
+	}
+	body := rr.Body.String()
+	for _, want := range []string{"agy/gemini-3.1-pro|turbo", "turbo", "high"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("error message missing %q: %s", want, body)
+		}
+	}
+	if len(cfg.Combos) != 0 {
+		t.Fatalf("stored %d combos, want none", len(cfg.Combos))
 	}
 }

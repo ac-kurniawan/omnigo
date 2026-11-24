@@ -28,10 +28,15 @@ func (s *Server) createCombo(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	targets, err := parseComboTargets(r)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
 	newCombo := config.Combo{
 		Name:     name,
 		Strategy: strategy,
-		Targets:  parseComboTargets(r),
+		Targets:  targets,
 		DrainTTL: r.FormValue("drain_ttl"),
 		Timeout:  r.FormValue("timeout"),
 	}
@@ -116,7 +121,11 @@ func (s *Server) createSmartCombo(w http.ResponseWriter, r *http.Request, name s
 // parseComboTargets reads the ordered target chain from the request form,
 // accepting either repeated "targets" values or comma/space/newline-delimited
 // strings of "<provider>/<model>" and "<provider>/<model>|<effort>" entries.
-func parseComboTargets(r *http.Request) []config.ComboTarget {
+//
+// A malformed entry is rejected with the offending item, never skipped:
+// dropping it would save a silently shorter chain, and an empty chain would
+// fail with a message naming neither the typo nor the fix.
+func parseComboTargets(r *http.Request) ([]config.ComboTarget, error) {
 	_ = r.ParseForm()
 	var targets []config.ComboTarget
 	for _, raw := range r.Form["targets"] {
@@ -126,16 +135,25 @@ func parseComboTargets(r *http.Request) []config.ComboTarget {
 			item = strings.TrimSpace(item)
 			provider, rest, ok := strings.Cut(item, "/")
 			if !ok || provider == "" || rest == "" {
-				continue
+				return nil, fmt.Errorf("invalid target %q: want <provider>/<model>[|<effort>]", item)
 			}
 			model, level, _ := strings.Cut(rest, "|")
-			if model == "" || (level != "" && !effort.Level(level)) {
-				continue
+			if model == "" {
+				return nil, fmt.Errorf("invalid target %q: model is required", item)
+			}
+			if level != "" && !effort.Level(level) {
+				return nil, fmt.Errorf("invalid target %q: unknown effort %q, want blank or one of: %s", item, level, strings.Join(effortLevels(), ", "))
 			}
 			targets = append(targets, config.ComboTarget{Provider: provider, Model: model, Effort: level})
 		}
 	}
-	return targets
+	return targets, nil
+}
+
+// effortLevels is every concrete reasoning level a target may store, for the
+// error message that tells an operator what a valid effort looks like.
+func effortLevels() []string {
+	return []string{"low", "medium", "high", "xhigh", "max", "ultra"}
 }
 
 // updateCombo replaces a combo's strategy, target chain, and budgets wholesale.
@@ -154,7 +172,11 @@ func (s *Server) updateCombo(w http.ResponseWriter, r *http.Request) {
 		s.updateSmartCombo(w, r, name)
 		return
 	}
-	targets := parseComboTargets(r)
+	targets, err := parseComboTargets(r)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
 	timeout := strings.TrimSpace(r.FormValue("timeout"))
 	drainTTL := strings.TrimSpace(r.FormValue("drain_ttl"))
 
