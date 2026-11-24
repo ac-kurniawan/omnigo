@@ -13,6 +13,7 @@ import (
 
 	"github.com/ac-kurniawan/omnigo/internal/combo"
 	"github.com/ac-kurniawan/omnigo/internal/config"
+	"github.com/ac-kurniawan/omnigo/internal/effort"
 	"github.com/ac-kurniawan/omnigo/internal/provider"
 )
 
@@ -55,25 +56,27 @@ func handleResponses(getCfg func() *config.Config, registry *providerRegistry, t
 			return
 		}
 
-		p, provName, resolvedModel, ok := resolveDirect(cfg, registry, req.Model)
+		p, provName, resolvedModel, level, ok := resolveDirect(cfg, registry, req.Model)
 		if !ok {
 			writeResponsesError(w, http.StatusNotFound, "model not found: "+req.Model)
 			return
 		}
 		req.Model = resolvedModel
+		req.Effort = level
+		display := effort.Apply(resolvedModel, level)
 		if req.Stream {
 			tx.flagStream()
 		}
 		attempt := tx.attempt()
-		SetTelemetryHeaders(attempt, tc, provName, resolvedModel, startTime)
+		SetTelemetryHeaders(attempt, tc, provName, display, startTime)
 		start := time.Now()
-		cap, providerCtx, providerWriter := trackAttempt(r.Context(), metrics, provName, resolvedModel, "", attempt, captureGen)
+		cap, providerCtx, providerWriter := trackAttempt(r.Context(), metrics, provName, display, "", attempt, captureGen)
 		providerErr := p.ChatCompletion(providerCtx, req, providerWriter)
 		err = finishAttempt(attempt, providerErr)
 		clientGone := r.Context().Err() != nil
 		result := classifyProviderError(err, tx.committed, clientGone)
-		metrics.RecordProviderRequest(r.Context(), provName, resolvedModel, result)
-		metrics.RecordGeneration(r.Context(), generationFrom(start, time.Now(), "responses", provName, resolvedModel, "", cap, result, req, captureGen))
+		metrics.RecordProviderRequest(r.Context(), provName, display, result)
+		metrics.RecordGeneration(r.Context(), generationFrom(start, time.Now(), "responses", provName, display, "", cap, result, req, captureGen))
 		if err != nil && !tx.committed {
 			writeProviderError(w, err)
 			return

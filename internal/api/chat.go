@@ -66,22 +66,27 @@ func handleChat(getCfg func() *config.Config, registry *providerRegistry, tracke
 			return
 		}
 
-		p, provName, resolvedModel, ok := resolveDirect(cfg, registry, model)
+		p, provName, resolvedModel, level, ok := resolveDirect(cfg, registry, model)
 		if !ok {
 			writeError(w, http.StatusNotFound, "model not found: "+model)
 			return
 		}
 		req.Model = resolvedModel
+		req.Effort = level
+		// display is the id the caller selected: base model plus effort. Every
+		// label and the cache key use it so two efforts of one model never
+		// share a cached response or a metrics series.
+		display := effort.Apply(resolvedModel, level)
 		caller := auth.CallerFrom(r.Context())
 		normal, hashable := cacheMessages(msgs)
 		temp, maxTokens, deterministic := cacheParams(parsed)
 		if caller == nil || caller.ID() == "" || !hashable || !deterministic {
-			serveResolved(w, r, p, provName, resolvedModel, req, metrics, startTime, tc, captureGen)
+			serveResolved(w, r, p, provName, display, req, metrics, startTime, tc, captureGen)
 			return
 		}
-		key, keyErr := cache.ComputeCacheKey(caller.ID(), provName, resolvedModel, normal, temp, maxTokens)
+		key, keyErr := cache.ComputeCacheKey(caller.ID(), provName, display, normal, temp, maxTokens)
 		if keyErr != nil {
-			serveResolved(w, r, p, provName, resolvedModel, req, metrics, startTime, tc, captureGen)
+			serveResolved(w, r, p, provName, display, req, metrics, startTime, tc, captureGen)
 			return
 		}
 		cached, getErr := responseCache.Get(r.Context(), key)
@@ -90,24 +95,24 @@ func handleChat(getCfg func() *config.Config, registry *providerRegistry, tracke
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusOK)
 			_, _ = w.Write(cached)
-			metrics.RecordCacheHit(r.Context(), resolvedModel)
+			metrics.RecordCacheHit(r.Context(), display)
 			return
 		}
 		if !errors.Is(getErr, cache.ErrNotFound) && !errors.Is(getErr, cache.ErrExpired) {
-			serveResolved(w, r, p, provName, resolvedModel, req, metrics, startTime, tc, captureGen)
+			serveResolved(w, r, p, provName, display, req, metrics, startTime, tc, captureGen)
 			return
 		}
 
 		w.Header().Set("X-Cache", "MISS")
-		metrics.RecordCacheMiss(r.Context(), resolvedModel)
-		SetTelemetryHeaders(w, tc, provName, resolvedModel, startTime)
+		metrics.RecordCacheMiss(r.Context(), display)
+		SetTelemetryHeaders(w, tc, provName, display, startTime)
 		recorded := &bodyRecorder{ResponseWriter: w}
 		start := time.Now()
-		cap, providerCtx, providerWriter := trackAttempt(r.Context(), metrics, provName, resolvedModel, "", recorded, captureGen)
+		cap, providerCtx, providerWriter := trackAttempt(r.Context(), metrics, provName, display, "", recorded, captureGen)
 		providerErr := p.ChatCompletion(providerCtx, req, providerWriter)
 		result := classifyProviderError(providerErr, recorded.committed, r.Context().Err() != nil)
-		metrics.RecordProviderRequest(r.Context(), provName, resolvedModel, result)
-		metrics.RecordGeneration(r.Context(), generationFrom(start, time.Now(), "chat", provName, resolvedModel, "", cap, result, req, captureGen))
+		metrics.RecordProviderRequest(r.Context(), provName, display, result)
+		metrics.RecordGeneration(r.Context(), generationFrom(start, time.Now(), "chat", provName, display, "", cap, result, req, captureGen))
 		if providerErr != nil && !recorded.committed {
 			if recorded.body.Len() == 0 && !recorded.wrote {
 				writeProviderError(w, providerErr)
@@ -124,27 +129,31 @@ func handleChat(getCfg func() *config.Config, registry *providerRegistry, tracke
 }
 
 func serveDirect(w http.ResponseWriter, r *http.Request, cfg *config.Config, registry *providerRegistry, req provider.ChatRequest, model string, metrics Metrics, startTime time.Time, tc *TraceContext, capture bool) {
-	p, provName, resolvedModel, ok := resolveDirect(cfg, registry, model)
+	p, provName, resolvedModel, level, ok := resolveDirect(cfg, registry, model)
 	if !ok {
 		writeError(w, http.StatusNotFound, "model not found: "+model)
 		return
 	}
 	req.Model = resolvedModel
-	serveResolved(w, r, p, provName, resolvedModel, req, metrics, startTime, tc, capture)
+	req.Effort = level
+	serveResolved(w, r, p, provName, effort.Apply(resolvedModel, level), req, metrics, startTime, tc, capture)
 }
 
-func serveResolved(w http.ResponseWriter, r *http.Request, p provider.Provider, provName, resolvedModel string, req provider.ChatRequest, metrics Metrics, startTime time.Time, tc *TraceContext, capture bool) {
-	SetTelemetryHeaders(w, tc, provName, resolvedModel, startTime)
+// serveResolved dispatches one resolved direct target. req.Model is the base id
+// the provider sends; display is the id the caller asked for (base plus effort)
+// and is what telemetry, metrics, and generation records name.
+func serveResolved(w http.ResponseWriter, r *http.Request, p provider.Provider, provName, display string, req provider.ChatRequest, metrics Metrics, startTime time.Time, tc *TraceContext, capture bool) {
+	SetTelemetryHeaders(w, tc, provName, display, startTime)
 	// Providers stream straight to the client on this path, so a late failure
 	// must not be answered with a fresh JSON error envelope: the SSE body is
 	// already on the wire and the object would be parsed as a bad frame.
 	tracked := &commitTracker{ResponseWriter: w}
 	start := time.Now()
-	cap, providerCtx, providerWriter := trackAttempt(r.Context(), metrics, provName, resolvedModel, "", tracked, capture)
+	cap, providerCtx, providerWriter := trackAttempt(r.Context(), metrics, provName, display, "", tracked, capture)
 	providerErr := p.ChatCompletion(providerCtx, req, providerWriter)
 	result := classifyProviderError(providerErr, tracked.committed, r.Context().Err() != nil)
-	metrics.RecordProviderRequest(r.Context(), provName, resolvedModel, result)
-	metrics.RecordGeneration(r.Context(), generationFrom(start, time.Now(), "chat", provName, resolvedModel, "", cap, result, req, capture))
+	metrics.RecordProviderRequest(r.Context(), provName, display, result)
+	metrics.RecordGeneration(r.Context(), generationFrom(start, time.Now(), "chat", provName, display, "", cap, result, req, capture))
 	if providerErr != nil && !tracked.committed {
 		writeProviderError(w, providerErr)
 	} else if providerErr != nil && req.Stream && r.Context().Err() == nil {
@@ -317,21 +326,38 @@ func cacheControlNoCache(header string) bool {
 	return false
 }
 
-func resolveDirect(cfg *config.Config, registry *providerRegistry, model string) (provider.Provider, string, string, bool) {
+// splitEffort separates a "<model>|<level>" direct target into its base model
+// and reasoning effort. The pipe never appears in a model id; an unknown level
+// leaves the string whole so resolution reports it as an unknown model rather
+// than silently dropping the level the caller asked for.
+func splitEffort(model string) (string, string) {
+	base, level, ok := strings.Cut(model, "|")
+	if !ok || base == "" || !effort.Level(level) {
+		return model, ""
+	}
+	return base, level
+}
+
+// resolveDirect resolves a direct model reference. A "<model>|<level>" suffix is
+// stripped before the catalog lookup: the level is a request-time choice, not
+// part of the id the provider lists.
+func resolveDirect(cfg *config.Config, registry *providerRegistry, model string) (provider.Provider, string, string, string, bool) {
+	model, level := splitEffort(model)
 	if i := strings.Index(model, "/"); i > 0 {
 		provName := model[:i]
 		modelID := model[i+1:]
 		for _, pc := range cfg.Providers {
-			if pc.Name == provName {
-				if pc.Disabled || !pc.HasModel(modelID) || pc.IsModelDisabled(modelID) {
-					return nil, "", "", false
-				}
-				p, ok := registry.Get(cfg, pc.Name)
-				if !ok {
-					return nil, "", "", false
-				}
-				return p, pc.Name, modelID, true
+			if pc.Name != provName {
+				continue
 			}
+			if pc.Disabled || !pc.HasModel(modelID) || pc.IsModelDisabled(modelID) {
+				return nil, "", "", "", false
+			}
+			p, ok := registry.Get(cfg, pc.Name)
+			if !ok {
+				return nil, "", "", "", false
+			}
+			return p, pc.Name, modelID, level, true
 		}
 	}
 	for _, pc := range cfg.Providers {
@@ -339,19 +365,20 @@ func resolveDirect(cfg *config.Config, registry *providerRegistry, model string)
 			continue
 		}
 		for _, m := range pc.Models {
-			if m == model {
-				if pc.IsModelDisabled(model) {
-					return nil, "", "", false
-				}
-				p, ok := registry.Get(cfg, pc.Name)
-				if !ok {
-					return nil, "", "", false
-				}
-				return p, pc.Name, model, true
+			if m != model {
+				continue
 			}
+			if pc.IsModelDisabled(model) {
+				return nil, "", "", "", false
+			}
+			p, ok := registry.Get(cfg, pc.Name)
+			if !ok {
+				return nil, "", "", "", false
+			}
+			return p, pc.Name, model, level, true
 		}
 	}
-	return nil, "", "", false
+	return nil, "", "", "", false
 }
 
 // chatResponder is the chat wire: each attempt buffers until it can prove the

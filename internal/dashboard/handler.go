@@ -173,6 +173,12 @@ func newServer(getCfg func() *config.Config, store *vault.Store, mutate config.M
 		"pickerModels": func(providerType string, models []string) []provider.PickerEntry {
 			return provider.PickerModels(providerType, models)
 		},
+		// effortLevelsCSV lists the reasoning-effort levels a direct model
+		// accepts, comma-separated, for the playground's effort selector. An
+		// empty value means the model takes none, so the selector stays hidden.
+		"effortLevelsCSV": func(providerType string, models []string, model string) string {
+			return strings.Join(provider.EffortVariants(providerType, model, models), ",")
+		},
 		"isDrained": func(tr *combo.Tracker, provider, model, effort string) bool {
 			if tr == nil {
 				return false

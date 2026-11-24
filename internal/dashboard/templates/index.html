@@ -843,9 +843,14 @@
                 <span class="label-text text-xs font-semibold">Model / Combo Target</span>
                 <span class="label-text-alt text-xs text-base-content/50">Resolved by gateway</span>
               </label>
-              <select id="playground-model" class="select select-bordered select-sm w-full font-mono text-xs">
-                {{template "playground-model-options" .}}
-              </select>
+              <div class="flex items-center gap-2">
+                <select id="playground-model" class="select select-bordered select-sm w-full font-mono text-xs" onchange="renderPlaygroundEffort()">
+                  {{template "playground-model-options" .}}
+                </select>
+                <select id="playground-effort" class="select select-bordered select-sm font-mono text-xs w-28 shrink-0 hidden" title="Reasoning effort" aria-label="Reasoning effort">
+                  <option value="">default</option>
+                </select>
+              </div>
             </div>
           </div>
 
@@ -1637,7 +1642,25 @@
         if (selected && Array.from(modelSelect.options).some(o => o.value === selected)) {
           modelSelect.value = selected;
         }
+        renderPlaygroundEffort();
       });
+    }
+
+    // renderPlaygroundEffort fills the effort selector from the chosen model's
+    // data-levels and hides it when the model takes none. The choice is only
+    // sent for direct provider models: a combo owns its targets' efforts, so a
+    // client-sent value would be overridden anyway.
+    function renderPlaygroundEffort() {
+      const modelSelect = document.getElementById('playground-model');
+      const effortSelect = document.getElementById('playground-effort');
+      if (!modelSelect || !effortSelect) return;
+      const opt = modelSelect.selectedOptions ? modelSelect.selectedOptions[0] : null;
+      const levels = (opt && opt.dataset.levels ? opt.dataset.levels : '').split(',').filter(Boolean);
+      const previous = effortSelect.value;
+      effortSelect.innerHTML = '<option value="">default</option>' +
+        levels.map(level => `<option value="${level}">${level}</option>`).join('');
+      if (levels.includes(previous)) effortSelect.value = previous;
+      effortSelect.classList.toggle('hidden', levels.length === 0);
     }
 
     function savePlaygroundKey(val) {
@@ -1799,9 +1822,16 @@
         return;
       }
 
+      // A direct provider model carries its effort in the model string as
+      // "<provider>/<model>|<level>"; a combo owns its targets' efforts, so the
+      // selector is hidden there and nothing is appended.
+      const effortSelect = document.getElementById('playground-effort');
+      const effortLevel = effortSelect && !effortSelect.classList.contains('hidden') ? effortSelect.value : '';
+      const modelRef = effortLevel ? `${model}|${effortLevel}` : model;
+
       // Payload
       const payload = {
-        model: model,
+        model: modelRef,
         messages: [{ role: 'user', content: prompt }],
         stream: true,
         // Ask OpenAI-compatible upstreams to append an exact usage frame to the
@@ -3002,7 +3032,7 @@
   <optgroup label="Direct Provider Models">
     {{range $p := .Providers}}
       {{range .Models}}
-      <option value="{{$p.Name}}/{{.}}">{{$p.Name}}/{{.}}</option>
+      <option value="{{$p.Name}}/{{.}}" data-levels="{{effortLevelsCSV $p.Type $p.Models .}}">{{$p.Name}}/{{.}}</option>
       {{end}}
     {{end}}
   </optgroup>

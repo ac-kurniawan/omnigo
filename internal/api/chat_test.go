@@ -298,7 +298,7 @@ func BenchmarkResolveDirectCachedProvider(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for b.Loop() {
-		if _, _, _, ok := resolveDirect(cfg, registry, "benchmark/model"); !ok {
+		if _, _, _, _, ok := resolveDirect(cfg, registry, "benchmark/model"); !ok {
 			b.Fatal("provider not resolved")
 		}
 	}
@@ -1705,5 +1705,62 @@ func TestChatPassesTargetEffortToTheProvider(t *testing.T) {
 	}
 	if want := "o3-mini-high"; rr.Header().Get("X-OmniGo-Model") != want {
 		t.Fatalf("X-OmniGo-Model = %q, want %q", rr.Header().Get("X-OmniGo-Model"), want)
+	}
+}
+
+// A direct model reached as "<provider>/<model>|<level>" dispatches the base id
+// but carries the level, so the playground's effort selector works without a
+// combo. The display header keeps the selected id so the caller can see it.
+func TestChatDirectModelCarriesEffortSuffix(t *testing.T) {
+	var got provider.ChatRequest
+	provider.Register("openai", func(cfg provider.Config, store provider.CredStore) provider.Provider {
+		return &fakeProvider{name: cfg.Name, chat: func(r provider.ChatRequest) error {
+			got = r
+			return nil
+		}}
+	})
+	cfg := &config.Config{
+		Providers: []config.Provider{{Name: "oai", Type: "openai", BaseURL: "https://x", Models: []string{"o3-mini"}}},
+	}
+	raw, hash, prefix, _ := auth.GenerateKey()
+	v := &vault.Vault{
+		ProviderSecrets: map[string]vault.ProviderSecret{"oai": {APIKey: "sk-x"}},
+		ClientKeys:      []vault.ClientKey{{ID: "k1", KeyHash: hash, Prefix: prefix, Active: true}},
+	}
+	req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(`{"model":"oai/o3-mini|high","messages":[{"role":"user","content":"hi"}]}`))
+	req.Header.Set("Authorization", "Bearer "+raw)
+	rr := httptest.NewRecorder()
+	testRouter(t, cfg, v).ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d body %s", rr.Code, rr.Body.String())
+	}
+	if got.Model != "o3-mini" || got.Effort != "high" {
+		t.Fatalf("provider got model=%q effort=%q, want o3-mini at high", got.Model, got.Effort)
+	}
+	if want := "o3-mini-high"; rr.Header().Get("X-OmniGo-Model") != want {
+		t.Fatalf("X-OmniGo-Model = %q, want %q", rr.Header().Get("X-OmniGo-Model"), want)
+	}
+}
+
+// An unknown level is not silently dropped: the whole string stays and resolves
+// as an unknown model, so a typo fails loudly instead of running at the default.
+func TestChatDirectModelWithAnUnknownEffortIsNotFound(t *testing.T) {
+	provider.Register("openai", func(cfg provider.Config, store provider.CredStore) provider.Provider {
+		return &fakeProvider{name: cfg.Name, chat: func(provider.ChatRequest) error { return nil }}
+	})
+	cfg := &config.Config{
+		Providers: []config.Provider{{Name: "oai", Type: "openai", BaseURL: "https://x", Models: []string{"o3-mini"}}},
+	}
+	raw, hash, prefix, _ := auth.GenerateKey()
+	v := &vault.Vault{
+		ProviderSecrets: map[string]vault.ProviderSecret{"oai": {APIKey: "sk-x"}},
+		ClientKeys:      []vault.ClientKey{{ID: "k1", KeyHash: hash, Prefix: prefix, Active: true}},
+	}
+	req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(`{"model":"oai/o3-mini|bogus","messages":[{"role":"user","content":"hi"}]}`))
+	req.Header.Set("Authorization", "Bearer "+raw)
+	rr := httptest.NewRecorder()
+	testRouter(t, cfg, v).ServeHTTP(rr, req)
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404 for an unknown effort; body %s", rr.Code, rr.Body.String())
 	}
 }
