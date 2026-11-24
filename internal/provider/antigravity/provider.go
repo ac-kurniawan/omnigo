@@ -15,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/ac-kurniawan/omnigo/internal/effort"
 	"github.com/ac-kurniawan/omnigo/internal/provider"
 )
 
