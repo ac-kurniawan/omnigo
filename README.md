@@ -156,6 +156,32 @@ combos:
 With a 120s budget and three targets, each gets about 40s. A target that fails
 fast returns its unused time to the targets behind it.
 
+### Reasoning effort per target
+
+A target carries its reasoning effort beside the model, never inside its id:
+
+```yaml
+combos:
+  - name: coding
+    strategy: priority
+    targets:
+      - { provider: agy, model: gemini-3.7-flash, effort: high }
+      - { provider: openai-main, model: gpt-5, effort: medium }
+      - { provider: backup, model: claude }        # effort omitted = model default
+```
+
+The gateway encodes it per provider: Codex and OpenAI send it in the request
+body (`reasoning.effort` / `reasoning_effort`), Antigravity appends it to the
+upstream model id (`gemini-3.7-flash-high`). A target's effort wins over a
+client-sent effort for the same reason the target's model wins. The dashboard
+picker offers a model's levels as a dropdown, and `/v1/models` reports them as
+`capabilities.reasoning_efforts`.
+
+An id that still ends in an effort level (`gpt-5.5-high`) is rejected with an
+error naming the base and the level, because the old encoding is ambiguous: a
+real upstream id such as `gpt-oss-120b-medium` also ends in one. Re-pick the
+target in the dashboard or move the level into `effort`.
+
 ### Smart routing (System One)
 
 A combo with `strategy: smart` asks a TypeSafe **System One** model which

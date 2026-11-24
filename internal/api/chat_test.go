@@ -1671,3 +1671,39 @@ func TestChatCacheMissingCallerBypasses(t *testing.T) {
 		t.Fatalf("X-Cache = %q, want absent", got)
 	}
 }
+
+// A combo target's stored effort must reach the provider as its own field, with
+// the base model, while telemetry still names the target the operator selected.
+func TestChatPassesTargetEffortToTheProvider(t *testing.T) {
+	var got provider.ChatRequest
+	provider.Register("openai", func(cfg provider.Config, store provider.CredStore) provider.Provider {
+		return &fakeProvider{name: cfg.Name, chat: func(r provider.ChatRequest) error {
+			got = r
+			return nil
+		}}
+	})
+	cfg := &config.Config{
+		Providers: []config.Provider{{Name: "openai", Type: "openai", BaseURL: "https://x", Models: []string{"o3-mini"}}},
+		Combos: []config.Combo{{Name: "auto", Strategy: "priority", Targets: []config.ComboTarget{
+			{Provider: "openai", Model: "o3-mini", Effort: "high"},
+		}}},
+	}
+	raw, hash, prefix, _ := auth.GenerateKey()
+	v := &vault.Vault{
+		ProviderSecrets: map[string]vault.ProviderSecret{"openai": {APIKey: "sk-x"}},
+		ClientKeys:      []vault.ClientKey{{ID: "k1", KeyHash: hash, Prefix: prefix, Active: true}},
+	}
+	req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(`{"model":"auto","messages":[{"role":"user","content":"hi"}]}`))
+	req.Header.Set("Authorization", "Bearer "+raw)
+	rr := httptest.NewRecorder()
+	testRouter(t, cfg, v).ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d body %s", rr.Code, rr.Body.String())
+	}
+	if got.Model != "o3-mini" || got.Effort != "high" {
+		t.Fatalf("provider got model=%q effort=%q, want o3-mini at high", got.Model, got.Effort)
+	}
+	if want := "o3-mini-high"; rr.Header().Get("X-OmniGo-Model") != want {
+		t.Fatalf("X-OmniGo-Model = %q, want %q", rr.Header().Get("X-OmniGo-Model"), want)
+	}
+}

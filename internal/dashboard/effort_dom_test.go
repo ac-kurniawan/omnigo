@@ -12,8 +12,8 @@ import (
 	"github.com/ac-kurniawan/omnigo/internal/vault"
 )
 
-// Every rendered model row must carry a well-formed data-target, and the effort
-// badge must appear exactly once per clone row.
+// Every rendered model row must carry a well-formed data-target, and an
+// effort-capable row must offer its levels as a dropdown.
 func TestComboPickerRowsAreWellFormed(t *testing.T) {
 	cfg := &config.Config{
 		Providers: []config.Provider{{Name: "cx", Type: "codex", Models: []string{"gpt-5.5"}}},
@@ -30,17 +30,19 @@ func TestComboPickerRowsAreWellFormed(t *testing.T) {
 			t.Errorf("data-target %q does not match provider/model %s/%s", m[1], m[2], m[3])
 		}
 	}
-	clones := strings.Count(body, "picker-effort-item")
-	if clones == 0 {
-		t.Fatal("no clone rows rendered")
+	if got := strings.Count(body, "picker-effort-select"); got != 1 {
+		t.Errorf("effort dropdowns = %d, want one for gpt-5.5", got)
 	}
-	if badges := strings.Count(body, ">effort<"); badges != clones {
-		t.Errorf("effort badge count %d != clone row count %d", badges, clones)
+	for _, level := range []string{`<option value="low">`, `<option value="xhigh">`} {
+		if !strings.Contains(body, level) {
+			t.Errorf("effort dropdown missing %s", level)
+		}
 	}
 }
 
-// The end-to-end path must use the value the picker actually renders, not a
-// hand-typed string, so a regression in the template is caught here.
+// The end-to-end path must use the encoding the picker actually produces: a
+// checked model plus the row's dropdown yields "provider/model|effort", which
+// the create-combo form turns into a stored base+effort target.
 func TestCreateComboWithATargetTakenFromThePickerDOM(t *testing.T) {
 	cfg := &config.Config{
 		Providers: []config.Provider{
@@ -64,11 +66,12 @@ func TestCreateComboWithATargetTakenFromThePickerDOM(t *testing.T) {
 		t.Fatalf("picker status = %d", pickRR.Code)
 	}
 
-	match := regexp.MustCompile(`data-target="(agy/gemini-3.1-pro-high)"`).FindStringSubmatch(pickRR.Body.String())
+	match := regexp.MustCompile(`data-target="(agy/gemini-3\.1-pro)"`).FindStringSubmatch(pickRR.Body.String())
 	if match == nil {
-		t.Fatal("picker did not render the synthesised clone agy/gemini-3.1-pro-high")
+		t.Fatal("picker did not render the gemini-3.1-pro row")
 	}
-	target := match[1]
+	// What applyComboPickerSelection pushes for that row at "high".
+	target := match[1] + "|high"
 
 	form := url.Values{"name": {"smart"}, "strategy": {"priority"}, "targets": {target}}
 	req := httptest.NewRequest("POST", "/combos", strings.NewReader(form.Encode()))
@@ -83,7 +86,11 @@ func TestCreateComboWithATargetTakenFromThePickerDOM(t *testing.T) {
 	if len(cfg.Combos) != 1 || len(cfg.Combos[0].Targets) != 1 {
 		t.Fatalf("combos = %+v, want one target", cfg.Combos)
 	}
-	if got := cfg.Combos[0].Targets[0].Provider + "/" + cfg.Combos[0].Targets[0].Model; got != target {
-		t.Fatalf("stored target = %q, want the picker value %q", got, target)
+	got := cfg.Combos[0].Targets[0]
+	if got.Provider != "agy" || got.Model != "gemini-3.1-pro" || got.Effort != "high" {
+		t.Fatalf("stored target = %+v, want agy/gemini-3.1-pro at high", got)
+	}
+	if !strings.Contains(rr.Body.String(), "gemini-3.1-pro") || !strings.Contains(rr.Body.String(), "effort high") {
+		t.Fatalf("re-rendered combos missing the model or its effort badge: %s", rr.Body.String())
 	}
 }

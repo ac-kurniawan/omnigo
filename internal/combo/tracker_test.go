@@ -173,3 +173,31 @@ func TestTrackerLogsDrainAndClear(t *testing.T) {
 		t.Fatalf("log missing clear entry, got: %s", buf.String())
 	}
 }
+
+// Drain state keys on the display id (base plus effort), so a stored drain file
+// written for the old suffixed encoding still matches, and two efforts of one
+// model stay independent.
+func TestTrackerKeysEffortTargetsByDisplayID(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "drains.json")
+	tr := NewTracker(path)
+	high := Target{Provider: "oai", Model: "o3-mini", Effort: "high"}
+	tr.MarkDrained(high, time.Minute, "429")
+	tr.Flush()
+
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read drains: %v", err)
+	}
+	if !strings.Contains(string(raw), `"oai/o3-mini-high"`) {
+		t.Fatalf("drain key = %s, want oai/o3-mini-high (the pre-effort-field key)", raw)
+	}
+	if !tr.IsDrained(high) {
+		t.Fatal("high effort target not drained")
+	}
+	if tr.IsDrained(Target{Provider: "oai", Model: "o3-mini", Effort: "low"}) {
+		t.Fatal("low effort target inherited the high effort drain")
+	}
+	if tr.IsDrained(Target{Provider: "oai", Model: "o3-mini"}) {
+		t.Fatal("default-effort target inherited the high effort drain")
+	}
+}

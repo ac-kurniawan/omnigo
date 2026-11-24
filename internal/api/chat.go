@@ -15,6 +15,7 @@ import (
 	"github.com/ac-kurniawan/omnigo/internal/cache"
 	"github.com/ac-kurniawan/omnigo/internal/combo"
 	"github.com/ac-kurniawan/omnigo/internal/config"
+	"github.com/ac-kurniawan/omnigo/internal/effort"
 	"github.com/ac-kurniawan/omnigo/internal/provider"
 )
 
@@ -427,7 +428,7 @@ func runCombo(responder responder, r *http.Request, cfg *config.Config, registry
 		Timeout:  cb.ParsedTimeout(),
 	}
 	for _, t := range cb.Targets {
-		c.Targets = append(c.Targets, combo.Target{Provider: t.Provider, Model: t.Model})
+		c.Targets = append(c.Targets, combo.Target{Provider: t.Provider, Model: t.Model, Effort: t.Effort})
 	}
 	dispatch := runTarget(responder, r, cfg, registry, req, tracker, tc, startTime, metrics, capture, cb.Name, cb.Strategy, cb.ParsedDrainTTL())
 	responseCommitted := false
@@ -459,31 +460,36 @@ func runCombo(responder responder, r *http.Request, cfg *config.Config, registry
 // client already has.
 func runTarget(responder responder, r *http.Request, cfg *config.Config, registry *providerRegistry, req provider.ChatRequest, tracker *combo.Tracker, tc *TraceContext, startTime time.Time, metrics Metrics, capture bool, comboName, strategy string, drainTTL time.Duration) func(ctx context.Context, t combo.Target, failover bool) (bool, error) {
 	return func(ctx context.Context, t combo.Target, failover bool) (bool, error) {
+		// display is the id the operator selected: base model plus effort, the
+		// same string the old suffixed encoding used. Metrics and generation
+		// records keep it so series stay continuous.
+		display := effort.Apply(t.Model, t.Effort)
 		p, ok := providerForName(cfg, registry, t.Provider)
 		if !ok {
-			metrics.RecordProviderRequest(ctx, t.Provider, t.Model, resultUnavailable)
+			metrics.RecordProviderRequest(ctx, t.Provider, display, resultUnavailable)
 			return false, fmt.Errorf("unknown provider: %s", t.Provider)
 		}
 		for _, pc := range cfg.Providers {
 			if pc.Name == t.Provider && pc.IsModelDisabled(t.Model) {
-				metrics.RecordProviderRequest(ctx, t.Provider, t.Model, resultUnavailable)
+				metrics.RecordProviderRequest(ctx, t.Provider, display, resultUnavailable)
 				return false, fmt.Errorf("model %q is disabled on provider %q", t.Model, t.Provider)
 			}
 		}
-		// A copy per target: every dispatch needs its own model id, and the
-		// parsed body and raw bytes stay shared.
+		// A copy per target: every dispatch needs its own model id and effort,
+		// and the parsed body and raw bytes stay shared.
 		request := req
 		request.Model = t.Model
+		request.Effort = t.Effort
 		attempt := responder.attempt(request.Stream, failover)
-		SetTelemetryHeaders(attempt, tc, t.Provider, t.Model, startTime)
+		SetTelemetryHeaders(attempt, tc, t.Provider, display, startTime)
 		start := time.Now()
-		cap, providerCtx, providerWriter := trackAttempt(ctx, metrics, t.Provider, t.Model, comboName, attempt, capture)
+		cap, providerCtx, providerWriter := trackAttempt(ctx, metrics, t.Provider, display, comboName, attempt, capture)
 		providerErr := p.ChatCompletion(providerCtx, request, providerWriter)
 		err := finishAttempt(attempt, providerErr)
 		// The generation span carries the attempt's real outcome: a committed
 		// stream that then failed is a stream failure, not a success.
 		genResult := classifyProviderError(err, errors.Is(err, errResponseCommitted), r.Context().Err() != nil)
-		metrics.RecordGeneration(ctx, generationFrom(start, time.Now(), "chat", t.Provider, t.Model, comboName, cap, genResult, request, capture))
+		metrics.RecordGeneration(ctx, generationFrom(start, time.Now(), "chat", t.Provider, display, comboName, cap, genResult, request, capture))
 		if errors.Is(err, errResponseCommitted) {
 			// A client abort mid-stream cancels the request context; that is not
 			// an upstream fault, so the target stays healthy. A deadline this
@@ -491,7 +497,7 @@ func runTarget(responder responder, r *http.Request, cfg *config.Config, registr
 			// upstream leaves both contexts alive and is still drained.
 			clientGone := r.Context().Err() != nil
 			gatewayDeadline := ctx.Err() != nil && !clientGone
-			metrics.RecordProviderRequest(ctx, t.Provider, t.Model, classifyProviderError(err, true, clientGone))
+			metrics.RecordProviderRequest(ctx, t.Provider, display, classifyProviderError(err, true, clientGone))
 			if tracker != nil && strategy != "priority" && !clientGone && !gatewayDeadline {
 				tracker.MarkDrained(t, drainTTL, sanitizeFailure(err))
 			}
@@ -504,10 +510,10 @@ func runTarget(responder responder, r *http.Request, cfg *config.Config, registr
 			return true, nil
 		}
 		if err != nil {
-			metrics.RecordProviderRequest(ctx, t.Provider, t.Model, classifyProviderError(err, false, false))
+			metrics.RecordProviderRequest(ctx, t.Provider, display, classifyProviderError(err, false, false))
 			return false, sanitizedError{err: err, message: sanitizeFailure(err)}
 		}
-		metrics.RecordProviderRequest(ctx, t.Provider, t.Model, resultSuccess)
+		metrics.RecordProviderRequest(ctx, t.Provider, display, resultSuccess)
 		return false, nil
 	}
 }

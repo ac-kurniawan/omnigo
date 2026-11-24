@@ -7,6 +7,7 @@ import (
 
 	"github.com/ac-kurniawan/omnigo/internal/combo"
 	"github.com/ac-kurniawan/omnigo/internal/config"
+	"github.com/ac-kurniawan/omnigo/internal/effort"
 )
 
 func (s *Server) createCombo(w http.ResponseWriter, r *http.Request) {
@@ -114,7 +115,7 @@ func (s *Server) createSmartCombo(w http.ResponseWriter, r *http.Request, name s
 
 // parseComboTargets reads the ordered target chain from the request form,
 // accepting either repeated "targets" values or comma/space/newline-delimited
-// strings of "<provider>/<model>" entries.
+// strings of "<provider>/<model>" and "<provider>/<model>|<effort>" entries.
 func parseComboTargets(r *http.Request) []config.ComboTarget {
 	_ = r.ParseForm()
 	var targets []config.ComboTarget
@@ -123,11 +124,15 @@ func parseComboTargets(r *http.Request) []config.ComboTarget {
 			return c == ',' || c == '\n' || c == '\r' || c == ' '
 		}) {
 			item = strings.TrimSpace(item)
-			provider, model, ok := strings.Cut(item, "/")
-			if !ok || provider == "" || model == "" {
+			provider, rest, ok := strings.Cut(item, "/")
+			if !ok || provider == "" || rest == "" {
 				continue
 			}
-			targets = append(targets, config.ComboTarget{Provider: provider, Model: model})
+			model, level, _ := strings.Cut(rest, "|")
+			if model == "" || (level != "" && !effort.Level(level)) {
+				continue
+			}
+			targets = append(targets, config.ComboTarget{Provider: provider, Model: model, Effort: level})
 		}
 	}
 	return targets
@@ -189,7 +194,7 @@ func (s *Server) updateCombo(w http.ResponseWriter, r *http.Request) {
 
 	if s.tracker != nil {
 		for _, t := range targets {
-			target := combo.Target{Provider: t.Provider, Model: t.Model}
+			target := combo.Target{Provider: t.Provider, Model: t.Model, Effort: t.Effort}
 			if s.tracker.IsDrained(target) {
 				s.tracker.Clear(target)
 			}
@@ -317,8 +322,9 @@ func (s *Server) getComboPickerModels(w http.ResponseWriter, r *http.Request) {
 func (s *Server) resetDrain(w http.ResponseWriter, r *http.Request) {
 	provider := r.FormValue("provider")
 	model := r.FormValue("model")
+	level := r.FormValue("effort")
 	if s.tracker != nil && provider != "" && model != "" {
-		s.tracker.Clear(combo.Target{Provider: provider, Model: model})
+		s.tracker.Clear(combo.Target{Provider: provider, Model: model, Effort: level})
 	}
 	if r.Header.Get("HX-Request") != "true" {
 		http.Redirect(w, r, "/", http.StatusSeeOther)

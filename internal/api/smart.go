@@ -152,7 +152,7 @@ func (r *smartRouter) resolveDestination(destination string) ([]comboTarget, boo
 	if target, ok := config.FindCombo(r.cfg, destination); ok {
 		targets := make([]comboTarget, 0, len(target.Targets))
 		for _, t := range target.Targets {
-			targets = append(targets, comboTarget{Provider: t.Provider, Model: t.Model})
+			targets = append(targets, comboTarget{Provider: t.Provider, Model: t.Model, Effort: t.Effort})
 		}
 		if len(targets) == 0 {
 			return nil, false
@@ -166,10 +166,11 @@ func (r *smartRouter) resolveDestination(destination string) ([]comboTarget, boo
 	return []comboTarget{{Provider: providerName, Model: model}}, true
 }
 
-// comboTarget is a provider/model pair to dispatch to.
+// comboTarget is a provider/model/effort triple to dispatch to.
 type comboTarget struct {
 	Provider string
 	Model    string
+	Effort   string
 }
 
 // logDecision records a routing decision. It never prints the request text.

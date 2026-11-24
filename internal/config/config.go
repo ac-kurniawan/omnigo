@@ -147,39 +147,68 @@ func hasModelFamily(ids []string, base string) bool {
 	return false
 }
 
-// listedTarget reports whether model is acceptable as a combo target given a
-// provider's type and a catalog of its ids. It is the membership rule shared by
-// Validate and PruneComboTargets so the two never disagree on effort clones: a
-// clone one accepts is never silently dropped by the other. The callers differ
-// only in scope — Validate passes active plus disabled ids, Prune passes the
-// active catalog alone (a disabled model is intentionally withdrawn).
+// listedTarget reports whether a target's model and effort are acceptable given
+// a provider's type and a catalog of its ids. It is the membership rule shared
+// by Validate and PruneComboTargets so the two never disagree: a target one
+// accepts is never silently dropped by the other. The callers differ only in
+// scope — Validate passes active plus disabled ids, Prune passes the active
+// catalog alone (a disabled model is intentionally withdrawn).
 //
-// A model is accepted when the catalog lists it. Otherwise it may be an effort
-// clone of a listed family — the picker synthesises ids such as gpt-5.5-xhigh —
-// which requires the base family to be present and the suffix to be a level
-// that family actually supports. A capability marker (-thinking, -tiered) is a
-// real upstream id, not a clone, so it must be listed exactly.
-func listedTarget(providerType string, catalog []string, model string) bool {
+// The model must be a listed id. Antigravity is the one exception: it encodes
+// effort in the upstream model id, so its catalog usually lists the level
+// variants (gemini-3.7-flash-high) and not the plain base — a base whose family
+// appears there is exactly what the picker offers.
+//
+// An effort is optional. When set it must be a concrete level the family
+// supports, which also means a model with no reasoning profile can carry none.
+func listedTarget(providerType string, catalog []string, model, level string) bool {
+	listed := false
 	for _, id := range catalog {
 		if id == model {
-			return true
+			listed = true
+			break
 		}
 	}
-	base, suffix, found := effort.Split(model)
-	if !found || !effort.Level(suffix) || !hasModelFamily(catalog, base) {
+	if !listed && !(providerType == "antigravity" && hasModelFamily(catalog, model)) {
 		return false
 	}
-	for _, level := range provider.EffortVariants(providerType, base, catalog) {
-		if level == suffix {
+	if level == "" {
+		return true
+	}
+	if !effort.Level(level) {
+		return false
+	}
+	for _, variant := range provider.EffortVariants(providerType, model, catalog) {
+		if variant == level {
 			return true
 		}
 	}
 	return false
 }
 
+// removedEffortSuffix returns the effort level embedded in model when the id is
+// not itself a listed model. Such an id is the old encoding (gpt-5.5-high) and
+// is rejected so the operator moves the level into the target's effort field; a
+// literally listed id that ends in a level token is a real upstream model.
+func removedEffortSuffix(catalog []string, model string) string {
+	for _, id := range catalog {
+		if id == model {
+			return ""
+		}
+	}
+	_, suffix, found := effort.Split(model)
+	if !found || !effort.Level(suffix) {
+		return ""
+	}
+	return suffix
+}
+
 type ComboTarget struct {
 	Provider string `yaml:"provider"`
 	Model    string `yaml:"model"`
+	// Effort is the reasoning effort for this target. Empty means the model's
+	// own default; it is never encoded in Model.
+	Effort string `yaml:"effort,omitempty"`
 }
 
 type Combo struct {
@@ -513,7 +542,7 @@ func (c *Config) Validate() error {
 		}
 		seenTarget := map[string]bool{}
 		for _, t := range cb.Targets {
-			key := t.Provider + "\x00" + t.Model
+			key := t.Provider + "\x00" + t.Model + "\x00" + t.Effort
 			if seenTarget[key] {
 				return fmt.Errorf("combo %q: duplicate target %s/%s", cb.Name, t.Provider, t.Model)
 			}
@@ -527,12 +556,18 @@ func (c *Config) Validate() error {
 			}
 			catalog := p.catalogFor()
 			// An empty catalog has not been fetched yet, so it cannot reject a
-			// reference. Once it has entries, the target must be listed, or an
-			// effort clone of a listed family (gemini-3.7-flash-high). This is
-			// the same rule PruneComboTargets applies, so a stored target is
-			// never silently dropped on the next catalog refresh.
-			if len(catalog) > 0 && !listedTarget(p.Type, catalog, t.Model) {
-				return fmt.Errorf("combo %q: provider %q has no model %q", cb.Name, t.Provider, t.Model)
+			// reference. Once it has entries, the model must be listed and the
+			// effort must be one that family supports. This is the same rule
+			// PruneComboTargets applies, so a stored target is never silently
+			// dropped on the next catalog refresh.
+			if len(catalog) == 0 {
+				continue
+			}
+			if level := removedEffortSuffix(catalog, t.Model); level != "" {
+				return fmt.Errorf("combo %q: target %s/%s uses removed effort suffix %q; store model %q with effort %q instead", cb.Name, t.Provider, t.Model, level, effort.Base(t.Model), level)
+			}
+			if !listedTarget(p.Type, catalog, t.Model, t.Effort) {
+				return fmt.Errorf("combo %q: provider %q has no model %q at effort %q", cb.Name, t.Provider, t.Model, t.Effort)
 			}
 		}
 	}

@@ -609,17 +609,22 @@
                 <div class="text-[11px] text-base-content/40 italic py-1">No active cached models for this provider.</div>
               {{else}}
                 <div class="grid grid-cols-1 gap-2">
-                  {{range modelsWithEffort $provType .Models}}
-                    <label class="picker-model-item flex flex-col gap-1.5 p-2.5 rounded-lg bg-base-100 hover:bg-base-200/80 cursor-pointer font-mono text-xs border border-base-content/5 transition-colors{{if .Effort}} picker-effort-item border-primary/20{{end}}" data-search="{{$provName}} {{.ID}}">
+                  {{range pickerModels $provType .Models}}
+                    <div class="picker-model-item flex flex-col gap-1.5 p-2.5 rounded-lg bg-base-100 hover:bg-base-200/80 font-mono text-xs border border-base-content/5 transition-colors" data-search="{{$provName}} {{.Model}}">
                       <div class="flex items-start gap-2.5 min-w-0">
-                        <input type="checkbox" class="checkbox checkbox-xs checkbox-primary picker-model-checkbox shrink-0 mt-0.5" data-target="{{$provName}}/{{.ID}}" data-provider="{{$provName}}" data-model="{{.ID}}" onchange="updatePickerCounter()">
-                        <span class="font-medium text-base-content break-all leading-snug">{{.Label}}</span>
-                        {{if .Effort}}<span class="badge badge-primary badge-outline badge-xs shrink-0">effort</span>{{end}}
+                        <input type="checkbox" class="checkbox checkbox-xs checkbox-primary picker-model-checkbox shrink-0 mt-0.5" data-target="{{$provName}}/{{.Model}}" data-provider="{{$provName}}" data-model="{{.Model}}" onchange="updatePickerCounter()">
+                        <span class="font-medium text-base-content break-all leading-snug min-w-0 flex-1">{{.Model}}</span>
+                        {{if .Levels}}
+                          <select class="select select-bordered select-xs picker-effort-select shrink-0 font-mono text-[11px] h-auto min-h-[1.5rem] rounded-md px-1.5 py-0" data-provider="{{$provName}}" data-model="{{.Model}}" title="Reasoning effort for this target">
+                            <option value="">default</option>
+                            {{range .Levels}}<option value="{{.}}">{{.}}</option>{{end}}
+                          </select>
+                        {{end}}
                       </div>
-                      <div class="pl-6 flex items-center justify-between text-[10px] text-base-content/40 font-mono">
-                        <span class="break-all">{{$provName}}/{{.ID}}</span>
+                      <div class="pl-6 text-[10px] text-base-content/40 font-mono">
+                        <span class="break-all">{{$provName}}/{{.Model}}</span>
                       </div>
-                    </label>
+                    </div>
                   {{end}}
                 </div>
               {{end}}
@@ -1150,9 +1155,19 @@
     function showComboModelPicker() {
       // Pull the current model catalog so models refreshed after page load are visible.
       htmx.ajax('GET', '/combo-picker/models', { target: '#combo-picker-providers-list', swap: 'innerHTML' }).then(() => {
-        const selected = CHAINS[pickerContext].get();
+        const selected = new Map(CHAINS[pickerContext].get().map(t => [pickerTargetKey(t), pickerTargetEffort(t)]));
         document.querySelectorAll('.picker-model-checkbox').forEach(cb => {
-          cb.checked = selected.includes(cb.dataset.target);
+          const level = selected.get(cb.dataset.target);
+          cb.checked = selected.has(cb.dataset.target);
+          if (!cb.checked) return;
+          const select = cb.closest('.picker-model-item')?.querySelector('.picker-effort-select');
+          if (!select) return;
+          // A stored level the current catalog no longer lists still has to be
+          // shown, or re-applying the selection would silently drop it.
+          if (level && !Array.from(select.options).some(o => o.value === level)) {
+            select.add(new Option(level, level));
+          }
+          select.value = level || '';
         });
         updatePickerCounter();
         const search = document.getElementById('combo-picker-search');
@@ -1190,24 +1205,39 @@
       updatePickerCounter();
     }
 
+    // A chain entry is "<provider>/<model>" or "<provider>/<model>|<effort>".
+    // The pipe is the effort separator; model ids never contain one.
+    function pickerTargetKey(entry) {
+      const bar = entry.indexOf('|');
+      return bar < 0 ? entry : entry.slice(0, bar);
+    }
+
+    function pickerTargetEffort(entry) {
+      const bar = entry.indexOf('|');
+      return bar < 0 ? '' : entry.slice(bar + 1);
+    }
+
     function applyComboPickerSelection() {
       const chain = CHAINS[pickerContext];
       const selected = [];
       document.querySelectorAll('.picker-model-checkbox:checked').forEach(cb => {
-        selected.push(cb.dataset.target);
+        const select = cb.closest('.picker-model-item')?.querySelector('.picker-effort-select');
+        const level = select ? select.value : '';
+        selected.push(level ? `${cb.dataset.target}|${level}` : cb.dataset.target);
       });
-      // Retain previous order for already-included items, append new ones
+      // Keep the previous order for models that stay selected; a freshly
+      // picked entry replaces the old one so an effort change on an
+      // already-selected model takes effect without moving it in the chain.
+      const fresh = new Map(selected.map(t => [pickerTargetKey(t), t]));
       const newChain = [];
       chain.get().forEach(t => {
-        if (selected.includes(t)) {
-          newChain.push(t);
+        const key = pickerTargetKey(t);
+        if (fresh.has(key)) {
+          newChain.push(fresh.get(key));
+          fresh.delete(key);
         }
       });
-      selected.forEach(t => {
-        if (!newChain.includes(t)) {
-          newChain.push(t);
-        }
-      });
+      fresh.forEach(t => newChain.push(t));
       chain.set(newChain);
       renderChain(pickerContext);
       document.getElementById('combo-model-picker-modal')?.close();
@@ -1239,7 +1269,9 @@
       const moveFn = context === 'edit' ? 'moveEditComboTarget' : 'moveComboTarget';
       const removeFn = context === 'edit' ? 'removeEditComboTarget' : 'removeComboTarget';
       container.innerHTML = targets.map((target, idx) => {
-        const parts = target.split('/');
+        const key = pickerTargetKey(target);
+        const level = pickerTargetEffort(target);
+        const parts = key.split('/');
         const prov = parts[0] || '';
         const model = parts.slice(1).join('/') || '';
         const isFirst = idx === 0;
@@ -1259,6 +1291,7 @@
               <span class="font-bold text-primary shrink-0">${prov}</span>
               <span class="text-base-content/40 shrink-0">/</span>
               <span class="font-medium text-base-content break-all">${model}</span>
+              ${level ? `<span class="badge badge-primary badge-outline badge-xs shrink-0">effort ${level}</span>` : ''}
             </div>
           </div>
         `;
@@ -2572,7 +2605,7 @@
             <span class="badge badge-accent font-mono text-xs">smart</span>
           {{else}}
           <form action="/combos/{{.Name}}" method="POST" hx-post="/combos/{{.Name}}" hx-target="#combos" hx-swap="innerHTML">
-            <input type="hidden" name="targets" value="{{range $i, $t := .Targets}}{{if $i}},{{end}}{{$t.Provider}}/{{$t.Model}}{{end}}">
+            <input type="hidden" name="targets" value="{{range $i, $t := .Targets}}{{if $i}},{{end}}{{$t.Provider}}/{{$t.Model}}{{if $t.Effort}}|{{$t.Effort}}{{end}}{{end}}">
             <input type="hidden" name="timeout" value="{{.Timeout}}">
             <input type="hidden" name="drain_ttl" value="{{.DrainTTL}}">
             <select name="strategy" class="select select-bordered select-xs font-mono text-xs rounded-lg" onchange="this.form.requestSubmit()">
@@ -2601,9 +2634,9 @@
           {{else}}
           <div class="flex flex-wrap items-center gap-2">
             {{range $i, $t := .Targets}}
-              {{$drained := isDrained $.Tracker $t.Provider $t.Model}}
-              {{$remaining := drainRemaining $.Tracker $t.Provider $t.Model}}
-              {{$reason := drainReason $.Tracker $t.Provider $t.Model}}
+              {{$drained := isDrained $.Tracker $t.Provider $t.Model $t.Effort}}
+              {{$remaining := drainRemaining $.Tracker $t.Provider $t.Model $t.Effort}}
+              {{$reason := drainReason $.Tracker $t.Provider $t.Model $t.Effort}}
               {{if gt $i 0}}
                 <span class="text-base-content/40 text-xs font-bold">➔</span>
               {{end}}
@@ -2616,11 +2649,11 @@
                 {{else}}
                   <span class="size-2 shrink-0 rounded-full bg-success"></span>
                 {{end}}
-                <span class="text-primary font-bold">{{$t.Provider}}</span><span class="text-base-content/40">/</span><span>{{$t.Model}}</span>
+                <span class="text-primary font-bold">{{$t.Provider}}</span><span class="text-base-content/40">/</span><span>{{$t.Model}}</span>{{if $t.Effort}}<span class="badge badge-primary badge-outline badge-xs font-sans px-1 py-0 text-[10px]">effort {{$t.Effort}}</span>{{end}}
                 {{if $drained}}
-                  <span class="badge badge-warning badge-xs font-sans px-1.5 py-0.5 text-[10px] gap-1 drain-countdown" data-drain-until="{{drainUntilEpochMs $.Tracker $t.Provider $t.Model}}" title="Drained for next {{$remaining}}{{if $reason}} &#10;Reason: {{$reason}}{{end}}">
+                  <span class="badge badge-warning badge-xs font-sans px-1.5 py-0.5 text-[10px] gap-1 drain-countdown" data-drain-until="{{drainUntilEpochMs $.Tracker $t.Provider $t.Model $t.Effort}}" title="Drained for next {{$remaining}}{{if $reason}} &#10;Reason: {{$reason}}{{end}}">
                     drained (<span class="drain-remaining-text">{{$remaining}}</span>)
-                    <button type="button" hx-post="/combos/drains/reset" hx-vals='{"provider": "{{$t.Provider}}", "model": "{{$t.Model}}"}' hx-target="#combos" hx-swap="innerHTML" class="cursor-pointer font-bold hover:text-base-content" title="Clear drained state now">✕</button>
+                    <button type="button" hx-post="/combos/drains/reset" hx-vals='{"provider": "{{$t.Provider}}", "model": "{{$t.Model}}", "effort": "{{$t.Effort}}"}' hx-target="#combos" hx-swap="innerHTML" class="cursor-pointer font-bold hover:text-base-content" title="Clear drained state now">✕</button>
                   </span>
                 {{end}}
               </span>
@@ -2636,7 +2669,7 @@
           <button type="button" class="btn btn-xs btn-outline btn-primary px-2.5 py-1 h-auto min-h-[1.75rem] rounded-lg gap-1 font-medium mr-1 combo-edit-btn"
             data-name="{{.Name}}"
             data-strategy="{{.Strategy}}"
-            data-targets="{{range $i, $t := .Targets}}{{if $i}},{{end}}{{$t.Provider}}/{{$t.Model}}{{end}}"
+            data-targets="{{range $i, $t := .Targets}}{{if $i}},{{end}}{{$t.Provider}}/{{$t.Model}}{{if $t.Effort}}|{{$t.Effort}}{{end}}{{end}}"
             data-timeout="{{.Timeout}}"
             data-drain-ttl="{{.DrainTTL}}"
             data-routes="{{smartRoutesJSON .}}"

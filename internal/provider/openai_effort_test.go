@@ -32,49 +32,47 @@ func captureOpenAIBody(t *testing.T, req ChatRequest) []byte {
 	return captured
 }
 
-// A combo target may carry an effort suffix (o3-mini-high). OpenAI carries the
-// effort in the body, so the suffix must be stripped to the base model and
-// turned into a reasoning_effort field.
-func TestOpenAIChatStripsEffortSuffixAndInjectsEffort(t *testing.T) {
+// A target's effort is carried in the body next to the bare model id, which is
+// what OpenAI expects.
+func TestOpenAIChatInjectsTargetEffort(t *testing.T) {
 	raw := captureOpenAIBody(t, ChatRequest{
-		Model:  "o3-mini-high",
-		Stream: false,
-		Raw:    []byte(`{"model":"o3-mini-high","messages":[{"role":"user","content":"hi"}]}`),
+		Model:  "o3-mini",
+		Effort: "high",
+		Raw:    []byte(`{"model":"o3-mini","messages":[{"role":"user","content":"hi"}]}`),
 	})
 	var body map[string]any
 	if err := json.Unmarshal(raw, &body); err != nil {
 		t.Fatalf("upstream body is not JSON: %v (%s)", err, raw)
 	}
 	if got := body["model"]; got != "o3-mini" {
-		t.Fatalf("upstream model = %#v, want o3-mini (suffix stripped)", got)
+		t.Fatalf("upstream model = %#v, want o3-mini", got)
 	}
 	if got := body["reasoning_effort"]; got != "high" {
 		t.Fatalf("reasoning_effort = %#v, want high", got)
 	}
 }
 
-// The suffix wins over a client-supplied reasoning_effort.
-func TestOpenAIChatSuffixOverridesClientEffort(t *testing.T) {
+// The target's effort wins over a client-supplied reasoning_effort.
+func TestOpenAIChatTargetEffortOverridesClientEffort(t *testing.T) {
 	raw := captureOpenAIBody(t, ChatRequest{
-		Model:  "o3-mini-low",
-		Stream: false,
-		Raw:    []byte(`{"model":"o3-mini-low","messages":[{"role":"user","content":"hi"}],"reasoning_effort":"high"}`),
+		Model:  "o3-mini",
+		Effort: "low",
+		Raw:    []byte(`{"model":"o3-mini","messages":[{"role":"user","content":"hi"}],"reasoning_effort":"high"}`),
 	})
 	var body map[string]any
 	if err := json.Unmarshal(raw, &body); err != nil {
 		t.Fatalf("upstream body is not JSON: %v", err)
 	}
 	if got := body["reasoning_effort"]; got != "low" {
-		t.Fatalf("reasoning_effort = %#v, want low (suffix wins)", got)
+		t.Fatalf("reasoning_effort = %#v, want low (target wins)", got)
 	}
 }
 
-// A client-supplied reasoning_effort survives when the target has no suffix.
-func TestOpenAIChatKeepsClientEffortWithoutASuffix(t *testing.T) {
+// A client-supplied reasoning_effort survives when the target has none.
+func TestOpenAIChatKeepsClientEffortWithoutATargetEffort(t *testing.T) {
 	raw := captureOpenAIBody(t, ChatRequest{
-		Model:  "o3-mini",
-		Stream: false,
-		Raw:    []byte(`{"model":"o3-mini","messages":[{"role":"user","content":"hi"}],"reasoning_effort":"high"}`),
+		Model: "o3-mini",
+		Raw:   []byte(`{"model":"o3-mini","messages":[{"role":"user","content":"hi"}],"reasoning_effort":"high"}`),
 	})
 	var body map[string]any
 	if err := json.Unmarshal(raw, &body); err != nil {
@@ -85,13 +83,23 @@ func TestOpenAIChatKeepsClientEffortWithoutASuffix(t *testing.T) {
 	}
 }
 
-// A plain model with no suffix and no developer role is forwarded verbatim, so
+// A plain model with no effort and no developer role is forwarded verbatim, so
 // the rewrite path never disturbs the common case.
 func TestOpenAIChatForwardsAPlainBodyByteForByte(t *testing.T) {
 	raw := []byte(`{"model":"gpt-4o","messages":[{"role":"user","content":"hi"}],"temperature":0.5}`)
-	got := captureOpenAIBody(t, ChatRequest{Model: "gpt-4o", Stream: false, Raw: raw, Parsed: ParseBody(raw)})
+	got := captureOpenAIBody(t, ChatRequest{Model: "gpt-4o", Raw: raw, Parsed: ParseBody(raw)})
 	if string(got) != string(raw) {
 		t.Fatalf("upstream body = %s, want it forwarded unchanged: %s", got, raw)
+	}
+}
+
+// A model id that merely ends in a level token is a real upstream id: the
+// provider must not split it into a base plus an effort any more.
+func TestOpenAIChatForwardsASuffixLookingIdUnchanged(t *testing.T) {
+	raw := []byte(`{"model":"gpt-oss-120b-medium","messages":[{"role":"user","content":"hi"}]}`)
+	got := captureOpenAIBody(t, ChatRequest{Model: "gpt-oss-120b-medium", Raw: raw, Parsed: ParseBody(raw)})
+	if string(got) != string(raw) {
+		t.Fatalf("upstream body = %s, want the literal id forwarded unchanged: %s", got, raw)
 	}
 }
 
@@ -100,9 +108,9 @@ func TestOpenAIChatForwardsAPlainBodyByteForByte(t *testing.T) {
 // upstream does not recognise and the request hangs.
 func TestOpenAIChatNormalisesDeveloperRoleOnTheEffortPath(t *testing.T) {
 	raw := captureOpenAIBody(t, ChatRequest{
-		Model:  "o3-mini-high",
-		Stream: false,
-		Raw:    []byte(`{"model":"o3-mini-high","messages":[{"role":"developer","content":"be nice"}]}`),
+		Model:  "o3-mini",
+		Effort: "high",
+		Raw:    []byte(`{"model":"o3-mini","messages":[{"role":"developer","content":"be nice"}]}`),
 	})
 	var body map[string]any
 	if err := json.Unmarshal(raw, &body); err != nil {

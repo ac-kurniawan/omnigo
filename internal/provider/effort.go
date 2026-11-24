@@ -7,9 +7,9 @@ import "github.com/ac-kurniawan/omnigo/internal/effort"
 // cannot drift apart.
 var antigravityLevels = []string{"low", "medium", "high"}
 
-// EffortVariants reports the reasoning-effort levels that can be appended to
-// base to form selectable model ids on this provider. It returns nil when the
-// base is not effort-capable, so a caller can treat nil as "offer no clones".
+// EffortVariants reports the reasoning-effort levels this provider accepts for
+// base. It returns nil when the base is not effort-capable, so a caller can
+// treat nil as "offer no levels".
 //
 // The base is normalised first, so a suffixed id (gpt-5.5-high) resolves to the
 // same variants as its base. Antigravity encodes effort in the upstream model
@@ -20,7 +20,7 @@ var antigravityLevels = []string{"low", "medium", "high"}
 // API reports, so the picker and /v1/models stay in sync.
 //
 // A caller that resolves variants for many models of one catalog should build
-// the family index once (see ModelsWithEffort) and call effortVariants.
+// the family index once (see PickerModels) and call effortVariants.
 func EffortVariants(providerType, base string, catalog []string) []string {
 	return effortVariants(providerType, effort.Base(base), effortFamilies(catalog))
 }
@@ -77,52 +77,39 @@ func dedupeLevels(levels []string) []string {
 	return out
 }
 
-// EffortCatalogModel is one selectable picker entry: the id written into the
-// combo target, the label shown, and whether the id is a synthesised effort
-// variant of a listed model rather than a catalog entry itself.
-type EffortCatalogModel struct {
-	ID     string
-	Label  string
-	Effort bool
+// PickerEntry is one row in the combo picker: a model and the effort levels it
+// offers. Levels is nil when the model takes no effort.
+type PickerEntry struct {
+	Model  string
+	Levels []string
 }
 
-// ModelsWithEffort expands a provider's cached catalog into the model ids the
-// combo picker offers: each listed model, followed by a clone for every effort
-// level its family supports. The effort clones are additive — the picker keeps
-// the plain entry too, so nothing that used to be selectable disappears.
+// PickerModels groups a provider's cached catalog into the picker's rows: one
+// row per model, carrying the effort levels that model supports. A family the
+// catalog lists only as level variants (gemini-3.7-flash-low/high) collapses
+// into one row on its base, because Antigravity takes its effort in the model
+// id; the plain base stays one row, so nothing that used to be selectable
+// disappears. A model with no variants keeps its literal id and no levels.
 //
-// The result is deduplicated by id: a family whose catalog already lists every
-// level (gemini-3.7-flash-low/medium/high) must not show a duplicate clone for
-// each variant, and a real catalog entry always wins over a synthesised one.
-func ModelsWithEffort(providerType string, models []string) []EffortCatalogModel {
-	listed := make(map[string]bool, len(models))
-	for _, model := range models {
-		listed[model] = true
-	}
-	// Index the families once so resolving variants is linear in the catalog,
-	// not a rescan per model.
+// The result is deduplicated by model, in first-seen order.
+func PickerModels(providerType string, models []string) []PickerEntry {
 	families := effortFamilies(models)
 	seen := make(map[string]bool, len(models))
-	out := make([]EffortCatalogModel, 0, len(models))
+	rows := make([]PickerEntry, 0, len(models))
 	for _, model := range models {
-		if seen[model] {
-			continue
-		}
-		seen[model] = true
-		out = append(out, EffortCatalogModel{ID: model, Label: model})
-		levels := effortVariants(providerType, effort.Base(model), families)
-		if len(levels) == 0 {
-			continue
-		}
 		base := effort.Base(model)
-		for _, level := range levels {
-			id := effort.Apply(base, level)
-			if listed[id] || seen[id] {
-				continue
-			}
-			seen[id] = true
-			out = append(out, EffortCatalogModel{ID: id, Label: id, Effort: true})
+		levels := effortVariants(providerType, base, families)
+		entry := PickerEntry{Model: model}
+		if len(levels) > 0 {
+			// A level variant collapses onto its base row, which then carries
+			// the level as a dropdown value instead of its own row.
+			entry = PickerEntry{Model: base, Levels: levels}
 		}
+		if seen[entry.Model] {
+			continue
+		}
+		seen[entry.Model] = true
+		rows = append(rows, entry)
 	}
-	return out
+	return rows
 }

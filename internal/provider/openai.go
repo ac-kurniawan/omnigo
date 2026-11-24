@@ -143,15 +143,14 @@ func (p *openAIProvider) Test(ctx context.Context) TestResult {
 }
 
 // upstreamBody posts the original raw JSON when it is already a valid OpenAI
-// body for this request: the model id matches and no message role is
-// "developer". A model override or a developer role still goes through Body,
-// which rewrites those fields. A suffixed effort model whose base is a known
-// reasoning model (o3-mini-high) is rewritten too, so the upstream receives the
-// base slug plus reasoning_effort — even when the raw body would otherwise
-// forward verbatim. Codex and Antigravity do not use this path.
+// body for this request: the model id matches, no effort is requested, and no
+// message role is "developer". Otherwise the request goes through Body, which
+// rewrites those fields. A target that carries an effort is rewritten so the
+// upstream receives the base slug plus reasoning_effort. Codex and Antigravity
+// do not use this path.
 func upstreamBody(req ChatRequest) ([]byte, error) {
-	if level := effortLevel(req.Model); level != "" && openAIReasoningCapabilities(effort.Base(req.Model)) != nil {
-		return effortBody(req, level)
+	if req.Effort != "" {
+		return effortBody(req, req.Effort)
 	}
 	if canForwardRaw(req) {
 		return req.Raw, nil
@@ -159,35 +158,23 @@ func upstreamBody(req ChatRequest) ([]byte, error) {
 	return req.Body()
 }
 
-// effortLevel returns the reasoning effort encoded in a model id's suffix, or
-// "" when the id carries no effort level. A capability marker such as
-// "-thinking" selects a reasoning variant without naming an effort, so it is
-// not returned here.
-func effortLevel(model string) string {
-	_, suffix, found := effort.Split(model)
-	if !found || !effort.Level(suffix) {
-		return ""
-	}
-	return suffix
-}
-
 // effortBody rewrites the request for an upstream that takes the effort in the
-// body: the model id loses its suffix and reasoning_effort carries the level.
-// The suffix wins over any client-supplied reasoning_effort. The parsed map is
-// shared across targets and must not be mutated, so a fresh payload is built.
+// body: the model id is the base slug and reasoning_effort carries the level.
+// The target's effort wins over any client-supplied reasoning_effort. The
+// parsed map is shared across targets and must not be mutated, so a fresh
+// payload is built.
 //
 // It reuses openAIPayload so the developer->system role normalisation the plain
 // Body() path performs also happens here; skipping it would forward a role the
 // upstream does not recognise and stall the request.
 func effortBody(req ChatRequest, level string) ([]byte, error) {
-	base, _, _ := effort.Split(req.Model)
 	parsed := req.Parsed
 	if parsed == nil {
 		if parsed = ParseBody(req.Raw); parsed == nil {
 			parsed = map[string]any{}
 		}
 	}
-	out := openAIPayload(parsed, base)
+	out := openAIPayload(parsed, req.Model)
 	out["reasoning_effort"] = level
 	return json.Marshal(out)
 }
@@ -241,7 +228,7 @@ func (p *openAIProvider) ChatCompletion(ctx context.Context, req ChatRequest, w 
 			// One warning per upstream error response; the client-facing
 			// message stays status-only because upstream bodies can embed
 			// credentials, so only the redacted snippet goes to the log.
-			WarnUpstreamError(p.name, req.Model, "", resp.StatusCode, UpstreamSnippet(resp.Body))
+			WarnUpstreamError(p.name, effort.Apply(req.Model, req.Effort), "", resp.StatusCode, UpstreamSnippet(resp.Body))
 		}
 		return NewHTTPStatusError(resp.StatusCode, fmt.Sprintf("upstream status %d", resp.StatusCode))
 	}
