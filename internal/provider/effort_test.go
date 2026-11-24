@@ -32,6 +32,18 @@ func TestEffortVariantsUseTheModelsRealLevels(t *testing.T) {
 			want:        []string{"low", "medium", "high"},
 		},
 		{
+			name:        "opencode reasoning id",
+			providerTyp: "opencode",
+			base:        "deepseek-v4.1-flash",
+			want:        []string{"low", "medium", "high"},
+		},
+		{
+			name:        "commandcode namespaced reasoning id",
+			providerTyp: "commandcode",
+			base:        "deepseek/deepseek-v4-pro",
+			want:        []string{"low", "medium", "high"},
+		},
+		{
 			name:        "antigravity base gated on an existing level variant",
 			providerTyp: "antigravity",
 			base:        "gemini-3.7-flash",

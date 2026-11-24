@@ -82,6 +82,32 @@ func TestComboPickerSkipsUncloneableModels(t *testing.T) {
 	}
 }
 
+// A provider type that fronts an upstream taking effort in the body still
+// offers its model's levels, including a namespaced model id.
+func TestComboPickerOffersEffortForOpencodeAndCommandcode(t *testing.T) {
+	cfg := &config.Config{
+		Providers: []config.Provider{
+			{Name: "oc", Type: "opencode", Models: []string{"deepseek-v4.1-flash"}},
+			{Name: "ccm", Type: "commandcode", Models: []string{"deepseek/deepseek-v4-pro"}},
+		},
+	}
+	body := renderComboPicker(t, cfg)
+
+	for _, want := range []string{`data-target="oc/deepseek-v4.1-flash"`, `data-target="ccm/deepseek/deepseek-v4-pro"`} {
+		if !strings.Contains(body, want) {
+			t.Errorf("picker missing the model row %s", want)
+		}
+	}
+	if got := strings.Count(body, "picker-effort-select"); got != 2 {
+		t.Errorf("effort dropdowns = %d, want one per effort-capable model (2)", got)
+	}
+	for _, level := range []string{`<option value="low">`, `<option value="medium">`, `<option value="high">`} {
+		if !strings.Contains(body, level) {
+			t.Errorf("effort dropdown missing %s", level)
+		}
+	}
+}
+
 // A family whose catalog lists every level collapses into a single row on its
 // base, so the same model never appears twice.
 func TestComboPickerListsEachModelOnce(t *testing.T) {

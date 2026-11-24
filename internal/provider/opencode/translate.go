@@ -96,6 +96,10 @@ func toAnthropicMessagesBody(req provider.ChatRequest) ([]byte, error) {
 	if len(system) > 0 {
 		out["system"] = system
 	}
+	// zen's Anthropic adapter reads the level as a top-level output_config.
+	if req.Effort != "" {
+		out["output_config"] = map[string]any{"effort": req.Effort}
+	}
 	out["messages"] = anthropicMessages
 	return json.Marshal(out)
 }

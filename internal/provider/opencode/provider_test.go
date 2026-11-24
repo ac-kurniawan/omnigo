@@ -2,6 +2,8 @@ package opencode
 
 import (
 	"context"
+	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -222,6 +224,158 @@ func TestResponsesDispatch(t *testing.T) {
 	}
 	if rec.Body.Len() == 0 {
 		t.Fatal("expected non-empty response body")
+	}
+}
+
+// captureUpstreamBody runs one ChatCompletion against a fake upstream and
+// returns the JSON body the provider sent.
+func captureUpstreamBody(t *testing.T, req provider.ChatRequest, handler http.HandlerFunc) []byte {
+	t.Helper()
+	var captured []byte
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body := new(strings.Builder)
+		if _, err := io.Copy(body, r.Body); err != nil {
+			t.Errorf("read upstream body: %v", err)
+		}
+		captured = []byte(body.String())
+		handler(w, r)
+	}))
+	defer server.Close()
+
+	store := &memoryCredStore{creds: provider.Credentials{APIKey: "oc_sk_123"}}
+	p := New(provider.Config{Name: "opencode", BaseURL: server.URL}, store).(*Provider)
+	if err := p.ChatCompletion(context.Background(), req, httptest.NewRecorder()); err != nil {
+		t.Fatalf("ChatCompletion: %v", err)
+	}
+	if captured == nil {
+		t.Fatal("upstream never received a request")
+	}
+	return captured
+}
+
+// effortRequest is the request shape every effort test starts from: a streamed
+// turn for model, asking for level.
+func effortRequest(model, level string) provider.ChatRequest {
+	return provider.ChatRequest{
+		Model:    model,
+		Stream:   true,
+		Effort:   level,
+		Messages: []provider.Message{{Role: "user", Content: "hi"}},
+	}
+}
+
+// The chat protocol carries the level in reasoning_effort, next to the bare
+// model id, even when the id itself names no reasoning family.
+func TestChatCompletionsCarriesTargetEffort(t *testing.T) {
+	captured := captureUpstreamBody(t, effortRequest("deepseek-v4.1-flash", "high"), func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Write([]byte("data: [DONE]\n\n"))
+	})
+	var body map[string]any
+	_ = json.Unmarshal(captured, &body)
+	if got := body["reasoning_effort"]; got != "high" {
+		t.Errorf("reasoning_effort = %v, want high (%s)", got, captured)
+	}
+	if got := body["model"]; got != "deepseek-v4.1-flash" {
+		t.Errorf("model = %v, want the bare base id (%s)", got, captured)
+	}
+}
+
+// Without a target effort the chat body is forwarded unchanged: no injected
+// key, and the client's numbers keep their exact spelling.
+func TestChatCompletionsWithoutEffortLeavesBodyAlone(t *testing.T) {
+	raw := []byte(`{"model":"deepseek-v4.1-flash","messages":[{"role":"user","content":"hi"}],"seed":9007199254740993}`)
+	req := provider.ChatRequest{Model: "deepseek-v4.1-flash", Stream: true, Raw: raw, Parsed: provider.ParseBody(raw)}
+	captured := captureUpstreamBody(t, req, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Write([]byte("data: [DONE]\n\n"))
+	})
+	if strings.Contains(string(captured), "reasoning_effort") {
+		t.Errorf("effort key injected without a target effort: %s", captured)
+	}
+	if !strings.Contains(string(captured), "9007199254740993") {
+		t.Errorf("body was rewritten and lost the exact integer: %s", captured)
+	}
+}
+
+// The effort rewrite must not corrupt numbers: a float64 round trip turns this
+// seed into 9007199254740992.
+func TestChatCompletionsEffortKeepsIntegerFidelity(t *testing.T) {
+	raw := []byte(`{"model":"deepseek-v4.1-flash","messages":[{"role":"user","content":"hi"}],"seed":9007199254740993}`)
+	req := provider.ChatRequest{Model: "deepseek-v4.1-flash", Stream: true, Effort: "high", Raw: raw, Parsed: provider.ParseBody(raw)}
+	captured := captureUpstreamBody(t, req, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Write([]byte("data: [DONE]\n\n"))
+	})
+	if !strings.Contains(string(captured), `"reasoning_effort":"high"`) {
+		t.Errorf("effort missing from the rewritten body: %s", captured)
+	}
+	if !strings.Contains(string(captured), "9007199254740993") {
+		t.Errorf("rewrite lost the exact integer: %s", captured)
+	}
+}
+
+// A client-sent reasoning object keeps its other fields; the target only sets
+// effort.
+func TestResponsesEffortMergesIntoExistingReasoning(t *testing.T) {
+	raw := []byte(`{"model":"gpt-5.6-luna","messages":[{"role":"user","content":"hi"}],"reasoning":{"summary":"auto"}}`)
+	req := provider.ChatRequest{Model: "gpt-5.6-luna", Stream: true, Effort: "high", Raw: raw, Parsed: provider.ParseBody(raw)}
+	captured := captureUpstreamBody(t, req, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Write([]byte("data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\n\n"))
+		w.Write([]byte("data: [DONE]\n\n"))
+	})
+	var body map[string]any
+	_ = json.Unmarshal(captured, &body)
+	reasoning, _ := body["reasoning"].(map[string]any)
+	if reasoning == nil || reasoning["effort"] != "high" {
+		t.Errorf("reasoning.effort = %v, want high (%s)", reasoning, captured)
+	}
+	if reasoning["summary"] != "auto" {
+		t.Errorf("client reasoning.summary was dropped: %s", captured)
+	}
+}
+
+// The responses protocol nests the level under reasoning.effort, merging into
+// the reasoning object a client may already have sent.
+func TestResponsesCarriesTargetEffort(t *testing.T) {
+	captured := captureUpstreamBody(t, effortRequest("gpt-5.6-luna", "high"), func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Write([]byte("data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\n\n"))
+		w.Write([]byte("data: [DONE]\n\n"))
+	})
+	var body map[string]any
+	_ = json.Unmarshal(captured, &body)
+	reasoning, _ := body["reasoning"].(map[string]any)
+	if reasoning == nil || reasoning["effort"] != "high" {
+		t.Errorf("reasoning.effort = %v, want high (%s)", reasoning, captured)
+	}
+}
+
+// The Anthropic messages protocol carries the level in output_config.effort,
+// the field zen's Anthropic adapter reads.
+func TestMessagesCarriesTargetEffort(t *testing.T) {
+	captured := captureUpstreamBody(t, effortRequest("claude-haiku-5-5", "high"), func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Write([]byte("event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"))
+	})
+	var body map[string]any
+	_ = json.Unmarshal(captured, &body)
+	config, _ := body["output_config"].(map[string]any)
+	if config == nil || config["effort"] != "high" {
+		t.Errorf("output_config.effort = %v, want high (%s)", config, captured)
+	}
+}
+
+// Without a target effort the messages body carries no output_config, so a
+// plain request keeps the upstream's own default reasoning.
+func TestMessagesWithoutEffortOmitsOutputConfig(t *testing.T) {
+	captured := captureUpstreamBody(t, effortRequest("claude-haiku-5-5", ""), func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Write([]byte("event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"))
+	})
+	if strings.Contains(string(captured), "output_config") {
+		t.Errorf("output_config injected without a target effort: %s", captured)
 	}
 }
 

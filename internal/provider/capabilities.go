@@ -15,7 +15,10 @@ func CapabilitiesFor(providerType, modelID string) *ModelCapabilities {
 		return openAIReasoningCapabilities(modelID)
 	case "antigravity":
 		return antigravityCapabilities(modelID)
-	case "openai":
+	case "openai", "opencode", "commandcode":
+		// Both front heterogeneous upstreams whose effort-capable models are
+		// recognised by the same name matcher; effort rides the body, never
+		// the model id.
 		return openAIReasoningCapabilities(modelID)
 	default:
 		return nil

@@ -170,12 +170,13 @@ combos:
       - { provider: backup, model: claude }        # effort omitted = model default
 ```
 
-The gateway encodes it per provider: Codex and OpenAI send it in the request
-body (`reasoning.effort` / `reasoning_effort`), Antigravity appends it to the
-upstream model id (`gemini-3.7-flash-high`). A target's effort wins over a
-client-sent effort for the same reason the target's model wins. The dashboard
-picker offers a model's levels as a dropdown, and `/v1/models` reports them as
-`capabilities.reasoning_efforts`.
+The gateway encodes it per provider: Codex, OpenAI, opencode and commandcode
+send it in the request body (`reasoning.effort` / `reasoning_effort`, or
+`output_config.effort` on opencode's Anthropic-messages path), Antigravity
+appends it to the upstream model id (`gemini-3.7-flash-high`). A target's effort
+wins over a client-sent effort for the same reason the target's model wins. The
+dashboard picker offers a model's levels as a dropdown, and `/v1/models` reports
+them as `capabilities.reasoning_efforts`.
 
 An id that still ends in an effort level (`gpt-5.5-high`) is rejected with an
 error naming the base and the level, because the old encoding is ambiguous: a

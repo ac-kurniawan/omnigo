@@ -162,6 +162,11 @@ func (p *Provider) chatCompletions(ctx context.Context, req provider.ChatRequest
 	if err != nil {
 		return err
 	}
+	if req.Effort != "" {
+		if body, err = applyChatEffort(body, req.Effort); err != nil {
+			return err
+		}
+	}
 
 	endpoint := endpointFor(p.baseURL, protocolChat)
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
@@ -193,6 +198,23 @@ func (p *Provider) chatCompletions(ctx context.Context, req provider.ChatRequest
 		return proxyStream(ctx, resp.Body, creds.Identity(), w)
 	}
 	return copyJSONBodyWithUsage(ctx, resp.Body, creds.Identity(), w)
+}
+
+// applyChatEffort rewrites a chat body so it carries the target's level in
+// reasoning_effort, the field the OpenAI-compatible adapter reads. The parsed
+// request map is shared across targets, so the bytes are re-encoded instead of
+// mutated. The body already carries the developer->system normalisation.
+func applyChatEffort(body []byte, level string) ([]byte, error) {
+	var out map[string]any
+	dec := json.NewDecoder(bytes.NewReader(body))
+	// Numbers must survive untouched: a float64 round trip corrupts a large
+	// integer such as a seed or a token count.
+	dec.UseNumber()
+	if err := dec.Decode(&out); err != nil {
+		return nil, fmt.Errorf("opencode: decode chat body: %w", err)
+	}
+	out["reasoning_effort"] = level
+	return json.Marshal(out)
 }
 
 func (p *Provider) chatMessages(ctx context.Context, req provider.ChatRequest, token string, creds provider.Credentials, w http.ResponseWriter) error {
@@ -247,6 +269,14 @@ func (p *Provider) chatResponses(ctx context.Context, req provider.ChatRequest, 
 
 	// Always require streaming upstream for Responses protocol
 	responsesPayload["stream"] = true
+	if req.Effort != "" {
+		reasoning, _ := responsesPayload["reasoning"].(map[string]any)
+		if reasoning == nil {
+			reasoning = map[string]any{}
+		}
+		reasoning["effort"] = req.Effort
+		responsesPayload["reasoning"] = reasoning
+	}
 
 	reqBody, err := json.Marshal(responsesPayload)
 	if err != nil {

@@ -45,7 +45,11 @@ func buildEnvelope(req provider.ChatRequest, threadID string) ([]byte, error) {
 	if topP, ok := body["top_p"]; ok && topP != nil {
 		params["top_p"] = topP
 	}
-	if effort := reasoningEffort(body); effort != "" {
+	// The target's effort wins over a client-supplied one; without a target
+	// effort the client body stays authoritative.
+	if req.Effort != "" {
+		params["reasoning_effort"] = req.Effort
+	} else if effort := reasoningEffort(body); effort != "" {
 		params["reasoning_effort"] = effort
 	}
 

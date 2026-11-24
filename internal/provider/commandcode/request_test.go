@@ -115,6 +115,52 @@ func TestEnvelopeToolCallsAndResults(t *testing.T) {
 	}
 }
 
+// A target's effort is carried in params.reasoning_effort, the field the
+// upstream reads.
+func TestEnvelopeCarriesTargetEffort(t *testing.T) {
+	req := provider.ChatRequest{
+		Model:  "deepseek/deepseek-v4-pro",
+		Effort: "high",
+		Messages: []provider.Message{
+			{Role: "user", Content: "hi"},
+		},
+	}
+	params := decodeEnvelope(t, req)["params"].(map[string]any)
+	if got := params["reasoning_effort"]; got != "high" {
+		t.Errorf("reasoning_effort = %v, want high", got)
+	}
+}
+
+// The target's effort wins over a client-supplied one, mirroring the openai
+// provider's documented precedence.
+func TestEnvelopeTargetEffortOverridesClientEffort(t *testing.T) {
+	req := provider.ChatRequest{
+		Model:  "deepseek/deepseek-v4-pro",
+		Effort: "low",
+		Raw:    []byte(`{"model":"deepseek/deepseek-v4-pro","messages":[{"role":"user","content":"hi"}],"reasoning_effort":"high"}`),
+		Parsed: provider.ParseBody([]byte(`{"model":"deepseek/deepseek-v4-pro","messages":[{"role":"user","content":"hi"}],"reasoning_effort":"high"}`)),
+	}
+	params := decodeEnvelope(t, req)["params"].(map[string]any)
+	if got := params["reasoning_effort"]; got != "low" {
+		t.Errorf("reasoning_effort = %v, want low", got)
+	}
+}
+
+// Without a target effort the client's own reasoning_effort still reaches the
+// envelope, so client-driven effort is unchanged.
+func TestEnvelopeKeepsClientEffortWithoutTargetEffort(t *testing.T) {
+	raw := []byte(`{"model":"deepseek/deepseek-v4-pro","messages":[{"role":"user","content":"hi"}],"reasoning_effort":"high"}`)
+	req := provider.ChatRequest{
+		Model:  "deepseek/deepseek-v4-pro",
+		Raw:    raw,
+		Parsed: provider.ParseBody(raw),
+	}
+	params := decodeEnvelope(t, req)["params"].(map[string]any)
+	if got := params["reasoning_effort"]; got != "high" {
+		t.Errorf("reasoning_effort = %v, want the client's high", got)
+	}
+}
+
 func TestStateTranslatesEvents(t *testing.T) {
 	state := newState("x/y")
 	events := []map[string]any{
