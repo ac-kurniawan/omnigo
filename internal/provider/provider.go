@@ -19,7 +19,11 @@ type Message struct {
 }
 
 type ChatRequest struct {
-	Model    string
+	Model string
+	// Effort is the reasoning effort the target asked for. Empty means the
+	// model's own default. Providers encode it for their wire format; it is
+	// never part of Model.
+	Effort   string
 	Stream   bool
 	Messages []Message
 	Raw      []byte

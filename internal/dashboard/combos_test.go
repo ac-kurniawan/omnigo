@@ -584,7 +584,7 @@ func TestComboPickerModelsReflectRefreshedCatalog(t *testing.T) {
 		t.Fatalf("status = %d, body = %s", rr.Code, rr.Body.String())
 	}
 	body := rr.Body.String()
-	if !strings.Contains(body, `data-target="agy/gemini-3.8-ultra"`) {
+	if !strings.Contains(body, `data-target="agy/gemini-3.8"`) {
 		t.Fatalf("picker missing refreshed model: %s", body)
 	}
 }

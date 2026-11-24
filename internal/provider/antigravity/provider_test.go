@@ -1160,3 +1160,37 @@ func TestChatLogsWarningOnAuthStatusBeforeRefresh(t *testing.T) {
 		t.Fatalf("log leaks upstream credential: %s", out)
 	}
 }
+
+// Antigravity takes its effort in the model id, so a target's base model and
+// effort must reach the upstream as the suffixed id while the reply keeps the
+// base the caller selected.
+func TestChatMapsBasePlusEffortToTheUpstreamModelID(t *testing.T) {
+	var upstream struct {
+		Model string `json:"model"`
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&upstream)
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"ok\"}]},\"finishReason\":\"STOP\"}]}\n\n"))
+	}))
+	defer srv.Close()
+
+	p := New(provider.Config{Name: "agy", BaseURL: srv.URL}, staticStore{provider.Credentials{AccessToken: "tok", ProjectID: "p", ExpiresAt: time.Now().Add(time.Hour)}})
+	rec := httptest.NewRecorder()
+	req := provider.ChatRequest{Model: "gemini-3.7-flash", Effort: "high", Messages: []provider.Message{{Role: "user", Content: "hi"}}}
+	if err := p.ChatCompletion(context.Background(), req, rec); err != nil {
+		t.Fatalf("ChatCompletion: %v", err)
+	}
+	if upstream.Model != "gemini-3.7-flash-high" {
+		t.Fatalf("upstream model = %q, want gemini-3.7-flash-high", upstream.Model)
+	}
+	var body struct {
+		Model string `json:"model"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode response: %v; body = %s", err, rec.Body.String())
+	}
+	if body.Model != "gemini-3.7-flash-high" {
+		t.Fatalf("reply model = %q, want the target's display id", body.Model)
+	}
+}

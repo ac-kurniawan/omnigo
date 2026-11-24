@@ -16,6 +16,11 @@ import (
 // decoded request body the provider sent.
 func captureBody(t *testing.T, model, raw string) map[string]any {
 	t.Helper()
+	return captureBodyFor(t, provider.ChatRequest{Model: model, Stream: true, Raw: []byte(raw)})
+}
+
+func captureBodyFor(t *testing.T, req provider.ChatRequest) map[string]any {
+	t.Helper()
 	var captured map[string]any
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if err := json.NewDecoder(r.Body).Decode(&captured); err != nil {
@@ -34,11 +39,7 @@ func captureBody(t *testing.T, model, raw string) map[string]any {
 	}}
 	p := New(provider.Config{Name: "codex", BaseURL: server.URL + "/responses", Timeout: time.Second}, store)
 	rr := httptest.NewRecorder()
-	if err := p.ChatCompletion(context.Background(), provider.ChatRequest{
-		Model:  model,
-		Stream: true,
-		Raw:    []byte(raw),
-	}, rr); err != nil {
+	if err := p.ChatCompletion(context.Background(), req, rr); err != nil {
 		t.Fatalf("ChatCompletion: %v", err)
 	}
 	if captured == nil {
@@ -47,14 +48,18 @@ func captureBody(t *testing.T, model, raw string) map[string]any {
 	return captured
 }
 
-// A combo target may carry an effort suffix (gpt-5.5-high). Codex sends the
-// model as a literal slug, so the suffix must be stripped to the base model and
-// turned into a body-level reasoning effort.
-func TestChatCompletionStripsEffortSuffixAndInjectsEffort(t *testing.T) {
-	body := captureBody(t, "gpt-5.5-high", `{"messages":[{"role":"user","content":"hi"}]}`)
+// A target's effort is carried in the body's reasoning object, next to the bare
+// model slug.
+func TestChatCompletionInjectsTargetEffort(t *testing.T) {
+	body := captureBodyFor(t, provider.ChatRequest{
+		Model:  "gpt-5.5",
+		Effort: "high",
+		Stream: true,
+		Raw:    []byte(`{"messages":[{"role":"user","content":"hi"}]}`),
+	})
 
 	if got := body["model"]; got != "gpt-5.5" {
-		t.Fatalf("upstream model = %#v, want gpt-5.5 (suffix stripped)", got)
+		t.Fatalf("upstream model = %#v, want gpt-5.5", got)
 	}
 	reasoning, ok := body["reasoning"].(map[string]any)
 	if !ok {
@@ -65,21 +70,30 @@ func TestChatCompletionStripsEffortSuffixAndInjectsEffort(t *testing.T) {
 	}
 }
 
-// The suffix wins over a client-supplied reasoning_effort.
-func TestChatCompletionSuffixOverridesClientEffort(t *testing.T) {
-	body := captureBody(t, "gpt-5.5-low", `{"messages":[{"role":"user","content":"hi"}],"reasoning_effort":"high"}`)
+// The target's effort wins over a client-supplied reasoning_effort.
+func TestChatCompletionTargetEffortOverridesClientEffort(t *testing.T) {
+	body := captureBodyFor(t, provider.ChatRequest{
+		Model:  "gpt-5.5",
+		Effort: "low",
+		Stream: true,
+		Raw:    []byte(`{"messages":[{"role":"user","content":"hi"}],"reasoning_effort":"high"}`),
+	})
 
 	reasoning, _ := body["reasoning"].(map[string]any)
 	if reasoning["effort"] != "low" {
-		t.Fatalf("reasoning.effort = %#v, want low (suffix wins)", reasoning["effort"])
+		t.Fatalf("reasoning.effort = %#v, want low (target wins)", reasoning["effort"])
 	}
 }
 
-// A suffixed id must still resolve its base model's profile: gpt-6-astra is a
-// Lite model, so the profile marker (reasoning.context) proves the lookup ran
-// on the stripped base rather than missing on the suffixed id.
-func TestChatCompletionResolvesProfileForASuffixedModel(t *testing.T) {
-	body := captureBody(t, "gpt-6-astra-ultra", `{"messages":[{"role":"user","content":"hi"}]}`)
+// The effort rides on the base model's profile: gpt-6-astra is a Lite model, so
+// the profile marker (reasoning.context) proves the lookup ran on the base.
+func TestChatCompletionResolvesProfileForAnEffortTarget(t *testing.T) {
+	body := captureBodyFor(t, provider.ChatRequest{
+		Model:  "gpt-6-astra",
+		Effort: "ultra",
+		Stream: true,
+		Raw:    []byte(`{"messages":[{"role":"user","content":"hi"}]}`),
+	})
 
 	if got := body["model"]; got != "gpt-6-astra" {
 		t.Fatalf("upstream model = %#v, want gpt-6-astra", got)
@@ -93,7 +107,7 @@ func TestChatCompletionResolvesProfileForASuffixedModel(t *testing.T) {
 	}
 }
 
-// A plain model with no suffix is forwarded unchanged.
+// A plain model with no effort is forwarded unchanged.
 func TestChatCompletionLeavesAPlainModelAlone(t *testing.T) {
 	body := captureBody(t, "gpt-5.5", `{"messages":[{"role":"user","content":"hi"}]}`)
 	if got := body["model"]; got != "gpt-5.5" {
@@ -101,17 +115,41 @@ func TestChatCompletionLeavesAPlainModelAlone(t *testing.T) {
 	}
 }
 
-// A model whose real id merely ends in a level token (gpt-oss-120b-medium is a
-// real Ollama-style id) is not an effort clone, so its suffix must not be
-// stripped: only families with a known reasoning profile are rewritten.
-func TestChatCompletionLeavesANonEffortFamilySuffixAlone(t *testing.T) {
+// A model id that merely ends in a level token (gpt-oss-120b-medium is a real
+// Ollama-style id) is not split any more: the id is the model.
+func TestChatCompletionLeavesASuffixLookingIdAlone(t *testing.T) {
 	body := captureBody(t, "gpt-oss-120b-medium", `{"messages":[{"role":"user","content":"hi"}]}`)
 	if got := body["model"]; got != "gpt-oss-120b-medium" {
-		t.Fatalf("upstream model = %#v, want gpt-oss-120b-medium (not an effort family)", got)
+		t.Fatalf("upstream model = %#v, want gpt-oss-120b-medium", got)
 	}
 	if reasoning, ok := body["reasoning"].(map[string]any); ok {
 		if effort, exists := reasoning["effort"]; exists && effort != "" {
 			t.Fatalf("reasoning.effort = %#v, want none for a non-effort family", effort)
 		}
+	}
+}
+
+// An effort on a model with no reasoning profile is rejected instead of being
+// silently dropped: the operator picked a level the model cannot take.
+func TestChatCompletionRejectsEffortOnANonReasoningModel(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Error("upstream must not be called for a model that takes no effort")
+	}))
+	defer server.Close()
+
+	store := &memoryCredStore{creds: provider.Credentials{
+		AccessToken: "access-token",
+		AccountID:   "account-1",
+		ExpiresAt:   time.Now().Add(time.Hour),
+	}}
+	p := New(provider.Config{Name: "codex", BaseURL: server.URL + "/responses", Timeout: time.Second}, store)
+	err := p.ChatCompletion(context.Background(), provider.ChatRequest{
+		Model:  "gpt-oss-120b",
+		Effort: "high",
+		Stream: true,
+		Raw:    []byte(`{"messages":[{"role":"user","content":"hi"}]}`),
+	}, httptest.NewRecorder())
+	if err == nil {
+		t.Fatal("expected an error for an effort on a model with no reasoning profile")
 	}
 }

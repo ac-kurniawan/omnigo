@@ -6,6 +6,8 @@ import (
 	"os"
 	"sync"
 	"time"
+
+	"github.com/ac-kurniawan/omnigo/internal/effort"
 )
 
 type drainEntry struct {
@@ -40,8 +42,10 @@ func NewTracker(path string) *Tracker {
 	return t
 }
 
+// targetKey keys drain state by provider and the model id as the operator sees
+// it (base plus effort), so a stored drain file keeps its keys.
 func targetKey(t Target) string {
-	return t.Provider + "/" + t.Model
+	return t.Provider + "/" + effort.Apply(t.Model, t.Effort)
 }
 
 func (t *Tracker) IsDrained(target Target) bool {

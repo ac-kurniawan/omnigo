@@ -256,8 +256,8 @@ func (p *Provider) probeQuota(ctx context.Context, creds provider.Credentials) (
 
 // effortFamily reports whether model is a known reasoning family, i.e. a base
 // that the provider has a profile for (live catalog or builtin). It gates the
-// effort-suffix strip so a real id that merely ends in a level token is not
-// mistaken for a clone.
+// effort injection so a target cannot ask for a reasoning effort on a model
+// with no reasoning profiles.
 func (p *Provider) effortFamily(model string) bool {
 	profile, ok := p.profile(model)
 	return ok && len(profile.Levels) > 0
@@ -267,31 +267,27 @@ func (p *Provider) ChatCompletion(ctx context.Context, req provider.ChatRequest,
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	// A combo target may carry an effort suffix (gpt-5.5-high). Codex sends the
-	// model as a literal slug and its reasoning effort in the body, so the base
-	// model drives the wire request, the profile lookup, and the account pool
-	// while the suffix drives the effort. req.Model keeps the suffixed id so
-	// logs and response chunks name the target the caller selected.
-	//
-	// The suffix is only stripped when the base is a known effort family: a
-	// model whose real id merely ends in a level token (gpt-oss-120b-medium) is
-	// not a clone and must reach the upstream unchanged.
+	// Codex sends the model as a literal slug and its reasoning effort in the
+	// body, so the base model drives the wire request, the profile lookup, and
+	// the account pool while req.Effort drives the effort. req.Model stays the
+	// base slug; the response chunks and the session header name the display id.
 	wire := req
-	level := ""
-	if base, suffix, found := effort.Split(req.Model); found && effort.Level(suffix) && p.effortFamily(base) {
-		wire.Model = base
-		level = suffix
+	if req.Effort != "" {
+		if !p.effortFamily(req.Model) {
+			return fmt.Errorf("codex: model %q takes no reasoning effort", req.Model)
+		}
+		wire.Effort = ""
 	}
 	request, err := ToResponsesRequest(wire)
 	if err != nil {
 		return err
 	}
-	if level != "" {
+	if req.Effort != "" {
 		reasoning, _ := request["reasoning"].(map[string]any)
 		if reasoning == nil {
 			reasoning = map[string]any{}
 		}
-		reasoning["effort"] = level
+		reasoning["effort"] = req.Effort
 		request["reasoning"] = reasoning
 	}
 	profile, ok := p.profile(wire.Model)
@@ -307,9 +303,10 @@ func (p *Provider) ChatCompletion(ctx context.Context, req provider.ChatRequest,
 		return fmt.Errorf("codex: not authenticated")
 	}
 	var lastErr error
+	display := effort.Apply(req.Model, req.Effort)
 	for _, account := range accounts {
 		attempt := provider.NewStreamingAttemptWriter(w, req.Stream)
-		lastErr = p.chatWithAccount(ctx, req, body, profile.Lite, account, attempt)
+		lastErr = p.chatWithAccount(ctx, req, body, profile.Lite, account, attempt, display)
 		if lastErr == nil {
 			return attempt.Commit(w)
 		}
@@ -320,14 +317,14 @@ func (p *Provider) ChatCompletion(ctx context.Context, req provider.ChatRequest,
 			return lastErr
 		}
 		// Drain under the base model: availability is looked up with
-		// wire.Model, and every effort clone shares that upstream quota, so the
-		// key recorded here must match the key read there.
+		// wire.Model, and every effort shares that upstream quota, so the key
+		// recorded here must match the key read there.
 		p.pool.MarkFailed(account, wire.Model, lastErr)
 	}
 	return lastErr
 }
 
-func (p *Provider) chatWithAccount(ctx context.Context, req provider.ChatRequest, body []byte, lite bool, account provider.Credentials, w http.ResponseWriter) error {
+func (p *Provider) chatWithAccount(ctx context.Context, req provider.ChatRequest, body []byte, lite bool, account provider.Credentials, w http.ResponseWriter, display string) error {
 	ctx, cancel := context.WithCancelCause(ctx)
 	defer cancel(nil)
 	tokens := p.tokenManager(account)
@@ -340,7 +337,7 @@ func (p *Provider) chatWithAccount(ctx context.Context, req provider.ChatRequest
 	guard := provider.NewIdleGuard(p.idle, provider.StreamBudget(p.streamTimeout, req.Stream), func() { cancel(provider.ErrUpstreamStall) })
 	defer guard.Stop()
 	sessionID := provider.RandomID()
-	resp, err := p.send(ctx, creds, body, sessionID, req.Model, req.Stream, lite)
+	resp, err := p.send(ctx, creds, body, sessionID, display, req.Stream, lite)
 	if err != nil {
 		return guard.Err(err)
 	}
@@ -350,7 +347,7 @@ func (p *Provider) chatWithAccount(ctx context.Context, req provider.ChatRequest
 		if err != nil {
 			return err
 		}
-		resp, err = p.send(ctx, creds, body, sessionID, req.Model, req.Stream, lite)
+		resp, err = p.send(ctx, creds, body, sessionID, display, req.Stream, lite)
 		if err != nil {
 			return guard.Err(err)
 		}
@@ -368,9 +365,9 @@ func (p *Provider) chatWithAccount(ctx context.Context, req provider.ChatRequest
 	p.observeQuota(account, resp.Header)
 	reader := guard.Wrap(resp.Body)
 	if req.Stream {
-		return p.streamResponse(ctx, reader, req.Model, account, w)
+		return p.streamResponse(ctx, reader, display, account, w)
 	}
-	return p.completeResponse(ctx, reader, req.Model, account, w)
+	return p.completeResponse(ctx, reader, display, account, w)
 }
 
 func (p *Provider) tokenManager(account provider.Credentials) *TokenManager {

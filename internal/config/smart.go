@@ -242,7 +242,7 @@ func (c Combo) validateDestination(cfg *Config, route SmartRoute, providers map[
 		return fmt.Errorf("combo %q: route %q: unknown destination provider %q", c.Name, route.Name, providerName)
 	}
 	catalog := pc.catalogFor()
-	if len(catalog) > 0 && !listedTarget(pc.Type, catalog, model) {
+	if len(catalog) > 0 && !listedTarget(pc.Type, catalog, model, "") {
 		return fmt.Errorf("combo %q: route %q: provider %q has no model %q", c.Name, route.Name, providerName, model)
 	}
 	return nil

@@ -64,7 +64,7 @@ func PruneComboTargets(c *Config) {
 			}
 			// Prune against the active catalog: a disabled model is intentionally
 			// withdrawn and must leave the combo.
-			if len(p.Models) == 0 || listedTarget(p.Type, p.Models, t.Model) {
+			if len(p.Models) == 0 || listedTarget(p.Type, p.Models, t.Model, t.Effort) {
 				targets = append(targets, t)
 			}
 		}

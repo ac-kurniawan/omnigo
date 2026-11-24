@@ -15,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/ac-kurniawan/omnigo/internal/effort"
 	"github.com/ac-kurniawan/omnigo/internal/provider"
 )
 
@@ -126,8 +127,13 @@ func (p *Provider) Test(ctx context.Context) provider.TestResult {
 	return res
 }
 
+// ChatCompletion dispatches one generation. Antigravity encodes effort in the
+// upstream model id itself, so the base model plus req.Effort are mapped back to
+// the suffixed id (gemini-3.7-flash + high → gemini-3.7-flash-high) before any
+// upstream call; req.Model keeps the base for logs and reply ids.
 func (p *Provider) ChatCompletion(ctx context.Context, req provider.ChatRequest, w http.ResponseWriter) error {
-	accounts, drainErr := p.pool.AvailableForModel(p.store, req.Model)
+	upstreamModel := effort.Apply(req.Model, req.Effort)
+	accounts, drainErr := p.pool.AvailableForModel(p.store, upstreamModel)
 	if len(accounts) == 0 {
 		if drainErr != nil {
 			return drainErr
@@ -137,7 +143,7 @@ func (p *Provider) ChatCompletion(ctx context.Context, req provider.ChatRequest,
 	var lastErr error
 	for _, account := range accounts {
 		attempt := provider.NewStreamingAttemptWriter(w, req.Stream)
-		lastErr = p.chatWithAccount(ctx, req, account, attempt)
+		lastErr = p.chatWithAccount(ctx, req, upstreamModel, account, attempt)
 		if lastErr == nil {
 			return attempt.Commit(w)
 		}
@@ -147,12 +153,12 @@ func (p *Provider) ChatCompletion(ctx context.Context, req provider.ChatRequest,
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-		p.pool.MarkFailed(account, req.Model, lastErr)
+		p.pool.MarkFailed(account, upstreamModel, lastErr)
 	}
 	return lastErr
 }
 
-func (p *Provider) chatWithAccount(ctx context.Context, req provider.ChatRequest, account provider.Credentials, w http.ResponseWriter) error {
+func (p *Provider) chatWithAccount(ctx context.Context, req provider.ChatRequest, upstreamModel string, account provider.Credentials, w http.ResponseWriter) error {
 	ctx, cancel := context.WithCancelCause(ctx)
 	defer cancel(nil)
 	tokens := p.tokenManager(account)
@@ -164,14 +170,14 @@ func (p *Provider) chatWithAccount(ctx context.Context, req provider.ChatRequest
 	// exchange only, not credential work.
 	guard := provider.NewIdleGuard(p.idle, provider.StreamBudget(p.streamTimeout, req.Stream), func() { cancel(provider.ErrUpstreamStall) })
 	defer guard.Stop()
-	resp, err := p.sendStreamRequest(ctx, c, req)
+	resp, err := p.sendStreamRequest(ctx, c, req, upstreamModel)
 	if err != nil && isAuthStatus(resp) && c.RefreshToken != "" {
 		if resp != nil {
 			resp.Body.Close()
 		}
 		if fresh, refErr := tokens.ForceRefreshToken(ctx, c.AccessToken); refErr == nil {
 			c = fresh
-			resp, err = p.sendStreamRequest(ctx, c, req)
+			resp, err = p.sendStreamRequest(ctx, c, req, upstreamModel)
 		} else {
 			return refErr
 		}
@@ -184,7 +190,7 @@ func (p *Provider) chatWithAccount(ctx context.Context, req provider.ChatRequest
 		snippet := provider.UpstreamSnippet(resp.Body)
 		err := newRateLimitError(resp.Header, snippet)
 		log.Printf("[rate-limited] provider=%q account=%q model=%q retry-after=%s cooldown=%s upstream=%q",
-			p.name, rateLimitAccountLabel(account), req.Model, retryAfterLabel(resp.Header), err.(*rateLimitError).Cooldown().Round(time.Second), err.(*rateLimitError).detail)
+			p.name, rateLimitAccountLabel(account), upstreamModel, retryAfterLabel(resp.Header), err.(*rateLimitError).Cooldown().Round(time.Second), err.(*rateLimitError).detail)
 		return err
 	}
 
@@ -194,13 +200,13 @@ func (p *Provider) chatWithAccount(ctx context.Context, req provider.ChatRequest
 			// message stays status-only because upstream bodies can embed
 			// credentials, so only the redacted snippet goes to the log.
 			// 429 already logs above with richer rate-limit detail.
-			provider.WarnUpstreamError(p.name, req.Model, rateLimitAccountLabel(account), resp.StatusCode, provider.UpstreamSnippet(resp.Body))
+			provider.WarnUpstreamError(p.name, upstreamModel, rateLimitAccountLabel(account), resp.StatusCode, provider.UpstreamSnippet(resp.Body))
 		}
 		return provider.NewHTTPStatusError(resp.StatusCode, fmt.Sprintf("antigravity: status %d", resp.StatusCode))
 	}
 	body := guard.Wrap(resp.Body)
 	if !req.Stream {
-		return p.completeToOpenAI(ctx, body, req.Model, account, w)
+		return p.completeToOpenAI(ctx, body, upstreamModel, account, w)
 	}
 	return p.streamToOpenAI(ctx, body, account, w)
 }
@@ -226,8 +232,8 @@ func rateLimitAccountLabel(account provider.Credentials) string {
 	return "configured-account"
 }
 
-func (p *Provider) sendStreamRequest(ctx context.Context, c provider.Credentials, req provider.ChatRequest) (*http.Response, error) {
-	env, err := ToEnvelope(c.ProjectID, req.Model, req)
+func (p *Provider) sendStreamRequest(ctx context.Context, c provider.Credentials, req provider.ChatRequest, upstreamModel string) (*http.Response, error) {
+	env, err := ToEnvelope(c.ProjectID, upstreamModel, req)
 	if err != nil {
 		return nil, err
 	}

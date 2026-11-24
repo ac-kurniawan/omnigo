@@ -7,6 +7,7 @@ import (
 
 	"github.com/ac-kurniawan/omnigo/internal/combo"
 	"github.com/ac-kurniawan/omnigo/internal/config"
+	"github.com/ac-kurniawan/omnigo/internal/effort"
 )
 
 func (s *Server) createCombo(w http.ResponseWriter, r *http.Request) {
@@ -27,10 +28,15 @@ func (s *Server) createCombo(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	targets, err := parseComboTargets(r)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
 	newCombo := config.Combo{
 		Name:     name,
 		Strategy: strategy,
-		Targets:  parseComboTargets(r),
+		Targets:  targets,
 		DrainTTL: r.FormValue("drain_ttl"),
 		Timeout:  r.FormValue("timeout"),
 	}
@@ -114,8 +120,12 @@ func (s *Server) createSmartCombo(w http.ResponseWriter, r *http.Request, name s
 
 // parseComboTargets reads the ordered target chain from the request form,
 // accepting either repeated "targets" values or comma/space/newline-delimited
-// strings of "<provider>/<model>" entries.
-func parseComboTargets(r *http.Request) []config.ComboTarget {
+// strings of "<provider>/<model>" and "<provider>/<model>|<effort>" entries.
+//
+// A malformed entry is rejected with the offending item, never skipped:
+// dropping it would save a silently shorter chain, and an empty chain would
+// fail with a message naming neither the typo nor the fix.
+func parseComboTargets(r *http.Request) ([]config.ComboTarget, error) {
 	_ = r.ParseForm()
 	var targets []config.ComboTarget
 	for _, raw := range r.Form["targets"] {
@@ -123,14 +133,27 @@ func parseComboTargets(r *http.Request) []config.ComboTarget {
 			return c == ',' || c == '\n' || c == '\r' || c == ' '
 		}) {
 			item = strings.TrimSpace(item)
-			provider, model, ok := strings.Cut(item, "/")
-			if !ok || provider == "" || model == "" {
-				continue
+			provider, rest, ok := strings.Cut(item, "/")
+			if !ok || provider == "" || rest == "" {
+				return nil, fmt.Errorf("invalid target %q: want <provider>/<model>[|<effort>]", item)
 			}
-			targets = append(targets, config.ComboTarget{Provider: provider, Model: model})
+			model, level, _ := strings.Cut(rest, "|")
+			if model == "" {
+				return nil, fmt.Errorf("invalid target %q: model is required", item)
+			}
+			if level != "" && !effort.Level(level) {
+				return nil, fmt.Errorf("invalid target %q: unknown effort %q, want blank or one of: %s", item, level, strings.Join(effortLevels(), ", "))
+			}
+			targets = append(targets, config.ComboTarget{Provider: provider, Model: model, Effort: level})
 		}
 	}
-	return targets
+	return targets, nil
+}
+
+// effortLevels is every concrete reasoning level a target may store, for the
+// error message that tells an operator what a valid effort looks like.
+func effortLevels() []string {
+	return []string{"low", "medium", "high", "xhigh", "max", "ultra"}
 }
 
 // updateCombo replaces a combo's strategy, target chain, and budgets wholesale.
@@ -149,7 +172,11 @@ func (s *Server) updateCombo(w http.ResponseWriter, r *http.Request) {
 		s.updateSmartCombo(w, r, name)
 		return
 	}
-	targets := parseComboTargets(r)
+	targets, err := parseComboTargets(r)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
 	timeout := strings.TrimSpace(r.FormValue("timeout"))
 	drainTTL := strings.TrimSpace(r.FormValue("drain_ttl"))
 
@@ -189,7 +216,7 @@ func (s *Server) updateCombo(w http.ResponseWriter, r *http.Request) {
 
 	if s.tracker != nil {
 		for _, t := range targets {
-			target := combo.Target{Provider: t.Provider, Model: t.Model}
+			target := combo.Target{Provider: t.Provider, Model: t.Model, Effort: t.Effort}
 			if s.tracker.IsDrained(target) {
 				s.tracker.Clear(target)
 			}
@@ -317,8 +344,9 @@ func (s *Server) getComboPickerModels(w http.ResponseWriter, r *http.Request) {
 func (s *Server) resetDrain(w http.ResponseWriter, r *http.Request) {
 	provider := r.FormValue("provider")
 	model := r.FormValue("model")
+	level := r.FormValue("effort")
 	if s.tracker != nil && provider != "" && model != "" {
-		s.tracker.Clear(combo.Target{Provider: provider, Model: model})
+		s.tracker.Clear(combo.Target{Provider: provider, Model: model, Effort: level})
 	}
 	if r.Header.Get("HX-Request") != "true" {
 		http.Redirect(w, r, "/", http.StatusSeeOther)

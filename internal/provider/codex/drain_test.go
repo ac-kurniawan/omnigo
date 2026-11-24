@@ -10,9 +10,9 @@ import (
 	"github.com/ac-kurniawan/omnigo/internal/provider"
 )
 
-// A quota failure on an effort clone (gpt-5.5-high) must cool the base family,
-// because availability is looked up under the base model. The key MarkFailed
-// writes and the key AvailableForModel reads therefore have to agree.
+// A quota failure on an effort target (gpt-5.5 + high) must cool the base
+// family, because availability is looked up under the base model. The key
+// MarkFailed writes and the key AvailableForModel reads therefore have to agree.
 func TestChatCompletionDrainsTheBaseModelAfterACloneQuotaFailure(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Retry-After", "60")
@@ -34,7 +34,8 @@ func TestChatCompletionDrainsTheBaseModelAfterACloneQuotaFailure(t *testing.T) {
 
 	rr := httptest.NewRecorder()
 	err := p.ChatCompletion(context.Background(), provider.ChatRequest{
-		Model:  "gpt-5.5-high",
+		Model:  "gpt-5.5",
+		Effort: "high",
 		Stream: true,
 		Raw:    []byte(`{"messages":[{"role":"user","content":"hi"}]}`),
 	}, rr)
@@ -44,6 +45,6 @@ func TestChatCompletionDrainsTheBaseModelAfterACloneQuotaFailure(t *testing.T) {
 
 	healthy, _ := p.pool.AvailableForModel(p.store, "gpt-5.5")
 	if len(healthy) != 0 {
-		t.Fatalf("after a 429 on gpt-5.5-high, AvailableForModel(gpt-5.5) = %d accounts, want 0 (base family drained)", len(healthy))
+		t.Fatalf("after a 429 on gpt-5.5 + high, AvailableForModel(gpt-5.5) = %d accounts, want 0 (base family drained)", len(healthy))
 	}
 }

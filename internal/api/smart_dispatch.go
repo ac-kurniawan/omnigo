@@ -89,7 +89,7 @@ func runSmartCombo(responder responder, r *http.Request, cfg *config.Config, reg
 		Timeout:  cb.ParsedTimeout(),
 	}
 	for _, t := range targets {
-		c.Targets = append(c.Targets, combo.Target{Provider: t.Provider, Model: t.Model})
+		c.Targets = append(c.Targets, combo.Target{Provider: t.Provider, Model: t.Model, Effort: t.Effort})
 	}
 
 	dispatch := runTarget(responder, r, cfg, registry, req, tracker, tc, startTime, metrics, capture, comboName, strategy, cb.ParsedDrainTTL())

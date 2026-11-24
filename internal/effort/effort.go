@@ -1,9 +1,10 @@
-// Package effort centralises the encoding of a reasoning-effort selection into
-// a model id suffix, and the reverse. Antigravity encodes effort as a real
-// upstream model id (`gemini-3.7-flash-high`), while Codex and OpenAI carry it
-// in the request body (`reasoning_effort`). A combo target stores the suffixed
-// id, so the gateway must be able to split it back into a base model plus an
-// effort before dispatch.
+// Package effort centralises reasoning-effort encoding. Antigravity names a
+// level in a real upstream model id (`gemini-3.7-flash-high`), while Codex and
+// OpenAI carry it in the request body. A combo target stores the base model and
+// its effort as separate fields, so Apply builds the id Antigravity receives and
+// the display id metrics and the picker show; Base and Split still recognise an
+// id that ends in a level so a catalog entry or an old stored target is never
+// mistaken for its base.
 package effort
 
 import "strings"

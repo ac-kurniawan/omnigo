@@ -15,7 +15,11 @@ import (
 
 type Target struct {
 	Provider string
-	Model    string
+	// Model is the base model id; Effort, when set, is the reasoning effort
+	// requested from it. The two are stored separately and never glued into a
+	// suffixed id.
+	Model  string
+	Effort string
 }
 
 type Combo struct {

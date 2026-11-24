@@ -168,23 +168,28 @@ func newServer(getCfg func() *config.Config, store *vault.Store, mutate config.M
 			}
 			return template.JS(raw)
 		},
-		// modelsWithEffort expands a provider's cached catalog with an effort
-		// clone per reasoning level, so the combo picker offers e.g.
-		// gemini-3.7-flash-high next to the model itself.
-		"modelsWithEffort": func(providerType string, models []string) []provider.EffortCatalogModel {
-			return provider.ModelsWithEffort(providerType, models)
+		// pickerModels groups a provider's cached catalog into one picker row
+		// per model, carrying the effort levels that model offers.
+		"pickerModels": func(providerType string, models []string) []provider.PickerEntry {
+			return provider.PickerModels(providerType, models)
 		},
-		"isDrained": func(tr *combo.Tracker, provider, model string) bool {
+		// effortLevelsCSV lists the reasoning-effort levels a direct model
+		// accepts, comma-separated, for the playground's effort selector. An
+		// empty value means the model takes none, so the selector stays hidden.
+		"effortLevelsCSV": func(providerType string, models []string, model string) string {
+			return strings.Join(provider.EffortVariants(providerType, model, models), ",")
+		},
+		"isDrained": func(tr *combo.Tracker, provider, model, effort string) bool {
 			if tr == nil {
 				return false
 			}
-			return tr.IsDrained(combo.Target{Provider: provider, Model: model})
+			return tr.IsDrained(combo.Target{Provider: provider, Model: model, Effort: effort})
 		},
-		"drainRemaining": func(tr *combo.Tracker, provider, model string) string {
+		"drainRemaining": func(tr *combo.Tracker, provider, model, effort string) string {
 			if tr == nil {
 				return ""
 			}
-			rem := tr.DrainRemaining(combo.Target{Provider: provider, Model: model})
+			rem := tr.DrainRemaining(combo.Target{Provider: provider, Model: model, Effort: effort})
 			if rem <= 0 {
 				return ""
 			}
@@ -193,17 +198,17 @@ func newServer(getCfg func() *config.Config, store *vault.Store, mutate config.M
 			s := int(rem.Seconds()) % 60
 			return fmt.Sprintf("%dm%02ds", m, s)
 		},
-		"drainReason": func(tr *combo.Tracker, provider, model string) string {
+		"drainReason": func(tr *combo.Tracker, provider, model, effort string) string {
 			if tr == nil {
 				return ""
 			}
-			return tr.DrainReason(combo.Target{Provider: provider, Model: model})
+			return tr.DrainReason(combo.Target{Provider: provider, Model: model, Effort: effort})
 		},
-		"drainUntilEpochMs": func(tr *combo.Tracker, provider, model string) int64 {
+		"drainUntilEpochMs": func(tr *combo.Tracker, provider, model, effort string) int64 {
 			if tr == nil {
 				return 0
 			}
-			rem := tr.DrainRemaining(combo.Target{Provider: provider, Model: model})
+			rem := tr.DrainRemaining(combo.Target{Provider: provider, Model: model, Effort: effort})
 			if rem <= 0 {
 				return 0
 			}

@@ -24,33 +24,45 @@ func renderComboPicker(t *testing.T, cfg *config.Config) string {
 	return rr.Body.String()
 }
 
-// The picker clones each effort-capable model and appends the suffix, so a user
-// can pick an effort variant without a separate dropdown.
-func TestComboPickerOffersEffortClones(t *testing.T) {
+// The picker shows one row per model and offers that model's reasoning levels
+// as a dropdown next to the name, instead of a cloned row per level.
+func TestComboPickerOffersEffortLevelsPerModel(t *testing.T) {
 	cfg := &config.Config{
 		Providers: []config.Provider{
 			// The catalog lists only the "-low" variant of this family, so the
-			// "-medium" and "-high" clones are synthesised.
+			// row is the base and the dropdown carries every level.
 			{Name: "agy", Type: "antigravity", Models: []string{"gemini-3.1-pro-low"}},
 			{Name: "cx", Type: "codex", Models: []string{"gpt-5.5"}},
 		},
 	}
 	body := renderComboPicker(t, cfg)
 
-	for _, want := range []string{
-		`data-target="agy/gemini-3.1-pro-low"`,    // the real catalog entry
-		`data-target="agy/gemini-3.1-pro-medium"`, // synthesised clone
-		`data-target="agy/gemini-3.1-pro-high"`,   // synthesised clone
-		`data-target="cx/gpt-5.5-low"`,            // codex clone from its profile
-		`data-target="cx/gpt-5.5-xhigh"`,          // the top codex level
-	} {
+	for _, want := range []string{`data-target="agy/gemini-3.1-pro"`, `data-target="cx/gpt-5.5"`} {
 		if !strings.Contains(body, want) {
-			t.Errorf("picker missing %s", want)
+			t.Errorf("picker missing the model row %s", want)
+		}
+	}
+	for _, unwanted := range []string{
+		`data-target="agy/gemini-3.1-pro-low"`,
+		`data-target="agy/gemini-3.1-pro-high"`,
+		`data-target="cx/gpt-5.5-low"`,
+		`data-target="cx/gpt-5.5-xhigh"`,
+	} {
+		if strings.Contains(body, unwanted) {
+			t.Errorf("picker still clones the effort level: %s", unwanted)
+		}
+	}
+	if got := strings.Count(body, "picker-effort-select"); got != 2 {
+		t.Errorf("effort dropdowns = %d, want one per effort-capable model (2)", got)
+	}
+	for _, level := range []string{`<option value="low">`, `<option value="medium">`, `<option value="high">`, `<option value="xhigh">`} {
+		if !strings.Contains(body, level) {
+			t.Errorf("effort dropdown missing %s", level)
 		}
 	}
 }
 
-// A model that cannot take an effort must not grow clones.
+// A model that cannot take an effort gets no dropdown.
 func TestComboPickerSkipsUncloneableModels(t *testing.T) {
 	cfg := &config.Config{
 		Providers: []config.Provider{
@@ -60,23 +72,19 @@ func TestComboPickerSkipsUncloneableModels(t *testing.T) {
 	}
 	body := renderComboPicker(t, cfg)
 
-	for _, unwanted := range []string{
-		`data-target="oai/gpt-4o-high"`,
-		`data-target="oai/gpt-4o-medium"`,
-		`data-target="agy/claude-sonnet-4-6-high"`,
-	} {
-		if strings.Contains(body, unwanted) {
-			t.Errorf("picker should not offer %s", unwanted)
-		}
+	if strings.Contains(body, "picker-effort-select") {
+		t.Error("picker offered an effort dropdown for a model that takes none")
 	}
-	if !strings.Contains(body, `data-target="oai/gpt-4o"`) {
-		t.Error("picker dropped the plain model")
+	for _, want := range []string{`data-target="oai/gpt-4o"`, `data-target="agy/claude-sonnet-4-6"`} {
+		if !strings.Contains(body, want) {
+			t.Errorf("picker dropped the plain model %s", want)
+		}
 	}
 }
 
+// A family whose catalog lists every level collapses into a single row on its
+// base, so the same model never appears twice.
 func TestComboPickerListsEachModelOnce(t *testing.T) {
-	// The catalog already lists every level of this family, so the clones would
-	// duplicate the real entries. Each id must appear exactly once.
 	cfg := &config.Config{
 		Providers: []config.Provider{
 			{Name: "agy", Type: "antigravity", Models: []string{"gemini-3.7-flash-low", "gemini-3.7-flash-medium", "gemini-3.7-flash-high"}},
@@ -84,30 +92,12 @@ func TestComboPickerListsEachModelOnce(t *testing.T) {
 	}
 	body := renderComboPicker(t, cfg)
 
+	if got := strings.Count(body, `data-target="agy/gemini-3.7-flash"`); got != 1 {
+		t.Errorf("agy/gemini-3.7-flash appears %d times, want exactly 1", got)
+	}
 	for _, id := range []string{"gemini-3.7-flash-low", "gemini-3.7-flash-medium", "gemini-3.7-flash-high"} {
-		target := `data-target="agy/` + id + `"`
-		if got := strings.Count(body, target); got != 1 {
-			t.Errorf("%s appears %d times, want exactly 1", target, got)
+		if strings.Contains(body, `data-target="agy/`+id+`"`) {
+			t.Errorf("level variant %s still has its own row", id)
 		}
-	}
-	// The same catalog entry also must not show as a badge-carrying clone.
-	if got := strings.Count(body, `data-model="gemini-3.7-flash-high"`); got != 1 {
-		t.Errorf("gemini-3.7-flash-high rendered %d times, want 1", got)
-	}
-}
-
-// A clone must be visibly marked as an effort variant so it is not mistaken for
-// a distinct upstream model.
-func TestComboPickerMarksEffortClones(t *testing.T) {
-	cfg := &config.Config{
-		Providers: []config.Provider{{Name: "cx", Type: "codex", Models: []string{"gpt-5.5"}}},
-	}
-	body := renderComboPicker(t, cfg)
-
-	if !strings.Contains(body, "picker-effort-item") {
-		t.Error("effort clone is not marked")
-	}
-	if !strings.Contains(body, ">effort<") {
-		t.Error("effort clone does not carry an effort badge")
 	}
 }
