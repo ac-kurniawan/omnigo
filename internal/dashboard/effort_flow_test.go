@@ -100,3 +100,42 @@ func TestCreateComboRejectsAnUnparseableEffort(t *testing.T) {
 		t.Fatalf("stored %d combos, want none", len(cfg.Combos))
 	}
 }
+
+// The edit path parses the same encoding, so a typo'd level must be rejected
+// there too and leave the stored chain untouched rather than half-applied.
+func TestUpdateComboRejectsAnUnparseableEffort(t *testing.T) {
+	cfg := &config.Config{
+		Providers: []config.Provider{{Name: "agy", Type: "antigravity", Models: []string{"gemini-3.1-pro-low"}}},
+		Combos: []config.Combo{{Name: "chain", Strategy: "priority", Targets: []config.ComboTarget{
+			{Provider: "agy", Model: "gemini-3.1-pro", Effort: "high"},
+		}}},
+	}
+	store := vault.NewMemoryStore(&vault.Vault{})
+	mutate := func(fn func(*config.Config) error) error {
+		if err := fn(cfg); err != nil {
+			return err
+		}
+		return cfg.Validate()
+	}
+	s := newServer(func() *config.Config { return cfg }, store, mutate, nil)
+
+	form := url.Values{
+		"strategy": {"priority"},
+		"targets":  {"agy/gemini-3.1-pro|turbo"},
+	}
+	req := httptest.NewRequest("POST", "/combos/chain", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("HX-Request", "true")
+	rr := httptest.NewRecorder()
+	s.routes().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 for an unknown effort", rr.Code)
+	}
+	if body := rr.Body.String(); !strings.Contains(body, "turbo") {
+		t.Errorf("error message does not name the bad level: %s", body)
+	}
+	if got := cfg.Combos[0].Targets; len(got) != 1 || got[0].Effort != "high" {
+		t.Fatalf("stored targets = %+v, want the original high-effort target", got)
+	}
+}
